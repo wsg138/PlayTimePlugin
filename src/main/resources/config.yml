@@ -1,0 +1,114 @@
+storage:
+  type: sqlite # sqlite or mysql
+
+  sqlite:
+    file: "playtime.db"
+
+  mysql:
+    host: "localhost"
+    port: 3306
+    database: "playtime"
+    username: "root"
+    password: "password"
+    use-ssl: false
+    pool-size: 10
+
+  # How often (in ticks) the async writer flushes the queue to DB.
+  flush-interval-ticks: 1200 # 60s
+
+sampling:
+  # (Reserved for future tick-based sampling; not heavily used right now)
+  tick-interval: 20
+
+  # Time before going IDLE (no activity)
+  idle_seconds: 60
+
+  # Time before going AFK (no activity)
+  afk_seconds: 300
+
+  suspicion:
+    # Turn macro-ish detection on/off
+    enabled: true
+
+    # Look at swings in the last N seconds
+    window_seconds: 20
+
+    # Require at least this many swings in the window before we judge it
+    min_swings: 25
+
+    # How "regular" the swing pattern can be before we call it suspicious
+    # (coefficient of variation: stddev / mean interval)
+    max_cv: 0.08
+
+    # Require this many seconds of no non-click activity (no movement/aim/chat)
+    # before we even consider someone suspicious
+    non_click_grace_seconds: 10
+
+chat:
+  count-chat-as-activity: true
+  count-commands-as-activity: true
+
+joins:
+  retention-days: -1
+  timezone: "America/New_York"
+
+  first-join:
+    enabled: true
+
+    # Message broadcast to everyone when a brand-new player joins.
+    broadcast: "&a+ &f%player% &7just joined for the first time! Make them feel welcome."
+
+    # Private lines sent only to the joining player (good place for tips/commands).
+    player-message:
+      - "&aWelcome to Enthusia, %player%!"
+      - "&7Use &b/tutorial &7for a quick start or ask in chat."
+
+    # Optional ping for the joining player only.
+    ping:
+      enabled: true
+      sound: BLOCK_NOTE_BLOCK_PLING
+      volume: 1.25
+      pitch: 1.6
+
+leaderboards:
+  default-metric: "total" # total | active | afk
+  default-range: "all"    # today | 7d | 30d | all
+  cache-ttl-seconds: 30
+
+gui:
+  enabled: true
+  filler-material: GRAY_STAINED_GLASS_PANE
+
+  bedrock:
+    enabled: true
+    # Logical "preferred" rows for Bedrock; Geyser will handle mapping later.
+    main-menu-rows: 5
+    leaderboard-rows: 6
+
+placeholders:
+  enabled: true
+
+ux:
+  # Placeholder for future title support (not wired yet)
+  show-afk-title: false
+
+  actionbar:
+    # Master toggle for action bar statuses
+    enabled: true
+
+    # Which states should show a message
+    show-active: false
+    show-idle: false
+    show-afk: true
+    show-suspicious: true
+
+    # Plain text messages (colors are handled by client / other plugins if needed)
+    text:
+      active: "Playing"
+      idle: "Idle"
+      afk: "AFK"
+      suspicious: "Suspicious input"
+
+debug:
+  enabled: false
+  log-suspicious: true

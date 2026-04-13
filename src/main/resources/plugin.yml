@@ -1,0 +1,52 @@
+name: EnthusiaPlaytime
+main: org.enthusia.playtime.PlayTimePlugin
+version: 2.7.2
+api-version: '1.20'
+author: Enthusia
+description: Advanced playtime tracking with AFK detection, GUIs, leaderboards and rewards.
+
+softdepend:
+  - PlaceholderAPI
+  - ProtocolLib
+  - floodgate
+  - Geyser-Spigot
+
+commands:
+  playtime:
+    description: View your playtime, open GUIs, or admin tools.
+    usage: /playtime
+    aliases: [pt]
+  roman:
+    description: Show playtime roman numeral tiers.
+    usage: /roman
+    aliases: [numerals, rn]
+  firstjoin:
+    description: Show when a player first joined.
+    usage: /firstjoin [player]
+    aliases: [fj]
+  seen:
+    description: Check when a player was last online.
+    usage: /seen [player]
+
+permissions:
+  playtime.base:
+    default: true
+    description: Use /playtime and basic GUIs.
+  playtime.others:
+    default: false
+    description: View playtime of other players.
+  playtime.firstjoined:
+    default: true
+    description: Use /firstjoin.
+  playtime.admin.base:
+    default: op
+    description: Open admin GUI.
+  playtime.admin.reload:
+    default: op
+    description: Reload playtime plugin.
+  playtime.admin.debug:
+    default: op
+    description: View debug info.
+  playtime.seen:
+    default: false
+    description: Use /seen to check when players were last online.
