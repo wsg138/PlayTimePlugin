@@ -43,6 +43,7 @@ public enum SqlDialect {
                   player_uuid TEXT PRIMARY KEY,
                   first_join TIMESTAMP NOT NULL,
                   last_join TIMESTAMP NOT NULL,
+                  last_seen TIMESTAMP NOT NULL,
                   active_minutes INTEGER NOT NULL DEFAULT 0,
                   afk_minutes INTEGER NOT NULL DEFAULT 0,
                   total_minutes INTEGER NOT NULL DEFAULT 0
@@ -53,6 +54,7 @@ public enum SqlDialect {
                   player_uuid CHAR(36) NOT NULL,
                   first_join TIMESTAMP NOT NULL,
                   last_join TIMESTAMP NOT NULL,
+                  last_seen TIMESTAMP NOT NULL,
                   active_minutes INT NOT NULL DEFAULT 0,
                   afk_minutes INT NOT NULL DEFAULT 0,
                   total_minutes INT NOT NULL DEFAULT 0,
@@ -83,6 +85,36 @@ public enum SqlDialect {
         };
     }
 
+    public String dailyAggIndexes() {
+        return switch (this) {
+            case SQLITE -> """
+                CREATE INDEX IF NOT EXISTS idx_daily_agg_day_metric
+                ON daily_agg (day, total_minutes, active_minutes, afk_minutes);
+                """;
+            case MYSQL -> "SELECT 1;";
+        };
+    }
+
+    public String lifetimeAggIndexes() {
+        return switch (this) {
+            case SQLITE -> """
+                CREATE INDEX IF NOT EXISTS idx_lifetime_agg_total
+                ON lifetime_agg (total_minutes, active_minutes, afk_minutes);
+                """;
+            case MYSQL -> "SELECT 1;";
+        };
+    }
+
+    public String joinsLogIndexes() {
+        return switch (this) {
+            case SQLITE -> """
+                CREATE INDEX IF NOT EXISTS idx_joins_log_uuid_time
+                ON joins_log (player_uuid, joined_at);
+                """;
+            case MYSQL -> "SELECT 1;";
+        };
+    }
+
 
     public String dailyAggUpsert() {
         // params: player_uuid, day, active, afk, total
@@ -106,27 +138,52 @@ public enum SqlDialect {
         };
     }
 
-    public String lifetimeAggUpsert() {
-        // params: player_uuid, first_join, last_join, active, afk, total
+    public String lifetimeJoinUpsert() {
+        // params: player_uuid, first_join, last_join, last_seen
         return switch (this) {
             case SQLITE -> """
-                INSERT INTO lifetime_agg (player_uuid, first_join, last_join, active_minutes, afk_minutes, total_minutes)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO lifetime_agg (player_uuid, first_join, last_join, last_seen, active_minutes, afk_minutes, total_minutes)
+                VALUES (?, ?, ?, ?, 0, 0, 0)
                 ON CONFLICT(player_uuid) DO UPDATE SET
                   last_join = excluded.last_join,
+                  last_seen = excluded.last_seen;
+                """;
+            case MYSQL -> """
+                INSERT INTO lifetime_agg (player_uuid, first_join, last_join, last_seen, active_minutes, afk_minutes, total_minutes)
+                VALUES (?, ?, ?, ?, 0, 0, 0)
+                ON DUPLICATE KEY UPDATE
+                  last_join = VALUES(last_join),
+                  last_seen = VALUES(last_seen);
+                """;
+        };
+    }
+
+    public String lifetimeMinutesUpsert() {
+        // params: player_uuid, active, afk, total
+        return switch (this) {
+            case SQLITE -> """
+                INSERT INTO lifetime_agg (player_uuid, first_join, last_join, last_seen, active_minutes, afk_minutes, total_minutes)
+                VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?, ?)
+                ON CONFLICT(player_uuid) DO UPDATE SET
                   active_minutes = active_minutes + excluded.active_minutes,
                   afk_minutes = afk_minutes + excluded.afk_minutes,
                   total_minutes = total_minutes + excluded.total_minutes;
                 """;
             case MYSQL -> """
-                INSERT INTO lifetime_agg (player_uuid, first_join, last_join, active_minutes, afk_minutes, total_minutes)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO lifetime_agg (player_uuid, first_join, last_join, last_seen, active_minutes, afk_minutes, total_minutes)
+                VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
-                  last_join = VALUES(last_join),
                   active_minutes = active_minutes + VALUES(active_minutes),
-                  afk_minutes = afk_minutes + VALUES(afk_minutes),
-                  total_minutes = total_minutes + VALUES(total_minutes);
+                  afk_minutes = VALUES(afk_minutes),
+                  total_minutes = VALUES(total_minutes);
                 """;
+        };
+    }
+
+    public String lifetimeAggAddLastSeenColumn() {
+        return switch (this) {
+            case SQLITE -> "ALTER TABLE lifetime_agg ADD COLUMN last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP";
+            case MYSQL -> "ALTER TABLE lifetime_agg ADD COLUMN last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP";
         };
     }
 }

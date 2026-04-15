@@ -12,22 +12,20 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.activity.ActivityState;
-import org.enthusia.playtime.activity.ActivityTracker;
-import org.enthusia.playtime.activity.SessionManager;
-import org.enthusia.playtime.bedrock.BedrockSupport;
 import org.enthusia.playtime.gui.PlaytimeGui;
 import org.enthusia.playtime.gui.PlaytimeGuiHolder;
-import org.enthusia.playtime.skin.HeadCache;
+import org.enthusia.playtime.service.PlaytimeRuntime;
+import org.enthusia.playtime.util.TimeFormats;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Locale;
 
 public final class AdminPlayersGui implements PlaytimeGui {
 
     private final PlayTimePlugin plugin;
     private final Player viewer;
-    private final ActivityTracker tracker;
-    private final SessionManager sessionManager;
-    private final boolean bedrock;
     private final Inventory inventory;
 
     private Filter filter = Filter.ALL;
@@ -42,7 +40,6 @@ public final class AdminPlayersGui implements PlaytimeGui {
     private static final int SLOT_FILTER_IDLE = 3;
     private static final int SLOT_FILTER_AFK = 4;
     private static final int SLOT_FILTER_SUS = 5;
-
     private static final int SLOT_PREV = 45;
     private static final int SLOT_BACK = 48;
     private static final int SLOT_CLOSE = 49;
@@ -51,27 +48,13 @@ public final class AdminPlayersGui implements PlaytimeGui {
     public AdminPlayersGui(PlayTimePlugin plugin, Player viewer) {
         this.plugin = plugin;
         this.viewer = viewer;
-        this.tracker = plugin.getActivityTracker();
-        this.sessionManager = plugin.getSessionManager();
-        BedrockSupport bs = plugin.getBedrockSupport();
-        this.bedrock = bs != null && bs.isBedrock(viewer);
-        this.inventory = Bukkit.createInventory(new PlaytimeGuiHolder(this), 54,
-                ChatColor.DARK_AQUA + "Admin - Online Players");
+        this.inventory = Bukkit.createInventory(new PlaytimeGuiHolder(this), 54, ChatColor.DARK_AQUA + "Admin - Online Players");
         render();
     }
 
     private void render() {
         inventory.clear();
-
-        if (!bedrock) {
-            ItemStack filler = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
-            ItemMeta fm = filler.getItemMeta();
-            fm.setDisplayName(" ");
-            filler.setItemMeta(fm);
-            for (int i = 0; i < inventory.getSize(); i++) {
-                inventory.setItem(i, filler);
-            }
-        }
+        fillBackground();
 
         inventory.setItem(SLOT_FILTER_ALL, filterItem(Filter.ALL));
         inventory.setItem(SLOT_FILTER_ACTIVE, filterItem(Filter.ACTIVE));
@@ -79,108 +62,117 @@ public final class AdminPlayersGui implements PlaytimeGui {
         inventory.setItem(SLOT_FILTER_AFK, filterItem(Filter.AFK));
         inventory.setItem(SLOT_FILTER_SUS, filterItem(Filter.SUSPICIOUS));
 
-        List<Integer> slots = buildEntrySlots();
-        long now = System.currentTimeMillis();
+        PlaytimeRuntime runtime = plugin.runtime();
+        List<Player> players = new ArrayList<>(Bukkit.getOnlinePlayers());
+        players.sort(Comparator.comparing(Player::getName, String.CASE_INSENSITIVE_ORDER));
 
-        List<Player> candidates = new ArrayList<>(Bukkit.getOnlinePlayers());
-        candidates.sort(Comparator.comparing(Player::getName, String.CASE_INSENSITIVE_ORDER));
-
+        long nowMillis = System.currentTimeMillis();
         List<Player> filtered = new ArrayList<>();
-        for (Player p : candidates) {
-            ActivityState st = tracker.getState(p.getUniqueId(), now);
-            if (matchesFilter(st)) {
-                filtered.add(p);
+        for (Player player : players) {
+            if (runtime != null && matchesFilter(runtime.activityTracker().getState(player.getUniqueId(), nowMillis))) {
+                filtered.add(player);
             }
         }
 
-        int pageSize = slots.size();
+        List<Integer> entrySlots = buildEntrySlots();
+        int pageSize = entrySlots.size();
         int from = (page - 1) * pageSize;
-        int to = Math.min(filtered.size(), from + pageSize);
         if (from >= filtered.size()) {
             page = 1;
             from = 0;
-            to = Math.min(filtered.size(), pageSize);
+        }
+        int to = Math.min(filtered.size(), from + pageSize);
+
+        int slotIndex = 0;
+        for (int index = from; index < to; index++) {
+            inventory.setItem(entrySlots.get(slotIndex++), entryItem(filtered.get(index), nowMillis));
         }
 
-        int idx = 0;
-        for (int i = from; i < to; i++) {
-            Player target = filtered.get(i);
-            int slot = slots.get(idx++);
-            inventory.setItem(slot, entryItem(target, now));
-        }
-
-        // Nav
-        ItemStack prev = new ItemStack(Material.ARROW);
-        ItemMeta pm = prev.getItemMeta();
-        pm.setDisplayName(ChatColor.YELLOW + "Previous page (" + Math.max(page - 1, 1) + ")");
-        prev.setItemMeta(pm);
-        inventory.setItem(SLOT_PREV, prev);
-
-        ItemStack next = new ItemStack(Material.ARROW);
-        ItemMeta nm = next.getItemMeta();
-        nm.setDisplayName(ChatColor.YELLOW + "Next page (" + (page + 1) + ")");
-        next.setItemMeta(nm);
-        inventory.setItem(SLOT_NEXT, next);
-
-        ItemStack back = new ItemStack(Material.OAK_DOOR);
-        ItemMeta bm = back.getItemMeta();
-        bm.setDisplayName(ChatColor.AQUA + "Back to admin menu");
-        back.setItemMeta(bm);
-        inventory.setItem(SLOT_BACK, back);
-
-        ItemStack close = new ItemStack(Material.BARRIER);
-        ItemMeta cm = close.getItemMeta();
-        cm.setDisplayName(ChatColor.RED + "Close");
-        close.setItemMeta(cm);
-        inventory.setItem(SLOT_CLOSE, close);
+        inventory.setItem(SLOT_PREV, buildItem(Material.ARROW, ChatColor.YELLOW + "Previous page (" + Math.max(page - 1, 1) + ")", List.of()));
+        inventory.setItem(SLOT_NEXT, buildItem(Material.ARROW, ChatColor.YELLOW + "Next page (" + (page + 1) + ")", List.of()));
+        inventory.setItem(SLOT_BACK, buildItem(Material.OAK_DOOR, ChatColor.AQUA + "Back to admin menu", List.of()));
+        inventory.setItem(SLOT_CLOSE, buildItem(Material.BARRIER, ChatColor.RED + "Close", List.of()));
     }
 
-    private ItemStack filterItem(Filter f) {
-        Material mat;
-        ChatColor color;
-        String name;
-        switch (f) {
-            case ACTIVE -> {
-                mat = Material.LIME_DYE;
-                color = ChatColor.GREEN;
-                name = "Active";
-            }
-            case IDLE -> {
-                mat = Material.YELLOW_DYE;
-                color = ChatColor.YELLOW;
-                name = "Idle";
-            }
-            case AFK -> {
-                mat = Material.RED_DYE;
-                color = ChatColor.RED;
-                name = "AFK";
-            }
-            case SUSPICIOUS -> {
-                mat = Material.MAGENTA_DYE;
-                color = ChatColor.LIGHT_PURPLE;
-                name = "Suspicious";
-            }
-            default -> {
-                mat = Material.BOOK;
-                color = ChatColor.AQUA;
-                name = "All";
+    private void fillBackground() {
+        boolean bedrock = plugin.runtime() != null && plugin.getBedrockSupport() != null && plugin.getBedrockSupport().isBedrock(viewer);
+        if (bedrock) {
+            return;
+        }
+        Material filler = Material.GRAY_STAINED_GLASS_PANE;
+        if (plugin.runtime() != null) {
+            try {
+                filler = Material.valueOf(plugin.runtime().config().gui().fillerMaterial().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                filler = Material.GRAY_STAINED_GLASS_PANE;
             }
         }
+        ItemStack fillerItem = new ItemStack(filler);
+        ItemMeta fillerMeta = fillerItem.getItemMeta();
+        fillerMeta.setDisplayName(" ");
+        fillerItem.setItemMeta(fillerMeta);
+        for (int slot = 0; slot < inventory.getSize(); slot++) {
+            inventory.setItem(slot, fillerItem);
+        }
+    }
 
-        ItemStack item = new ItemStack(mat);
+    private ItemStack filterItem(Filter filter) {
+        Material material = switch (filter) {
+            case ACTIVE -> Material.LIME_DYE;
+            case IDLE -> Material.YELLOW_DYE;
+            case AFK -> Material.RED_DYE;
+            case SUSPICIOUS -> Material.MAGENTA_DYE;
+            default -> Material.BOOK;
+        };
+        ChatColor color = switch (filter) {
+            case ACTIVE -> ChatColor.GREEN;
+            case IDLE -> ChatColor.YELLOW;
+            case AFK -> ChatColor.RED;
+            case SUSPICIOUS -> ChatColor.LIGHT_PURPLE;
+            default -> ChatColor.AQUA;
+        };
+
+        boolean selected = this.filter == filter;
+        return buildItem(material, (selected ? ChatColor.BOLD.toString() : "") + color + niceFilter(filter),
+                List.of(selected ? ChatColor.GREEN + "Selected filter" : ChatColor.YELLOW + "Click to filter by " + niceFilter(filter) + "."));
+    }
+
+    private ItemStack entryItem(Player target, long nowMillis) {
+        PlaytimeRuntime runtime = plugin.runtime();
+        ActivityState state = runtime == null ? ActivityState.ACTIVE : runtime.activityTracker().getState(target.getUniqueId(), nowMillis);
+        long sessionMillis = runtime == null ? 0L : runtime.sessionManager().getCurrentSessionMillis(target.getUniqueId(), nowMillis);
+
+        ItemStack head = runtime != null ? runtime.headCache().createHead(target.getUniqueId()) : new ItemStack(Material.PLAYER_HEAD);
+        ItemMeta meta = head.getItemMeta();
+        meta.setDisplayName(ChatColor.AQUA + target.getName());
+        meta.setLore(List.of(
+                ChatColor.GRAY + "Status: " + colorForState(state) + state.name(),
+                ChatColor.GRAY + "Session: " + ChatColor.YELLOW + TimeFormats.formatDurationMillis(sessionMillis),
+                ChatColor.DARK_GRAY + "UUID: " + target.getUniqueId().toString().substring(0, 8) + "..."
+        ));
+        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
+        head.setItemMeta(meta);
+        return head;
+    }
+
+    private ItemStack buildItem(Material material, String title, List<String> lore) {
+        ItemStack item = new ItemStack(material);
         ItemMeta meta = item.getItemMeta();
-        boolean selected = (this.filter == f);
-        meta.setDisplayName((selected ? ChatColor.BOLD.toString() : "") + color + name);
-        List<String> lore = new ArrayList<>();
-        if (selected) {
-            lore.add(ChatColor.GREEN + "Selected filter");
-        } else {
-            lore.add(ChatColor.YELLOW + "Click to filter by " + name + ".");
-        }
+        meta.setDisplayName(title);
         meta.setLore(lore);
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         item.setItemMeta(meta);
         return item;
+    }
+
+    private List<Integer> buildEntrySlots() {
+        List<Integer> slots = new ArrayList<>();
+        for (int row = 2; row <= 4; row++) {
+            for (int col = 1; col <= 7; col++) {
+                slots.add(row * 9 + col);
+            }
+        }
+        return slots;
     }
 
     private boolean matchesFilter(ActivityState state) {
@@ -193,37 +185,14 @@ public final class AdminPlayersGui implements PlaytimeGui {
         };
     }
 
-    private List<Integer> buildEntrySlots() {
-        List<Integer> slots = new ArrayList<>();
-        // Rows 2,3,4 (index 2..4), cols 1..7
-        for (int row = 2; row <= 4; row++) {
-            for (int col = 1; col <= 7; col++) {
-                slots.add(row * 9 + col);
-            }
-        }
-        return slots;
-    }
-
-    private ItemStack entryItem(Player target, long now) {
-        ActivityState state = tracker.getState(target.getUniqueId(), now);
-        long sessionMillis = sessionManager.getCurrentSessionMillis(target.getUniqueId(), now);
-
-        HeadCache cache = plugin.getHeadCache();
-        ItemStack head = (cache != null)
-                ? cache.createHead(target.getUniqueId())
-                : new ItemStack(Material.PLAYER_HEAD);
-        ItemMeta meta = head.getItemMeta();
-
-        meta.setDisplayName(ChatColor.AQUA + target.getName());
-
-        List<String> lore = new ArrayList<>();
-        lore.add(ChatColor.GRAY + "Status: " + colorForState(state) + state.name());
-        lore.add(ChatColor.GRAY + "Session: " + ChatColor.YELLOW + formatDuration(sessionMillis));
-        lore.add(ChatColor.DARK_GRAY + "UUID: " + target.getUniqueId().toString().substring(0, 8) + "...");
-        meta.setLore(lore);
-        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
-        head.setItemMeta(meta);
-        return head;
+    private String niceFilter(Filter filter) {
+        return switch (filter) {
+            case ACTIVE -> "Active";
+            case IDLE -> "Idle";
+            case AFK -> "AFK";
+            case SUSPICIOUS -> "Suspicious";
+            default -> "All";
+        };
     }
 
     private ChatColor colorForState(ActivityState state) {
@@ -233,24 +202,6 @@ public final class AdminPlayersGui implements PlaytimeGui {
             case AFK -> ChatColor.RED;
             case SUSPICIOUS -> ChatColor.LIGHT_PURPLE;
         };
-    }
-
-    private String formatDuration(long ms) {
-        if (ms <= 0) return "0m";
-        long totalSeconds = ms / 1000L;
-        long hours = totalSeconds / 3600L;
-        long minutes = (totalSeconds % 3600L) / 60L;
-        long seconds = totalSeconds % 60L;
-
-        if (hours > 0) {
-            if (minutes > 0) return hours + "h " + minutes + "m";
-            return hours + "h";
-        }
-        if (minutes > 0) {
-            if (seconds > 0) return minutes + "m " + seconds + "s";
-            return minutes + "m";
-        }
-        return seconds + "s";
     }
 
     @Override
@@ -271,8 +222,6 @@ public final class AdminPlayersGui implements PlaytimeGui {
     @Override
     public void handleClick(InventoryClickEvent event) {
         int slot = event.getRawSlot();
-
-        // Filters
         if (slot == SLOT_FILTER_ALL) {
             filter = Filter.ALL;
             page = 1;
@@ -303,10 +252,10 @@ public final class AdminPlayersGui implements PlaytimeGui {
             render();
             return;
         }
-
-        // Nav
         if (slot == SLOT_PREV) {
-            if (page > 1) page--;
+            if (page > 1) {
+                page--;
+            }
             render();
             return;
         }
@@ -326,6 +275,5 @@ public final class AdminPlayersGui implements PlaytimeGui {
 
     @Override
     public void handleClose(InventoryCloseEvent event) {
-        // nothing special
     }
 }

@@ -1,9 +1,9 @@
 name: EnthusiaPlaytime
 main: org.enthusia.playtime.PlayTimePlugin
-version: 2.7.2
-api-version: '1.20'
+version: 3.0.0
+api-version: '1.21'
 author: Enthusia
-description: Advanced playtime tracking with AFK detection, GUIs, leaderboards and rewards.
+description: Advanced playtime tracking with AFK detection, GUIs, leaderboards, admin tools, and PlaceholderAPI support.
 
 softdepend:
   - PlaceholderAPI
@@ -21,32 +21,32 @@ commands:
     usage: /roman
     aliases: [numerals, rn]
   firstjoin:
-    description: Show when a player first joined.
+    description: Show when a player first joined according to this plugin's storage.
     usage: /firstjoin [player]
     aliases: [fj]
   seen:
-    description: Check when a player was last online.
+    description: Check when a player was last seen according to this plugin's storage.
     usage: /seen [player]
 
 permissions:
   playtime.base:
     default: true
-    description: Use /playtime and basic GUIs.
+    description: Use /playtime, /roman, and the main GUIs.
   playtime.others:
     default: false
-    description: View playtime of other players.
+    description: View playtime for another player.
   playtime.firstjoined:
     default: true
     description: Use /firstjoin.
-  playtime.admin.base:
-    default: op
-    description: Open admin GUI.
-  playtime.admin.reload:
-    default: op
-    description: Reload playtime plugin.
-  playtime.admin.debug:
-    default: op
-    description: View debug info.
   playtime.seen:
     default: false
     description: Use /seen to check when players were last online.
+  playtime.admin.base:
+    default: op
+    description: Open admin GUI screens.
+  playtime.admin.reload:
+    default: op
+    description: Reload the playtime plugin safely in-place.
+  playtime.admin.debug:
+    default: op
+    description: View runtime debug information.

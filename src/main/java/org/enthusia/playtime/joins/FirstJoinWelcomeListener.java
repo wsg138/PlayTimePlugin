@@ -10,120 +10,92 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.config.PlaytimeConfig;
-import org.enthusia.playtime.data.PlaytimeRepository;
+import org.enthusia.playtime.service.PlaytimeRuntime;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Locale;
-import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Announces first-time joins and pings the joining player with a configurable message/sound.
- */
 public final class FirstJoinWelcomeListener implements Listener {
-
-    private final PlayTimePlugin plugin;
-    private final PlaytimeRepository repository;
 
     private static final Pattern HEX_PATTERN = Pattern.compile("&#([A-Fa-f0-9]{6})");
 
-    private final boolean enabled;
-    private final String broadcastMessage;
-    private final List<String> playerMessageLines;
-    private final boolean pingEnabled;
-    private final Sound pingSound;
-    private final float pingVolume;
-    private final float pingPitch;
+    private final PlayTimePlugin plugin;
 
-    public FirstJoinWelcomeListener(PlayTimePlugin plugin, PlaytimeConfig config) {
+    public FirstJoinWelcomeListener(PlayTimePlugin plugin) {
         this.plugin = plugin;
-        this.repository = plugin.getRepository();
-
-        this.enabled = config.isFirstJoinEnabled();
-        this.broadcastMessage = config.getFirstJoinBroadcast();
-
-        List<String> rawLines = config.getFirstJoinPlayerLines();
-        this.playerMessageLines = new ArrayList<>(rawLines);
-
-        this.pingEnabled = config.isFirstJoinPingEnabled();
-        String soundName = config.getFirstJoinPingSound();
-        this.pingSound = resolveSound(soundName, plugin.getLogger());
-        this.pingVolume = config.getFirstJoinPingVolume();
-        this.pingPitch = config.getFirstJoinPingPitch();
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onJoin(PlayerJoinEvent event) {
-        if (!enabled) {
+        PlaytimeRuntime runtime = plugin.runtime();
+        if (runtime == null) {
+            return;
+        }
+
+        PlaytimeConfig config = runtime.config();
+        if (!config.isFirstJoinEnabled()) {
             return;
         }
 
         Player player = event.getPlayer();
-        if (player.hasPlayedBefore()) {
-            return; // only fire for first-ever joins
+        boolean firstKnownJoin = !runtime.isKnownPlayer(player.getUniqueId());
+        if (!firstKnownJoin) {
+            return;
         }
 
-        String broadcast = format(broadcastMessage, player);
+        String broadcast = format(config.getFirstJoinBroadcast(), player, runtime);
         if (!broadcast.isBlank()) {
             Bukkit.broadcastMessage(broadcast);
         }
 
-        for (String line : playerMessageLines) {
-            String formatted = format(line, player);
+        for (String line : config.getFirstJoinPlayerLines()) {
+            String formatted = format(line, player, runtime);
             if (!formatted.isBlank()) {
                 player.sendMessage(formatted);
             }
         }
 
-        if (pingEnabled && pingSound != null) {
-            player.playSound(player.getLocation(), pingSound, pingVolume, pingPitch);
+        if (config.isFirstJoinPingEnabled()) {
+            Sound sound = resolveSound(config.getFirstJoinPingSound());
+            if (sound != null) {
+                player.playSound(player.getLocation(), sound, config.getFirstJoinPingVolume(), config.getFirstJoinPingPitch());
+            }
         }
     }
 
-    private String format(String msg, Player player) {
-        if (msg == null) {
+    private String format(String message, Player player, PlaytimeRuntime runtime) {
+        if (message == null) {
             return "";
         }
-        String replaced = msg.replace("%player%", player.getName())
+        int uniqueNumber = runtime.repository().countKnownPlayers() + 1;
+        String replaced = message.replace("%player%", player.getName())
                 .replace("{USERNAME}", player.getName())
-                .replace("{UNIQUE}", String.valueOf(getUniqueJoinNumber(player)));
+                .replace("{UNIQUE}", String.valueOf(uniqueNumber));
         String withHex = applyHexColors(replaced);
         return ChatColor.translateAlternateColorCodes('&', withHex);
     }
 
-    private Sound resolveSound(String name, Logger logger) {
+    private Sound resolveSound(String name) {
         if (name == null || name.isBlank()) {
             return null;
         }
         try {
             return Sound.valueOf(name.toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException ex) {
-            logger.warning("[EnthusiaPlaytime] Unknown first-join ping sound '" + name + "'. Sound disabled.");
+        } catch (IllegalArgumentException exception) {
+            plugin.getLogger().warning("Unknown first-join ping sound '" + name + "'. Sound disabled.");
             return null;
         }
     }
 
-    private String applyHexColors(String msg) {
-        Matcher matcher = HEX_PATTERN.matcher(msg);
+    private String applyHexColors(String message) {
+        Matcher matcher = HEX_PATTERN.matcher(message);
         StringBuffer buffer = new StringBuffer();
         while (matcher.find()) {
-            String color = matcher.group(1);
-            String replacement = net.md_5.bungee.api.ChatColor.of("#" + color).toString();
+            String replacement = net.md_5.bungee.api.ChatColor.of("#" + matcher.group(1)).toString();
             matcher.appendReplacement(buffer, Matcher.quoteReplacement(replacement));
         }
         matcher.appendTail(buffer);
         return buffer.toString();
-    }
-
-    private int getUniqueJoinNumber(Player player) {
-        try {
-            int count = repository.getServerUniquePlayers("ALL", java.time.Instant.now());
-            boolean exists = repository.getLifetime(player.getUniqueId()).isPresent();
-            return exists ? count : (count + 1);
-        } catch (Exception ex) {
-            return 0;
-        }
     }
 }

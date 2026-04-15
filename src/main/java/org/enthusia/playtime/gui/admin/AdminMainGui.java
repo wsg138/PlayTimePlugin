@@ -11,18 +11,16 @@ import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.enthusia.playtime.PlayTimePlugin;
-import org.enthusia.playtime.bedrock.BedrockSupport;
 import org.enthusia.playtime.gui.PlaytimeGui;
 import org.enthusia.playtime.gui.PlaytimeGuiHolder;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public final class AdminMainGui implements PlaytimeGui {
 
     private final PlayTimePlugin plugin;
     private final Player viewer;
-    private final boolean bedrock;
     private final Inventory inventory;
 
     private static final int SLOT_PLAYERS = 11;
@@ -32,56 +30,56 @@ public final class AdminMainGui implements PlaytimeGui {
     public AdminMainGui(PlayTimePlugin plugin, Player viewer) {
         this.plugin = plugin;
         this.viewer = viewer;
-        BedrockSupport bs = plugin.getBedrockSupport();
-        this.bedrock = bs != null && bs.isBedrock(viewer);
-        this.inventory = Bukkit.createInventory(new PlaytimeGuiHolder(this), 27,
-                ChatColor.DARK_AQUA + "Playtime Admin");
-
+        this.inventory = Bukkit.createInventory(new PlaytimeGuiHolder(this), 27, ChatColor.DARK_AQUA + "Playtime Admin");
         render();
     }
 
     private void render() {
-        if (!bedrock) {
-            ItemStack filler = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
-            ItemMeta fm = filler.getItemMeta();
-            fm.setDisplayName(" ");
-            filler.setItemMeta(fm);
-            for (int i = 0; i < inventory.getSize(); i++) {
-                inventory.setItem(i, filler);
+        inventory.clear();
+        fillBackground();
+        inventory.setItem(SLOT_PLAYERS, buildItem(Material.PLAYER_HEAD, ChatColor.AQUA + "Online Players",
+                List.of(
+                        ChatColor.GRAY + "View online players, status,",
+                        ChatColor.GRAY + "suspicious streaks, and session length."
+                )));
+        inventory.setItem(SLOT_ACTIVITY, buildItem(Material.CLOCK, ChatColor.GOLD + "Server Activity",
+                List.of(
+                        ChatColor.GRAY + "Totals over Today / 7d / 30d / All.",
+                        ChatColor.GRAY + "See playtime, joins, and player mix."
+                )));
+        inventory.setItem(SLOT_CLOSE, buildItem(Material.BARRIER, ChatColor.RED + "Close", List.of()));
+    }
+
+    private void fillBackground() {
+        boolean bedrock = plugin.runtime() != null && plugin.getBedrockSupport() != null && plugin.getBedrockSupport().isBedrock(viewer);
+        if (bedrock) {
+            return;
+        }
+        Material fillerMaterial = Material.GRAY_STAINED_GLASS_PANE;
+        if (plugin.runtime() != null) {
+            try {
+                fillerMaterial = Material.valueOf(plugin.runtime().config().gui().fillerMaterial().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                fillerMaterial = Material.GRAY_STAINED_GLASS_PANE;
             }
         }
+        ItemStack filler = new ItemStack(fillerMaterial);
+        ItemMeta meta = filler.getItemMeta();
+        meta.setDisplayName(" ");
+        filler.setItemMeta(meta);
+        for (int slot = 0; slot < inventory.getSize(); slot++) {
+            inventory.setItem(slot, filler);
+        }
+    }
 
-        // Online players
-        ItemStack players = new ItemStack(Material.PLAYER_HEAD);
-        ItemMeta pm = players.getItemMeta();
-        pm.setDisplayName(ChatColor.AQUA + "Online Players");
-        List<String> plore = new ArrayList<>();
-        plore.add(ChatColor.GRAY + "View current players, status, and session length.");
-        plore.add(ChatColor.DARK_GRAY + "Filter by Active / Idle / AFK / Suspicious.");
-        pm.setLore(plore);
-        pm.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
-        players.setItemMeta(pm);
-        inventory.setItem(SLOT_PLAYERS, players);
-
-        // Server activity
-        ItemStack activity = new ItemStack(Material.CLOCK);
-        ItemMeta am = activity.getItemMeta();
-        am.setDisplayName(ChatColor.GOLD + "Server Activity");
-        List<String> alore = new ArrayList<>();
-        alore.add(ChatColor.GRAY + "Totals over Today / 7d / 30d / All.");
-        alore.add(ChatColor.GRAY + "See active, AFK, and total playtime.");
-        alore.add(ChatColor.GRAY + "Plus unique players & joins.");
-        am.setLore(alore);
-        am.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
-        activity.setItemMeta(am);
-        inventory.setItem(SLOT_ACTIVITY, activity);
-
-        // Close
-        ItemStack close = new ItemStack(Material.BARRIER);
-        ItemMeta cm = close.getItemMeta();
-        cm.setDisplayName(ChatColor.RED + "Close");
-        close.setItemMeta(cm);
-        inventory.setItem(SLOT_CLOSE, close);
+    private ItemStack buildItem(Material material, String title, List<String> lore) {
+        ItemStack item = new ItemStack(material);
+        ItemMeta meta = item.getItemMeta();
+        meta.setDisplayName(title);
+        meta.setLore(lore);
+        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
+        item.setItemMeta(meta);
+        return item;
     }
 
     @Override
@@ -117,6 +115,5 @@ public final class AdminMainGui implements PlaytimeGui {
 
     @Override
     public void handleClose(InventoryCloseEvent event) {
-        // nothing special
     }
 }

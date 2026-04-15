@@ -3,6 +3,7 @@ package org.enthusia.playtime.gui;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
@@ -11,13 +12,11 @@ import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.enthusia.playtime.PlayTimePlugin;
-import org.enthusia.playtime.bedrock.BedrockSupport;
-import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.data.model.LeaderboardEntry;
 import org.enthusia.playtime.data.model.RangeTotals;
-import org.enthusia.playtime.util.HeadUtils;
+import org.enthusia.playtime.service.PlaytimeRuntime;
+import org.enthusia.playtime.util.TimeFormats;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -27,234 +26,148 @@ public final class LeaderboardGui implements PlaytimeGui {
 
     private final PlayTimePlugin plugin;
     private final Player viewer;
-    private final boolean bedrock;
-    private final PlaytimeRepository repository;
     private final Inventory inventory;
 
-    // State
-    private String metric; // "TOTAL", "ACTIVE", "AFK"
-    private String range;  // "ALL", "TODAY", "7D", "30D"
+    private String metric;
+    private String range;
     private int page;
 
-    // Slots (0-based) according to your layout (6 rows, 54 slots)
-    // Row 0: blank, TODAY, blanks, 30D, blank
     private static final int SLOT_RANGE_TODAY = 1;
     private static final int SLOT_RANGE_30D = 7;
-
-    // Row 1: blank, 7D, blank, ACTIVE, TOTAL, AFK, blank, ALL, blank
     private static final int SLOT_RANGE_7D = 10;
     private static final int SLOT_METRIC_ACTIVE = 12;
     private static final int SLOT_METRIC_TOTAL = 13;
     private static final int SLOT_METRIC_AFK = 14;
     private static final int SLOT_RANGE_ALL = 16;
-
-    // Bottom nav row (row 5): arrow, blank, blank, door, book(self), barrier, blank, blank, arrow
     private static final int SLOT_PREV_PAGE = 45;
     private static final int SLOT_BACK = 48;
     private static final int SLOT_SELF = 49;
     private static final int SLOT_CLOSE = 50;
     private static final int SLOT_NEXT_PAGE = 53;
 
-    public LeaderboardGui(PlayTimePlugin plugin,
-                          Player viewer,
-                          String metric,
-                          String range,
-                          int page) {
+    public LeaderboardGui(PlayTimePlugin plugin, Player viewer, String metric, String range, int page) {
         this.plugin = plugin;
         this.viewer = viewer;
-        BedrockSupport bs = plugin.getBedrockSupport();
-        this.bedrock = bs != null && bs.isBedrock(viewer);
-        this.repository = plugin.getRepository();
         this.metric = normalizeMetric(metric);
         this.range = normalizeRange(range);
-        this.page = Math.max(page, 1);
-
-        int rows = 6; // fixed layout
-        int size = rows * 9;
-
-        this.inventory = Bukkit.createInventory(
-                new PlaytimeGuiHolder(this),
-                size,
-                ChatColor.DARK_AQUA + "Playtime Leaderboard"
-        );
-
+        this.page = Math.max(1, page);
+        this.inventory = Bukkit.createInventory(new PlaytimeGuiHolder(this), 54, ChatColor.DARK_AQUA + "Playtime Leaderboard");
         render();
-    }
-
-    private static String normalizeMetric(String metric) {
-        if (metric == null) return "TOTAL";
-        String m = metric.toUpperCase(Locale.ROOT);
-        if (m.equals("ACTIVE") || m.equals("AFK") || m.equals("TOTAL")) {
-            return m;
-        }
-        return "TOTAL";
-    }
-
-    private static String normalizeRange(String range) {
-        if (range == null) return "ALL";
-        String r = range.toUpperCase(Locale.ROOT);
-        if (r.equals("TODAY") || r.equals("7D") || r.equals("30D") || r.equals("ALL")) {
-            return r;
-        }
-        return "ALL";
-    }
-
-    private static String metricNice(String metric) {
-        return switch (metric) {
-            case "ACTIVE" -> "Active";
-            case "AFK" -> "AFK";
-            default -> "Total";
-        };
-    }
-
-    private static String rangeNice(String range) {
-        return switch (range) {
-            case "TODAY" -> "Today";
-            case "7D" -> "Last 7 days";
-            case "30D" -> "Last 30 days";
-            default -> "All time";
-        };
     }
 
     private void render() {
         inventory.clear();
+        fillBackground();
 
-        // Filler: gray glass (skip for Bedrock clients so they see a clean background)
-        if (!bedrock) {
-            ItemStack filler = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
-            ItemMeta fm = filler.getItemMeta();
-            fm.setDisplayName(" ");
-            filler.setItemMeta(fm);
-            for (int i = 0; i < inventory.getSize(); i++) {
-                inventory.setItem(i, filler);
-            }
-        }
-
-        // Metric buttons
         inventory.setItem(SLOT_METRIC_ACTIVE, metricItem("ACTIVE"));
         inventory.setItem(SLOT_METRIC_TOTAL, metricItem("TOTAL"));
         inventory.setItem(SLOT_METRIC_AFK, metricItem("AFK"));
-
-        // Range buttons
         inventory.setItem(SLOT_RANGE_TODAY, rangeItem("TODAY"));
         inventory.setItem(SLOT_RANGE_7D, rangeItem("7D"));
         inventory.setItem(SLOT_RANGE_30D, rangeItem("30D"));
         inventory.setItem(SLOT_RANGE_ALL, rangeItem("ALL"));
 
-        // Entry slots (rows 2,3,4; cols 1–7)
         List<Integer> entrySlots = buildEntrySlots();
         int pageSize = entrySlots.size();
-
-        List<LeaderboardEntry> rows = repository.getLeaderboard(
-                metric,
-                range,
-                Instant.now(),
-                pageSize,
-                (page - 1) * pageSize
-        );
+        PlaytimeRuntime runtime = plugin.runtime();
+        List<LeaderboardEntry> entries = runtime == null
+                ? List.of()
+                : runtime.readService().getLeaderboard(metric, range, pageSize, (page - 1) * pageSize);
 
         LeaderboardEntry selfEntry = null;
-
-        for (int i = 0; i < rows.size() && i < entrySlots.size(); i++) {
-            LeaderboardEntry entry = rows.get(i);
-            int slot = entrySlots.get(i);
-            inventory.setItem(slot, entryItem(entry));
+        for (int index = 0; index < entries.size() && index < entrySlots.size(); index++) {
+            LeaderboardEntry entry = entries.get(index);
+            inventory.setItem(entrySlots.get(index), entryItem(entry));
             if (entry.uuid.equals(viewer.getUniqueId())) {
                 selfEntry = entry;
             }
         }
 
-        // Nav items
         ItemStack prev = new ItemStack(Material.ARROW);
-        ItemMeta pm = prev.getItemMeta();
-        pm.setDisplayName(ChatColor.YELLOW + "Previous page (" + Math.max(page - 1, 1) + ")");
-        prev.setItemMeta(pm);
+        ItemMeta prevMeta = prev.getItemMeta();
+        prevMeta.setDisplayName(ChatColor.YELLOW + "Previous page (" + Math.max(page - 1, 1) + ")");
+        prev.setItemMeta(prevMeta);
         inventory.setItem(SLOT_PREV_PAGE, prev);
 
         ItemStack next = new ItemStack(Material.ARROW);
-        ItemMeta nm = next.getItemMeta();
-        nm.setDisplayName(ChatColor.YELLOW + "Next page (" + (page + 1) + ")");
-        next.setItemMeta(nm);
+        ItemMeta nextMeta = next.getItemMeta();
+        nextMeta.setDisplayName(ChatColor.YELLOW + "Next page (" + (page + 1) + ")");
+        next.setItemMeta(nextMeta);
         inventory.setItem(SLOT_NEXT_PAGE, next);
 
         ItemStack back = new ItemStack(Material.OAK_DOOR);
-        ItemMeta bm = back.getItemMeta();
-        bm.setDisplayName(ChatColor.AQUA + "Back to main menu");
-        back.setItemMeta(bm);
+        ItemMeta backMeta = back.getItemMeta();
+        backMeta.setDisplayName(ChatColor.AQUA + "Back to main menu");
+        back.setItemMeta(backMeta);
         inventory.setItem(SLOT_BACK, back);
 
         ItemStack close = new ItemStack(Material.BARRIER);
-        ItemMeta cm = close.getItemMeta();
-        cm.setDisplayName(ChatColor.RED + "Close");
-        close.setItemMeta(cm);
+        ItemMeta closeMeta = close.getItemMeta();
+        closeMeta.setDisplayName(ChatColor.RED + "Close");
+        close.setItemMeta(closeMeta);
         inventory.setItem(SLOT_CLOSE, close);
 
-        // Self stats card in bottom center
         inventory.setItem(SLOT_SELF, selfItem(selfEntry));
     }
 
-    private ItemStack metricItem(String metric) {
-        Material mat;
-        ChatColor color;
-        switch (metric) {
-            case "ACTIVE" -> {
-                mat = Material.LIME_DYE;
-                color = ChatColor.GREEN;
-            }
-            case "AFK" -> {
-                mat = Material.RED_DYE;
-                color = ChatColor.RED;
-            }
-            default -> {
-                // TOTAL – use something different than clock
-                mat = Material.EXPERIENCE_BOTTLE;
-                color = ChatColor.GOLD;
+    private void fillBackground() {
+        PlaytimeRuntime runtime = plugin.runtime();
+        boolean bedrock = runtime != null && plugin.getBedrockSupport() != null && plugin.getBedrockSupport().isBedrock(viewer);
+        if (bedrock) {
+            return;
+        }
+
+        Material fillerMaterial = Material.GRAY_STAINED_GLASS_PANE;
+        if (runtime != null) {
+            try {
+                fillerMaterial = Material.valueOf(runtime.config().gui().fillerMaterial().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                fillerMaterial = Material.GRAY_STAINED_GLASS_PANE;
             }
         }
 
-        ItemStack item = new ItemStack(mat);
-        ItemMeta meta = item.getItemMeta();
-        boolean selected = this.metric.equals(metric);
-        meta.setDisplayName((selected ? ChatColor.BOLD.toString() : "") +
-                color + metricNice(metric));
-        List<String> lore = new ArrayList<>();
-        if (selected) {
-            lore.add(ChatColor.GREEN + "Selected");
-        } else {
-            lore.add(ChatColor.YELLOW + "Click to sort by " + metricNice(metric) + ".");
+        ItemStack filler = new ItemStack(fillerMaterial);
+        ItemMeta fillerMeta = filler.getItemMeta();
+        fillerMeta.setDisplayName(" ");
+        filler.setItemMeta(fillerMeta);
+        for (int slot = 0; slot < inventory.getSize(); slot++) {
+            inventory.setItem(slot, filler);
         }
-        meta.setLore(lore);
+    }
+
+    private ItemStack metricItem(String metric) {
+        Material material = switch (metric) {
+            case "ACTIVE" -> Material.LIME_DYE;
+            case "AFK" -> Material.RED_DYE;
+            default -> Material.EXPERIENCE_BOTTLE;
+        };
+        ChatColor color = switch (metric) {
+            case "ACTIVE" -> ChatColor.GREEN;
+            case "AFK" -> ChatColor.RED;
+            default -> ChatColor.GOLD;
+        };
+
+        ItemStack item = new ItemStack(material);
+        ItemMeta meta = item.getItemMeta();
+        meta.setDisplayName((this.metric.equals(metric) ? ChatColor.BOLD.toString() : "") + color + niceMetric(metric));
+        meta.setLore(List.of(this.metric.equals(metric) ? ChatColor.GREEN + "Selected" : ChatColor.YELLOW + "Click to sort by " + niceMetric(metric) + "."));
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         item.setItemMeta(meta);
         return item;
     }
 
     private ItemStack rangeItem(String range) {
-        Material mat;
-        // You asked:
-        // TODAY  -> locator map
-        // 7D     -> nether star
-        // 30D    -> paper
-        // ALL    -> clock
-        switch (range) {
-            case "TODAY" -> mat = Material.MAP;   // 1.20+; change to MAP if you ever need <1.20
-            case "7D" -> mat = Material.NETHER_STAR;
-            case "30D" -> mat = Material.PAPER;
-            default -> mat = Material.CLOCK;              // ALL time
-        }
+        Material material = switch (range) {
+            case "TODAY" -> Material.MAP;
+            case "7D" -> Material.NETHER_STAR;
+            case "30D" -> Material.PAPER;
+            default -> Material.CLOCK;
+        };
 
-        ItemStack item = new ItemStack(mat);
+        ItemStack item = new ItemStack(material);
         ItemMeta meta = item.getItemMeta();
-        boolean selected = this.range.equals(range);
-        meta.setDisplayName((selected ? ChatColor.BOLD.toString() : "") +
-                ChatColor.AQUA + rangeNice(range));
-        List<String> lore = new ArrayList<>();
-        if (selected) {
-            lore.add(ChatColor.GREEN + "Selected");
-        } else {
-            lore.add(ChatColor.YELLOW + "Click to switch range.");
-        }
-        meta.setLore(lore);
+        meta.setDisplayName((this.range.equals(range) ? ChatColor.BOLD.toString() : "") + ChatColor.AQUA + niceRange(range));
+        meta.setLore(List.of(this.range.equals(range) ? ChatColor.GREEN + "Selected" : ChatColor.YELLOW + "Click to switch range."));
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         item.setItemMeta(meta);
         return item;
@@ -262,7 +175,6 @@ public final class LeaderboardGui implements PlaytimeGui {
 
     private List<Integer> buildEntrySlots() {
         List<Integer> slots = new ArrayList<>();
-        // Rows 2,3,4 (0-based), cols 1–7
         for (int row = 2; row <= 4; row++) {
             for (int col = 1; col <= 7; col++) {
                 slots.add(row * 9 + col);
@@ -272,127 +184,99 @@ public final class LeaderboardGui implements PlaytimeGui {
     }
 
     private ItemStack entryItem(LeaderboardEntry entry) {
-        String name = resolveName(entry.uuid);
-
-        // NEW: use cached head (with baked skin) if available; fall back to old HeadUtils.
-        ItemStack head;
-        if (plugin.getHeadCache() != null) {
-            head = plugin.getHeadCache().createHead(entry.uuid);
-        } else {
-            head = HeadUtils.getPlayerHead(entry.uuid, name);
-        }
-
+        PlaytimeRuntime runtime = plugin.runtime();
+        ItemStack head = runtime != null ? runtime.headCache().createHead(entry.uuid) : new ItemStack(Material.PLAYER_HEAD);
         ItemMeta meta = head.getItemMeta();
-        meta.setDisplayName(ChatColor.AQUA + "#" + entry.rank + " " + name);
-
-        boolean highlightTotal = metric.equals("TOTAL");
-        boolean highlightActive = metric.equals("ACTIVE");
-        boolean highlightAfk = metric.equals("AFK");
-
-        List<String> lore = new ArrayList<>();
-
-        // Total
-        String totalPrefix = (highlightTotal ? ChatColor.BOLD.toString() : "") + ChatColor.GRAY + "Total: ";
-        String totalLine = totalPrefix + ChatColor.YELLOW + formatMinutes(entry.totalMinutes);
-        lore.add(totalLine);
-
-        // Active
-        String activePrefix = (highlightActive ? ChatColor.BOLD.toString() : "") + ChatColor.GRAY + "Active: ";
-        String activeLine = activePrefix + ChatColor.GREEN + formatMinutes(entry.activeMinutes);
-        lore.add(activeLine);
-
-        // AFK
-        String afkPrefix = (highlightAfk ? ChatColor.BOLD.toString() : "") + ChatColor.GRAY + "AFK: ";
-        String afkLine = afkPrefix + ChatColor.RED + formatMinutes(entry.afkMinutes);
-        lore.add(afkLine);
-
-        meta.setLore(lore);
+        meta.setDisplayName(ChatColor.AQUA + "#" + entry.rank + " " + resolveName(entry.uuid));
+        meta.setLore(List.of(
+                lineForMetric("TOTAL", ChatColor.YELLOW, entry.totalMinutes),
+                lineForMetric("ACTIVE", ChatColor.GREEN, entry.activeMinutes),
+                lineForMetric("AFK", ChatColor.RED, entry.afkMinutes)
+        ));
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         head.setItemMeta(meta);
         return head;
     }
 
     private ItemStack selfItem(LeaderboardEntry selfEntry) {
+        PlaytimeRuntime runtime = plugin.runtime();
+        RangeTotals totals = runtime == null
+                ? new RangeTotals(0, 0, 0)
+                : runtime.readService().getRangeTotals(viewer.getUniqueId(), range);
+
         ItemStack book = new ItemStack(Material.BOOK);
         ItemMeta meta = book.getItemMeta();
-        meta.setDisplayName(ChatColor.AQUA + "Your stats - " +
-                metricNice(metric) + ", " + rangeNice(range));
-
-        boolean highlightTotal = metric.equals("TOTAL");
-        boolean highlightActive = metric.equals("ACTIVE");
-        boolean highlightAfk = metric.equals("AFK");
-
+        meta.setDisplayName(ChatColor.AQUA + "Your stats - " + niceMetric(metric) + ", " + niceRange(range));
         List<String> lore = new ArrayList<>();
-        UUID uuid = viewer.getUniqueId();
-
-        RangeTotals totals = repository.getRangeTotals(uuid, Instant.now(), range);
-
-        if (selfEntry != null) {
-            lore.add(ChatColor.GRAY + "Rank: " + ChatColor.YELLOW + "#" + selfEntry.rank);
-        } else {
-            lore.add(ChatColor.GRAY + "Rank: " + ChatColor.DARK_GRAY + "Not on this page");
-        }
-
-        // Total
-        String totalPrefix = (highlightTotal ? ChatColor.BOLD.toString() : "") + ChatColor.GRAY + "Total: ";
-        String totalLine = totalPrefix + ChatColor.YELLOW + formatMinutes(totals.totalMinutes);
-        lore.add(totalLine);
-
-        // Active
-        String activePrefix = (highlightActive ? ChatColor.BOLD.toString() : "") + ChatColor.GRAY + "Active: ";
-        String activeLine = activePrefix + ChatColor.GREEN + formatMinutes(totals.activeMinutes);
-        lore.add(activeLine);
-
-        // AFK
-        String afkPrefix = (highlightAfk ? ChatColor.BOLD.toString() : "") + ChatColor.GRAY + "AFK: ";
-        String afkLine = afkPrefix + ChatColor.RED + formatMinutes(totals.afkMinutes);
-        lore.add(afkLine);
-
+        lore.add(ChatColor.GRAY + "Rank: " + (selfEntry == null ? ChatColor.DARK_GRAY + "Not on this page" : ChatColor.YELLOW + "#" + selfEntry.rank));
+        lore.add(lineForMetric("TOTAL", ChatColor.YELLOW, totals.totalMinutes));
+        lore.add(lineForMetric("ACTIVE", ChatColor.GREEN, totals.activeMinutes));
+        lore.add(lineForMetric("AFK", ChatColor.RED, totals.afkMinutes));
         lore.add("");
         lore.add(ChatColor.DARK_GRAY + "Compare this with the heads above.");
-
         meta.setLore(lore);
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         book.setItemMeta(meta);
         return book;
     }
 
+    private String lineForMetric(String lineMetric, ChatColor valueColor, long minutes) {
+        boolean highlighted = this.metric.equals(lineMetric);
+        String prefix = switch (lineMetric) {
+            case "ACTIVE" -> "Active";
+            case "AFK" -> "AFK";
+            default -> "Total";
+        };
+        return (highlighted ? ChatColor.BOLD.toString() : "") + ChatColor.GRAY + prefix + ": " + valueColor + TimeFormats.formatMinutes(minutes);
+    }
+
     private String resolveName(UUID uuid) {
-        // 1) Online name wins
         Player online = Bukkit.getPlayer(uuid);
         if (online != null) {
             return online.getName();
         }
-
-        // 2) Name from cached skins.yml (works even after restart)
-        String cached = plugin.getHeadCache() != null
-                ? plugin.getHeadCache().getLastKnownName(uuid)
-                : null;
-        if (cached != null && !cached.isEmpty()) {
-            return cached;
+        PlaytimeRuntime runtime = plugin.runtime();
+        if (runtime != null) {
+            String cached = runtime.headCache().getLastKnownName(uuid);
+            if (cached != null && !cached.isBlank()) {
+                return cached;
+            }
         }
-
-        // 3) Bukkit's offline cache
-        org.bukkit.OfflinePlayer offline = Bukkit.getOfflinePlayer(uuid);
-        if (offline.getName() != null) {
-            return offline.getName();
-        }
-
-        // 4) Absolute last resort: short UUID chunk
-        return uuid.toString().substring(0, 8);
+        OfflinePlayer offline = Bukkit.getOfflinePlayer(uuid);
+        return offline.getName() != null ? offline.getName() : uuid.toString().substring(0, 8);
     }
 
-    private static String formatMinutes(long minutes) {
-        if (minutes <= 0) return "0m";
-        long hours = minutes / 60;
-        long mins = minutes % 60;
-        if (hours <= 0) {
-            return mins + "m";
-        }
-        if (mins == 0) {
-            return hours + "h";
-        }
-        return hours + "h " + mins + "m";
+    private static String normalizeMetric(String metric) {
+        String normalized = metric == null ? "TOTAL" : metric.toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "ACTIVE", "AFK", "TOTAL" -> normalized;
+            default -> "TOTAL";
+        };
+    }
+
+    private static String normalizeRange(String range) {
+        String normalized = range == null ? "ALL" : range.toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "TODAY", "7D", "30D", "ALL" -> normalized;
+            default -> "ALL";
+        };
+    }
+
+    private static String niceMetric(String metric) {
+        return switch (metric) {
+            case "ACTIVE" -> "Active";
+            case "AFK" -> "AFK";
+            default -> "Total";
+        };
+    }
+
+    private static String niceRange(String range) {
+        return switch (range) {
+            case "TODAY" -> "Today";
+            case "7D" -> "Last 7 days";
+            case "30D" -> "Last 30 days";
+            default -> "All time";
+        };
     }
 
     @Override
@@ -413,8 +297,6 @@ public final class LeaderboardGui implements PlaytimeGui {
     @Override
     public void handleClick(InventoryClickEvent event) {
         int slot = event.getRawSlot();
-
-        // Nav
         if (slot == SLOT_PREV_PAGE) {
             if (page > 1) {
                 page--;
@@ -435,59 +317,50 @@ public final class LeaderboardGui implements PlaytimeGui {
             viewer.closeInventory();
             return;
         }
-        if (slot == SLOT_SELF) {
-            // Just an info card for now – no action
-            return;
-        }
-
-        // Metric buttons
         if (slot == SLOT_METRIC_ACTIVE) {
-            this.metric = "ACTIVE";
-            this.page = 1;
+            metric = "ACTIVE";
+            page = 1;
             render();
             return;
         }
         if (slot == SLOT_METRIC_TOTAL) {
-            this.metric = "TOTAL";
-            this.page = 1;
+            metric = "TOTAL";
+            page = 1;
             render();
             return;
         }
         if (slot == SLOT_METRIC_AFK) {
-            this.metric = "AFK";
-            this.page = 1;
+            metric = "AFK";
+            page = 1;
             render();
             return;
         }
-
-        // Range buttons
         if (slot == SLOT_RANGE_TODAY) {
-            this.range = "TODAY";
-            this.page = 1;
+            range = "TODAY";
+            page = 1;
             render();
             return;
         }
         if (slot == SLOT_RANGE_7D) {
-            this.range = "7D";
-            this.page = 1;
+            range = "7D";
+            page = 1;
             render();
             return;
         }
         if (slot == SLOT_RANGE_30D) {
-            this.range = "30D";
-            this.page = 1;
+            range = "30D";
+            page = 1;
             render();
             return;
         }
         if (slot == SLOT_RANGE_ALL) {
-            this.range = "ALL";
-            this.page = 1;
+            range = "ALL";
+            page = 1;
             render();
         }
     }
 
     @Override
     public void handleClose(InventoryCloseEvent event) {
-        // nothing special yet
     }
 }

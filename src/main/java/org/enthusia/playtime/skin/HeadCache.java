@@ -98,6 +98,18 @@ public final class HeadCache {
         return names.get(uuid);
     }
 
+    public UUID findUuidByName(String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        for (Map.Entry<UUID, String> entry : names.entrySet()) {
+            if (entry.getValue() != null && entry.getValue().equalsIgnoreCase(name)) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
     /**
      * Save all cached heads + names to skins.yml
      * (typically called onDisable).

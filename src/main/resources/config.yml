@@ -1,5 +1,7 @@
 storage:
-  type: sqlite # sqlite or mysql
+  # sqlite is the intended default target.
+  # mysql and mariadb remain supported for future scale-out if you decide to move later.
+  type: sqlite
 
   sqlite:
     file: "playtime.db"
@@ -13,57 +15,60 @@ storage:
     use-ssl: false
     pool-size: 10
 
-  # How often (in ticks) the async writer flushes the queue to DB.
-  flush-interval-ticks: 1200 # 60s
+  # How often the buffered minute writer flushes to storage.
+  # The plugin batches writes in memory between flushes to reduce disk churn.
+  flush-interval-ticks: 1200
 
 sampling:
-  # (Reserved for future tick-based sampling; not heavily used right now)
+  # Reserved for future higher-frequency sampling work.
   tick-interval: 20
 
-  # Time before going IDLE (no activity)
-  idle_seconds: 60
-
-  # Time before going AFK (no activity)
-  afk_seconds: 300
+  # Legacy-compatible aliases are still accepted internally:
+  # idle_seconds / afk_seconds will continue to work if they already exist.
+  idle-seconds: 60
+  afk-seconds: 300
 
   suspicion:
-    # Turn macro-ish detection on/off
     enabled: true
 
-    # Look at swings in the last N seconds
-    window_seconds: 20
+    # Look at click timing inside this moving window.
+    window-seconds: 20
 
-    # Require at least this many swings in the window before we judge it
-    min_swings: 25
+    # Minimum clicks/swings in the window before regularity is judged.
+    min-swings: 25
 
-    # How "regular" the swing pattern can be before we call it suspicious
-    # (coefficient of variation: stddev / mean interval)
-    max_cv: 0.08
+    # Lower values mean more perfectly regular clicking is required before the player is marked suspicious.
+    max-cv: 0.08
 
-    # Require this many seconds of no non-click activity (no movement/aim/chat)
-    # before we even consider someone suspicious
-    non_click_grace_seconds: 10
+    # Require this much non-click inactivity before suspicious-click logic can apply.
+    non-click-grace-seconds: 10
+
+    # Suspicious time still counts as active playtime for the first N consecutive suspicious minutes.
+    # Once the streak exceeds this threshold, suspicious minutes stop counting until the player
+    # returns to a non-suspicious state.
+    max-counted-consecutive-minutes: 10
 
 chat:
   count-chat-as-activity: true
   count-commands-as-activity: true
 
 joins:
+  # <= 0 keeps all join records forever.
   retention-days: -1
+
+  # Used for first-join / seen formatting and join-range admin stats.
   timezone: "America/New_York"
 
   first-join:
     enabled: true
 
-    # Message broadcast to everyone when a brand-new player joins.
+    # This plugin now uses plugin-owned storage to determine true first joins.
     broadcast: "&a+ &f%player% &7just joined for the first time! Make them feel welcome."
 
-    # Private lines sent only to the joining player (good place for tips/commands).
     player-message:
       - "&aWelcome to Enthusia, %player%!"
       - "&7Use &b/tutorial &7for a quick start or ask in chat."
 
-    # Optional ping for the joining player only.
     ping:
       enabled: true
       sound: BLOCK_NOTE_BLOCK_PLING
@@ -71,8 +76,10 @@ joins:
       pitch: 1.6
 
 leaderboards:
-  default-metric: "total" # total | active | afk
-  default-range: "all"    # today | 7d | 30d | all
+  default-metric: "total"
+  default-range: "all"
+
+  # Cache TTL for leaderboard/admin/stat reads.
   cache-ttl-seconds: 30
 
 gui:
@@ -81,7 +88,6 @@ gui:
 
   bedrock:
     enabled: true
-    # Logical "preferred" rows for Bedrock; Geyser will handle mapping later.
     main-menu-rows: 5
     leaderboard-rows: 6
 
@@ -89,20 +95,15 @@ placeholders:
   enabled: true
 
 ux:
-  # Placeholder for future title support (not wired yet)
   show-afk-title: false
 
   actionbar:
-    # Master toggle for action bar statuses
     enabled: true
-
-    # Which states should show a message
     show-active: false
     show-idle: false
     show-afk: true
     show-suspicious: true
 
-    # Plain text messages (colors are handled by client / other plugins if needed)
     text:
       active: "Playing"
       idle: "Idle"

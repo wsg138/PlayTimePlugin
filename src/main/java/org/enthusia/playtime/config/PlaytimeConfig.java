@@ -1,134 +1,400 @@
 package org.enthusia.playtime.config;
 
 import org.bukkit.configuration.file.FileConfiguration;
-import org.enthusia.playtime.PlayTimePlugin;
+import org.bukkit.plugin.java.JavaPlugin;
 import org.enthusia.playtime.data.StorageType;
 
+import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public final class PlaytimeConfig {
 
-    private final PlayTimePlugin plugin;
-    private final FileConfiguration cfg;
+    private final Storage storage;
+    private final Sampling sampling;
+    private final ChatActivity chatActivity;
+    private final Joins joins;
+    private final Leaderboards leaderboards;
+    private final Gui gui;
+    private final Placeholders placeholders;
+    private final ActionBar actionBar;
+    private final Debug debug;
 
-    public PlaytimeConfig(PlayTimePlugin plugin) {
-        this.plugin = plugin;
-        this.cfg = plugin.getConfig();
+    private PlaytimeConfig(Storage storage,
+                           Sampling sampling,
+                           ChatActivity chatActivity,
+                           Joins joins,
+                           Leaderboards leaderboards,
+                           Gui gui,
+                           Placeholders placeholders,
+                           ActionBar actionBar,
+                           Debug debug) {
+        this.storage = storage;
+        this.sampling = sampling;
+        this.chatActivity = chatActivity;
+        this.joins = joins;
+        this.leaderboards = leaderboards;
+        this.gui = gui;
+        this.placeholders = placeholders;
+        this.actionBar = actionBar;
+        this.debug = debug;
+    }
+
+    public static PlaytimeConfig load(JavaPlugin plugin) {
+        FileConfiguration cfg = plugin.getConfig();
+
+        StorageType storageType = StorageType.SQLITE;
+        String storageRaw = stringValue(cfg, List.of("storage.type"), "sqlite").toLowerCase(Locale.ROOT);
+        if (storageRaw.equals("mysql") || storageRaw.equals("mariadb")) {
+            storageType = StorageType.MYSQL;
+        }
+
+        Storage storage = new Storage(
+                storageType,
+                stringValue(cfg, List.of("storage.sqlite.file"), "playtime.db"),
+                new Mysql(
+                        stringValue(cfg, List.of("storage.mysql.host"), "localhost"),
+                        intValue(cfg, List.of("storage.mysql.port"), 3306),
+                        stringValue(cfg, List.of("storage.mysql.database"), "playtime"),
+                        stringValue(cfg, List.of("storage.mysql.username"), "root"),
+                        stringValue(cfg, List.of("storage.mysql.password"), "password"),
+                        booleanValue(cfg, List.of("storage.mysql.use-ssl"), false),
+                        Math.max(2, intValue(cfg, List.of("storage.mysql.pool-size"), 10))
+                ),
+                Math.max(20L, longValue(cfg, List.of("storage.flush-interval-ticks"), 1200L))
+        );
+
+        Sampling sampling = new Sampling(
+                Math.max(1, intValue(cfg, List.of("sampling.tick-interval"), 20)),
+                Math.max(1L, longValue(cfg, List.of("sampling.idle_seconds", "sampling.idle-seconds"), 60L)),
+                Math.max(1L, longValue(cfg, List.of("sampling.afk_seconds", "sampling.afk-seconds"), 300L)),
+                new Suspicion(
+                        booleanValue(cfg, List.of("sampling.suspicion.enabled"), true),
+                        Math.max(5L, longValue(cfg, List.of("sampling.suspicion.window_seconds", "sampling.suspicion.window-seconds"), 20L)),
+                        Math.max(2, intValue(cfg, List.of("sampling.suspicion.min_swings", "sampling.suspicion.min-swings"), 25)),
+                        Math.max(0.0D, doubleValue(cfg, List.of("sampling.suspicion.max_cv", "sampling.suspicion.max-cv"), 0.08D)),
+                        Math.max(1L, longValue(cfg, List.of("sampling.suspicion.non_click_grace_seconds", "sampling.suspicion.non-click-grace-seconds"), 10L)),
+                        Math.max(1, intValue(cfg, List.of("sampling.suspicion.max-counted-consecutive-minutes"), 10))
+                )
+        );
+
+        ChatActivity chatActivity = new ChatActivity(
+                booleanValue(cfg, List.of("chat.count-chat-as-activity"), true),
+                booleanValue(cfg, List.of("chat.count-commands-as-activity"), true)
+        );
+
+        ZoneId joinZoneId = ZoneId.of(stringValue(cfg, List.of("joins.timezone"), "America/New_York"));
+        Joins joins = new Joins(
+                intValue(cfg, List.of("joins.retention-days"), -1),
+                joinZoneId,
+                new FirstJoin(
+                        booleanValue(cfg, List.of("joins.first-join.enabled"), true),
+                        stringValue(cfg, List.of("joins.first-join.broadcast"),
+                                "&a+ &f%player% &7just joined for the first time! Make them feel welcome."),
+                        stringListValue(cfg, "joins.first-join.player-message", List.of(
+                                "&aWelcome to Enthusia, %player%!",
+                                "&7Use &b/tutorial &7for a quick start or ask in chat."
+                        )),
+                        new Ping(
+                                booleanValue(cfg, List.of("joins.first-join.ping.enabled"), true),
+                                stringValue(cfg, List.of("joins.first-join.ping.sound"), "BLOCK_NOTE_BLOCK_PLING"),
+                                (float) doubleValue(cfg, List.of("joins.first-join.ping.volume"), 1.25D),
+                                (float) doubleValue(cfg, List.of("joins.first-join.ping.pitch"), 1.6D)
+                        )
+                )
+        );
+
+        Leaderboards leaderboards = new Leaderboards(
+                stringValue(cfg, List.of("leaderboards.default-metric"), "total").toUpperCase(Locale.ROOT),
+                stringValue(cfg, List.of("leaderboards.default-range"), "all").toUpperCase(Locale.ROOT),
+                Math.max(5, intValue(cfg, List.of("leaderboards.cache-ttl-seconds"), 30))
+        );
+
+        Gui gui = new Gui(
+                booleanValue(cfg, List.of("gui.enabled"), true),
+                stringValue(cfg, List.of("gui.filler-material"), "GRAY_STAINED_GLASS_PANE"),
+                new BedrockGui(
+                        booleanValue(cfg, List.of("gui.bedrock.enabled"), true),
+                        Math.max(3, intValue(cfg, List.of("gui.bedrock.main-menu-rows"), 5)),
+                        Math.max(3, intValue(cfg, List.of("gui.bedrock.leaderboard-rows"), 6))
+                )
+        );
+
+        Placeholders placeholders = new Placeholders(
+                booleanValue(cfg, List.of("placeholders.enabled"), true)
+        );
+
+        ActionBar actionBar = new ActionBar(
+                booleanValue(cfg, List.of("ux.actionbar.enabled"), true),
+                booleanValue(cfg, List.of("ux.actionbar.show-active"), false),
+                booleanValue(cfg, List.of("ux.actionbar.show-idle"), false),
+                booleanValue(cfg, List.of("ux.actionbar.show-afk"), true),
+                booleanValue(cfg, List.of("ux.actionbar.show-suspicious"), true),
+                new ActionBarText(
+                        stringValue(cfg, List.of("ux.actionbar.text.active"), "Playing"),
+                        stringValue(cfg, List.of("ux.actionbar.text.idle"), "Idle"),
+                        stringValue(cfg, List.of("ux.actionbar.text.afk"), "AFK"),
+                        stringValue(cfg, List.of("ux.actionbar.text.suspicious"), "Suspicious input")
+                )
+        );
+
+        Debug debug = new Debug(
+                booleanValue(cfg, List.of("debug.enabled"), false),
+                booleanValue(cfg, List.of("debug.log-suspicious"), true)
+        );
+
+        return new PlaytimeConfig(storage, sampling, chatActivity, joins, leaderboards, gui, placeholders, actionBar, debug);
+    }
+
+    public Storage storage() {
+        return storage;
+    }
+
+    public Sampling sampling() {
+        return sampling;
+    }
+
+    public ChatActivity chatActivity() {
+        return chatActivity;
+    }
+
+    public Joins joins() {
+        return joins;
+    }
+
+    public Leaderboards leaderboards() {
+        return leaderboards;
+    }
+
+    public Gui gui() {
+        return gui;
+    }
+
+    public Placeholders placeholders() {
+        return placeholders;
+    }
+
+    public ActionBar actionBar() {
+        return actionBar;
+    }
+
+    public Debug debug() {
+        return debug;
     }
 
     public StorageType getStorageType() {
-        String raw = cfg.getString("storage.type", "sqlite").toLowerCase();
-        return switch (raw) {
-            case "mysql", "mariadb" -> StorageType.MYSQL;
-            default -> StorageType.SQLITE;
-        };
+        return storage.type;
     }
 
     public String getSqliteFile() {
-        return cfg.getString("storage.sqlite.file", "playtime.db");
+        return storage.sqliteFile;
     }
 
     public String getMysqlHost() {
-        return cfg.getString("storage.mysql.host", "localhost");
+        return storage.mysql.host;
     }
 
     public int getMysqlPort() {
-        return cfg.getInt("storage.mysql.port", 3306);
+        return storage.mysql.port;
     }
 
     public String getMysqlDatabase() {
-        return cfg.getString("storage.mysql.database", "playtime");
+        return storage.mysql.database;
     }
 
     public String getMysqlUsername() {
-        return cfg.getString("storage.mysql.username", "root");
+        return storage.mysql.username;
     }
 
     public String getMysqlPassword() {
-        return cfg.getString("storage.mysql.password", "password");
+        return storage.mysql.password;
     }
 
     public boolean isMysqlUseSsl() {
-        return cfg.getBoolean("storage.mysql.use-ssl", false);
+        return storage.mysql.useSsl;
     }
 
     public int getMysqlPoolSize() {
-        return cfg.getInt("storage.mysql.pool-size", 10);
+        return storage.mysql.poolSize;
     }
 
     public long getFlushIntervalTicks() {
-        return cfg.getLong("storage.flush-interval-ticks", 1200L);
+        return storage.flushIntervalTicks;
     }
 
     public int getIdleSeconds() {
-        return cfg.getInt("sampling.idle-seconds", 60);
+        return (int) sampling.idleSeconds;
     }
 
     public int getAfkSeconds() {
-        return cfg.getInt("sampling.afk-seconds", 300);
+        return (int) sampling.afkSeconds;
     }
 
     public boolean countChatAsActivity() {
-        return cfg.getBoolean("chat.count-chat-as-activity", true);
+        return chatActivity.countChatAsActivity;
     }
 
     public boolean countCommandsAsActivity() {
-        return cfg.getBoolean("chat.count-commands-as-activity", true);
+        return chatActivity.countCommandsAsActivity;
     }
 
     public int getJoinRetentionDays() {
-        return cfg.getInt("joins.retention-days", 30);
+        return joins.retentionDays;
     }
 
     public String getJoinTimezoneId() {
-        return cfg.getString("joins.timezone", "America/New_York");
+        return joins.zoneId.getId();
     }
 
     public boolean isFirstJoinEnabled() {
-        return cfg.getBoolean("joins.first-join.enabled", true);
+        return joins.firstJoin.enabled;
     }
 
     public String getFirstJoinBroadcast() {
-        return cfg.getString("joins.first-join.broadcast",
-                "&a+ &f%player% &7just joined for the first time! Make them feel welcome.");
+        return joins.firstJoin.broadcast;
     }
 
     public List<String> getFirstJoinPlayerLines() {
-        List<String> lines = cfg.getStringList("joins.first-join.player-message");
-        if (lines == null || lines.isEmpty()) {
-            return List.of(
-                    "&aWelcome to Enthusia, %player%!",
-                    "&7Use &b/tutorial &7for a quick start or ask in chat."
-            );
-        }
-        return lines;
+        return joins.firstJoin.playerMessage;
     }
 
     public boolean isFirstJoinPingEnabled() {
-        return cfg.getBoolean("joins.first-join.ping.enabled", true);
+        return joins.firstJoin.ping.enabled;
     }
 
     public String getFirstJoinPingSound() {
-        return cfg.getString("joins.first-join.ping.sound", "BLOCK_NOTE_BLOCK_PLING");
+        return joins.firstJoin.ping.sound;
     }
 
     public float getFirstJoinPingVolume() {
-        return (float) cfg.getDouble("joins.first-join.ping.volume", 1.25D);
+        return joins.firstJoin.ping.volume;
     }
 
     public float getFirstJoinPingPitch() {
-        return (float) cfg.getDouble("joins.first-join.ping.pitch", 1.6D);
+        return joins.firstJoin.ping.pitch;
     }
 
     public boolean isGuiEnabled() {
-        return cfg.getBoolean("gui.enabled", true);
+        return gui.enabled;
     }
 
     public boolean isPlaceholdersEnabled() {
-        return cfg.getBoolean("placeholders.enabled", true);
+        return placeholders.enabled;
     }
 
     public boolean isDebugEnabled() {
-        return cfg.getBoolean("debug.enabled", false);
+        return debug.enabled;
+    }
+
+    public record Storage(StorageType type, String sqliteFile, Mysql mysql, long flushIntervalTicks) {
+    }
+
+    public record Mysql(String host, int port, String database, String username, String password, boolean useSsl, int poolSize) {
+    }
+
+    public record Sampling(int tickInterval, long idleSeconds, long afkSeconds, Suspicion suspicion) {
+    }
+
+    public record Suspicion(boolean enabled,
+                            long windowSeconds,
+                            int minSwings,
+                            double maxCv,
+                            long nonClickGraceSeconds,
+                            int maxCountedConsecutiveMinutes) {
+    }
+
+    public record ChatActivity(boolean countChatAsActivity, boolean countCommandsAsActivity) {
+    }
+
+    public record Joins(int retentionDays, ZoneId zoneId, FirstJoin firstJoin) {
+    }
+
+    public record FirstJoin(boolean enabled, String broadcast, List<String> playerMessage, Ping ping) {
+    }
+
+    public record Ping(boolean enabled, String sound, float volume, float pitch) {
+    }
+
+    public record Leaderboards(String defaultMetric, String defaultRange, int cacheTtlSeconds) {
+    }
+
+    public record Gui(boolean enabled, String fillerMaterial, BedrockGui bedrock) {
+    }
+
+    public record BedrockGui(boolean enabled, int mainMenuRows, int leaderboardRows) {
+    }
+
+    public record Placeholders(boolean enabled) {
+    }
+
+    public record ActionBar(boolean enabled,
+                            boolean showActive,
+                            boolean showIdle,
+                            boolean showAfk,
+                            boolean showSuspicious,
+                            ActionBarText text) {
+    }
+
+    public record ActionBarText(String active, String idle, String afk, String suspicious) {
+    }
+
+    public record Debug(boolean enabled, boolean logSuspicious) {
+    }
+
+    private static String stringValue(FileConfiguration cfg, List<String> paths, String defaultValue) {
+        for (String path : paths) {
+            String value = cfg.getString(path);
+            if (value != null) {
+                return value;
+            }
+        }
+        return defaultValue;
+    }
+
+    private static int intValue(FileConfiguration cfg, List<String> paths, int defaultValue) {
+        for (String path : paths) {
+            if (cfg.isInt(path) || cfg.isLong(path)) {
+                return cfg.getInt(path);
+            }
+        }
+        return defaultValue;
+    }
+
+    private static long longValue(FileConfiguration cfg, List<String> paths, long defaultValue) {
+        for (String path : paths) {
+            if (cfg.isLong(path) || cfg.isInt(path)) {
+                return cfg.getLong(path);
+            }
+        }
+        return defaultValue;
+    }
+
+    private static double doubleValue(FileConfiguration cfg, List<String> paths, double defaultValue) {
+        for (String path : paths) {
+            if (cfg.isDouble(path) || cfg.isInt(path) || cfg.isLong(path)) {
+                return cfg.getDouble(path);
+            }
+        }
+        return defaultValue;
+    }
+
+    private static boolean booleanValue(FileConfiguration cfg, List<String> paths, boolean defaultValue) {
+        for (String path : paths) {
+            if (cfg.isBoolean(path)) {
+                return cfg.getBoolean(path);
+            }
+        }
+        return defaultValue;
+    }
+
+    private static List<String> stringListValue(FileConfiguration cfg, String path, List<String> defaultValue) {
+        if (cfg.isList(path)) {
+            List<String> lines = cfg.getStringList(path);
+            if (!lines.isEmpty()) {
+                return List.copyOf(lines);
+            }
+        }
+        return List.copyOf(new ArrayList<>(defaultValue));
     }
 }
