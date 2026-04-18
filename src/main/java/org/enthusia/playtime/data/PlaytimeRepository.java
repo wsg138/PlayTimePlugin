@@ -587,8 +587,10 @@ public final class PlaytimeRepository {
     }
 
     private void tryAddLastSeenColumn(Statement statement) {
+        boolean columnExists = false;
         try {
             statement.execute(dialect.lifetimeAggAddLastSeenColumn());
+            columnExists = true;
         } catch (SQLException exception) {
             String message = exception.getMessage();
             if (message == null) {
@@ -598,9 +600,20 @@ public final class PlaytimeRepository {
             if (normalized.contains("duplicate column")
                     || normalized.contains("already exists")
                     || normalized.contains("duplicate")) {
-                return;
+                columnExists = true;
+            } else {
+                plugin.getLogger().warning("Failed while ensuring lifetime_agg.last_seen exists: " + exception.getMessage());
             }
-            plugin.getLogger().warning("Failed while ensuring lifetime_agg.last_seen exists: " + exception.getMessage());
+        }
+
+        if (!columnExists) {
+            return;
+        }
+
+        try {
+            statement.executeUpdate(dialect.lifetimeAggBackfillLastSeenColumn());
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed while backfilling lifetime_agg.last_seen: " + exception.getMessage());
         }
     }
 

@@ -182,8 +182,12 @@ public enum SqlDialect {
 
     public String lifetimeAggAddLastSeenColumn() {
         return switch (this) {
-            case SQLITE -> "ALTER TABLE lifetime_agg ADD COLUMN last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP";
-            case MYSQL -> "ALTER TABLE lifetime_agg ADD COLUMN last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP";
+            case SQLITE -> "ALTER TABLE lifetime_agg ADD COLUMN last_seen TIMESTAMP";
+            case MYSQL -> "ALTER TABLE lifetime_agg ADD COLUMN last_seen TIMESTAMP NULL";
         };
+    }
+
+    public String lifetimeAggBackfillLastSeenColumn() {
+        return "UPDATE lifetime_agg SET last_seen = last_join WHERE last_seen IS NULL";
     }
 }
