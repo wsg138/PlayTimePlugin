@@ -22,7 +22,7 @@ public final class JoinLogListener implements Listener {
     public void onJoin(PlayerJoinEvent event) {
         PlaytimeRuntime runtime = plugin.runtime();
         if (runtime != null) {
-            runtime.handleJoinRecorded(event.getPlayer().getUniqueId(), Instant.now());
+            runtime.handleJoinRecorded(event.getPlayer(), Instant.now());
         }
     }
 

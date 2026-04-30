@@ -85,6 +85,59 @@ public enum SqlDialect {
         };
     }
 
+    public String hourlyAggCreateTable() {
+        return switch (this) {
+            case SQLITE -> """
+                CREATE TABLE IF NOT EXISTS hourly_agg (
+                  player_uuid TEXT NOT NULL,
+                  hour_start TIMESTAMP NOT NULL,
+                  active_minutes INTEGER NOT NULL DEFAULT 0,
+                  afk_minutes INTEGER NOT NULL DEFAULT 0,
+                  total_minutes INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY (player_uuid, hour_start)
+                );
+                """;
+            case MYSQL -> """
+                CREATE TABLE IF NOT EXISTS hourly_agg (
+                  player_uuid CHAR(36) NOT NULL,
+                  hour_start TIMESTAMP NOT NULL,
+                  active_minutes INT NOT NULL DEFAULT 0,
+                  afk_minutes INT NOT NULL DEFAULT 0,
+                  total_minutes INT NOT NULL DEFAULT 0,
+                  PRIMARY KEY (player_uuid, hour_start),
+                  INDEX idx_hourly_agg_hour_metric (hour_start, total_minutes, active_minutes, afk_minutes)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """;
+        };
+    }
+
+    public String playerProfilesCreateTable() {
+        return switch (this) {
+            case SQLITE -> """
+                CREATE TABLE IF NOT EXISTS player_profiles (
+                  player_uuid TEXT PRIMARY KEY,
+                  username TEXT NOT NULL,
+                  display_name TEXT,
+                  first_seen TIMESTAMP NOT NULL,
+                  last_seen TIMESTAMP NOT NULL,
+                  updated_at TIMESTAMP NOT NULL
+                );
+                """;
+            case MYSQL -> """
+                CREATE TABLE IF NOT EXISTS player_profiles (
+                  player_uuid CHAR(36) NOT NULL,
+                  username VARCHAR(16) NOT NULL,
+                  display_name VARCHAR(64) NULL,
+                  first_seen TIMESTAMP NOT NULL,
+                  last_seen TIMESTAMP NOT NULL,
+                  updated_at TIMESTAMP NOT NULL,
+                  PRIMARY KEY (player_uuid),
+                  INDEX idx_player_profiles_username (username)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """;
+        };
+    }
+
     public String dailyAggIndexes() {
         return switch (this) {
             case SQLITE -> """
@@ -105,11 +158,31 @@ public enum SqlDialect {
         };
     }
 
+    public String hourlyAggIndexes() {
+        return switch (this) {
+            case SQLITE -> """
+                CREATE INDEX IF NOT EXISTS idx_hourly_agg_hour_metric
+                ON hourly_agg (hour_start, total_minutes, active_minutes, afk_minutes);
+                """;
+            case MYSQL -> "SELECT 1;";
+        };
+    }
+
     public String joinsLogIndexes() {
         return switch (this) {
             case SQLITE -> """
                 CREATE INDEX IF NOT EXISTS idx_joins_log_uuid_time
                 ON joins_log (player_uuid, joined_at);
+                """;
+            case MYSQL -> "SELECT 1;";
+        };
+    }
+
+    public String playerProfilesIndexes() {
+        return switch (this) {
+            case SQLITE -> """
+                CREATE INDEX IF NOT EXISTS idx_player_profiles_username
+                ON player_profiles (username);
                 """;
             case MYSQL -> "SELECT 1;";
         };
@@ -158,6 +231,28 @@ public enum SqlDialect {
         };
     }
 
+    public String hourlyAggUpsert() {
+        // params: player_uuid, hour_start, active, afk, total
+        return switch (this) {
+            case SQLITE -> """
+                INSERT INTO hourly_agg (player_uuid, hour_start, active_minutes, afk_minutes, total_minutes)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(player_uuid, hour_start) DO UPDATE SET
+                  active_minutes = active_minutes + excluded.active_minutes,
+                  afk_minutes = afk_minutes + excluded.afk_minutes,
+                  total_minutes = total_minutes + excluded.total_minutes;
+                """;
+            case MYSQL -> """
+                INSERT INTO hourly_agg (player_uuid, hour_start, active_minutes, afk_minutes, total_minutes)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  active_minutes = active_minutes + VALUES(active_minutes),
+                  afk_minutes = afk_minutes + VALUES(afk_minutes),
+                  total_minutes = total_minutes + VALUES(total_minutes);
+                """;
+        };
+    }
+
     public String lifetimeMinutesUpsert() {
         // params: player_uuid, active, afk, total
         return switch (this) {
@@ -174,8 +269,32 @@ public enum SqlDialect {
                 VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
                   active_minutes = active_minutes + VALUES(active_minutes),
-                  afk_minutes = VALUES(afk_minutes),
-                  total_minutes = VALUES(total_minutes);
+                  afk_minutes = afk_minutes + VALUES(afk_minutes),
+                  total_minutes = total_minutes + VALUES(total_minutes);
+                """;
+        };
+    }
+
+    public String playerProfileUpsert() {
+        // params: player_uuid, username, display_name, first_seen, last_seen, updated_at
+        return switch (this) {
+            case SQLITE -> """
+                INSERT INTO player_profiles (player_uuid, username, display_name, first_seen, last_seen, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(player_uuid) DO UPDATE SET
+                  username = excluded.username,
+                  display_name = excluded.display_name,
+                  last_seen = excluded.last_seen,
+                  updated_at = excluded.updated_at;
+                """;
+            case MYSQL -> """
+                INSERT INTO player_profiles (player_uuid, username, display_name, first_seen, last_seen, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  username = VALUES(username),
+                  display_name = VALUES(display_name),
+                  last_seen = VALUES(last_seen),
+                  updated_at = VALUES(updated_at);
                 """;
         };
     }

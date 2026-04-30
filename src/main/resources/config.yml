@@ -82,6 +82,23 @@ leaderboards:
   # Cache TTL for leaderboard/admin/stat reads.
   cache-ttl-seconds: 30
 
+  export:
+    # Writes one website-safe JSON snapshot under the plugin data folder:
+    # board: playtime-active-all, top 100, ordered by all-time active minutes.
+    # The website/API can read these files without connecting to the Minecraft plugin.
+    enabled: true
+    directory: "public-leaderboards"
+    interval-seconds: 300
+
+analytics:
+  # Optional Plan Player Analytics integration. Requires the Plan plugin to be installed.
+  # When enabled, this plugin exposes stored playtime and join analytics through Plan's DataExtension API.
+  plan:
+    enabled: true
+
+  # Retention for hourly playtime aggregates used for true rolling 24-hour analytics.
+  hourly-retention-days: 90
+
 gui:
   enabled: true
   filler-material: GRAY_STAINED_GLASS_PANE

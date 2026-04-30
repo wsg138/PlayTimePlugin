@@ -5,8 +5,11 @@ import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.data.model.AdminServerStats;
 import org.enthusia.playtime.data.model.LeaderboardEntry;
 import org.enthusia.playtime.data.model.MinuteDelta;
+import org.enthusia.playtime.data.model.PlayerProfile;
 import org.enthusia.playtime.data.model.PlaytimeSnapshot;
+import org.enthusia.playtime.data.model.PublicLeaderboardEntry;
 import org.enthusia.playtime.data.model.RangeTotals;
+import org.enthusia.playtime.data.model.RecentJoinActivity;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -19,6 +22,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -48,11 +52,15 @@ public final class PlaytimeRepository {
             try (Connection connection = provider.getConnection();
                  Statement statement = connection.createStatement()) {
                 statement.execute(dialect.dailyAggCreateTable());
+                statement.execute(dialect.hourlyAggCreateTable());
                 statement.execute(dialect.lifetimeAggCreateTable());
                 statement.execute(dialect.joinsLogCreateTable());
+                statement.execute(dialect.playerProfilesCreateTable());
                 statement.execute(dialect.dailyAggIndexes());
+                statement.execute(dialect.hourlyAggIndexes());
                 statement.execute(dialect.lifetimeAggIndexes());
                 statement.execute(dialect.joinsLogIndexes());
+                statement.execute(dialect.playerProfilesIndexes());
                 tryAddLastSeenColumn(statement);
             }
             return null;
@@ -130,7 +138,9 @@ public final class PlaytimeRepository {
         withSqliteRetry(() -> {
             try (Connection connection = provider.getConnection()) {
                 connection.setAutoCommit(false);
+                Timestamp hourStart = Timestamp.from(instant.truncatedTo(ChronoUnit.HOURS));
                 try (PreparedStatement dailyStatement = connection.prepareStatement(dialect.dailyAggUpsert());
+                     PreparedStatement hourlyStatement = connection.prepareStatement(dialect.hourlyAggUpsert());
                      PreparedStatement lifetimeStatement = connection.prepareStatement(dialect.lifetimeMinutesUpsert())) {
                     for (Map.Entry<UUID, MinuteDelta> entry : deltas.entrySet()) {
                         MinuteDelta delta = entry.getValue();
@@ -145,6 +155,13 @@ public final class PlaytimeRepository {
                         dailyStatement.setLong(5, delta.totalMinutes());
                         dailyStatement.addBatch();
 
+                        hourlyStatement.setString(1, entry.getKey().toString());
+                        hourlyStatement.setTimestamp(2, hourStart);
+                        hourlyStatement.setLong(3, delta.activeMinutes());
+                        hourlyStatement.setLong(4, delta.afkMinutes());
+                        hourlyStatement.setLong(5, delta.totalMinutes());
+                        hourlyStatement.addBatch();
+
                         lifetimeStatement.setString(1, entry.getKey().toString());
                         lifetimeStatement.setLong(2, delta.activeMinutes());
                         lifetimeStatement.setLong(3, delta.afkMinutes());
@@ -153,9 +170,37 @@ public final class PlaytimeRepository {
                     }
 
                     dailyStatement.executeBatch();
+                    hourlyStatement.executeBatch();
                     lifetimeStatement.executeBatch();
                 }
                 connection.commit();
+            }
+            return null;
+        });
+    }
+
+    public void batchUpsertPlayerProfiles(List<PlayerProfile> profiles) throws SQLException {
+        if (profiles == null || profiles.isEmpty()) {
+            return;
+        }
+
+        withSqliteRetry(() -> {
+            try (Connection connection = provider.getConnection();
+                 PreparedStatement statement = connection.prepareStatement(dialect.playerProfileUpsert())) {
+                for (PlayerProfile profile : profiles) {
+                    if (profile.uuid() == null || profile.username() == null || profile.username().isBlank()) {
+                        continue;
+                    }
+                    Timestamp seenAt = Timestamp.from(profile.seenAt());
+                    statement.setString(1, profile.uuid().toString());
+                    statement.setString(2, profile.username());
+                    statement.setString(3, blankToNull(profile.displayName()));
+                    statement.setTimestamp(4, seenAt);
+                    statement.setTimestamp(5, seenAt);
+                    statement.setTimestamp(6, Timestamp.from(Instant.now()));
+                    statement.addBatch();
+                }
+                statement.executeBatch();
             }
             return null;
         });
@@ -251,6 +296,22 @@ public final class PlaytimeRepository {
         });
     }
 
+    public void purgeOldHourlyAggregates(int retentionDays) throws SQLException {
+        if (retentionDays <= 0) {
+            return;
+        }
+
+        Instant cutoff = Instant.now().minusSeconds(retentionDays * 86_400L).truncatedTo(ChronoUnit.HOURS);
+        withSqliteRetry(() -> {
+            try (Connection connection = provider.getConnection();
+                 PreparedStatement statement = connection.prepareStatement("DELETE FROM hourly_agg WHERE hour_start < ?")) {
+                statement.setTimestamp(1, Timestamp.from(cutoff));
+                statement.executeUpdate();
+            }
+            return null;
+        });
+    }
+
     public RangeTotals getRangeTotals(UUID uuid, Instant now, String rangeId) {
         String range = normalizeRange(rangeId);
         if (range.equals("ALL")) {
@@ -285,6 +346,33 @@ public final class PlaytimeRepository {
             }
         } catch (SQLException exception) {
             plugin.getLogger().warning("Failed to load range totals (" + range + ") for " + uuid + ": " + exception.getMessage());
+            return new RangeTotals(0, 0, 0);
+        }
+    }
+
+    public RangeTotals getRollingTotals(UUID uuid, Instant now, int hours) {
+        int safeHours = Math.max(1, Math.min(hours, 24 * 90));
+        Instant cutoff = now.minus(safeHours, ChronoUnit.HOURS).truncatedTo(ChronoUnit.HOURS);
+        String sql = """
+                SELECT COALESCE(SUM(active_minutes), 0) AS active,
+                       COALESCE(SUM(afk_minutes), 0) AS afk,
+                       COALESCE(SUM(total_minutes), 0) AS total
+                FROM hourly_agg
+                WHERE player_uuid = ? AND hour_start >= ?
+                """;
+
+        try (Connection connection = provider.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, uuid.toString());
+            statement.setTimestamp(2, Timestamp.from(cutoff));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return new RangeTotals(0, 0, 0);
+                }
+                return new RangeTotals(resultSet.getLong("active"), resultSet.getLong("afk"), resultSet.getLong("total"));
+            }
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed to load rolling totals (" + safeHours + "h) for " + uuid + ": " + exception.getMessage());
             return new RangeTotals(0, 0, 0);
         }
     }
@@ -329,7 +417,9 @@ public final class PlaytimeRepository {
                 FROM daily_agg
                 WHERE day >= ? AND day <= ?
                 GROUP BY player_uuid
-                ORDER BY """ + orderColumn + " DESC LIMIT ? OFFSET ?";
+                ORDER BY %s DESC
+                LIMIT ? OFFSET ?
+                """.formatted(orderColumn);
 
         try (Connection connection = provider.getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -342,6 +432,84 @@ public final class PlaytimeRepository {
             plugin.getLogger().warning("Failed to load leaderboard (" + metric + ", " + range + "): " + exception.getMessage());
         }
 
+        return leaderboard;
+    }
+
+    public List<PublicLeaderboardEntry> getPublicLeaderboard(String metricId, String rangeId, Instant now, int limit) {
+        List<PublicLeaderboardEntry> leaderboard = new ArrayList<>();
+        String metric = normalizeMetric(metricId);
+        String range = normalizeRange(rangeId);
+        int safeLimit = Math.max(1, Math.min(limit, 500));
+
+        String valueExpression = switch (metric) {
+            case "ACTIVE" -> "active";
+            case "AFK" -> "afk";
+            default -> "total";
+        };
+
+        String sql;
+        if (range.equals("ALL")) {
+            sql = """
+                    SELECT l.player_uuid,
+                           l.active_minutes AS active,
+                           l.afk_minutes AS afk,
+                           l.total_minutes AS total,
+                           l.first_join AS first_seen,
+                           COALESCE(p.last_seen, l.last_seen, l.last_join) AS last_seen,
+                           p.updated_at AS updated_at,
+                           p.username AS username,
+                           p.display_name AS display_name
+                    FROM lifetime_agg l
+                    LEFT JOIN player_profiles p ON p.player_uuid = l.player_uuid
+                    ORDER BY %s DESC
+                    LIMIT ?
+                    """.formatted(valueExpression);
+        } else {
+            DateRange dateRange = dateRangeFor(range, now);
+            sql = """
+                    SELECT d.player_uuid,
+                           d.active AS active,
+                           d.afk AS afk,
+                           d.total AS total,
+                           l.first_join AS first_seen,
+                           COALESCE(p.last_seen, l.last_seen, l.last_join) AS last_seen,
+                           p.updated_at AS updated_at,
+                           p.username AS username,
+                           p.display_name AS display_name
+                    FROM (
+                        SELECT player_uuid,
+                               SUM(active_minutes) AS active,
+                               SUM(afk_minutes) AS afk,
+                               SUM(total_minutes) AS total
+                        FROM daily_agg
+                        WHERE day >= ? AND day <= ?
+                        GROUP BY player_uuid
+                    ) d
+                    LEFT JOIN lifetime_agg l ON l.player_uuid = d.player_uuid
+                    LEFT JOIN player_profiles p ON p.player_uuid = d.player_uuid
+                    ORDER BY %s DESC
+                    LIMIT ?
+                    """.formatted(valueExpression);
+
+            try (Connection connection = provider.getConnection();
+                 PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setString(1, dateRange.start().toString());
+                statement.setString(2, dateRange.end().toString());
+                statement.setInt(3, safeLimit);
+                appendPublicLeaderboardRows(leaderboard, statement, metric);
+            } catch (SQLException exception) {
+                plugin.getLogger().warning("Failed to load public leaderboard (" + metric + ", " + range + "): " + exception.getMessage());
+            }
+            return leaderboard;
+        }
+
+        try (Connection connection = provider.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setInt(1, safeLimit);
+            appendPublicLeaderboardRows(leaderboard, statement, metric);
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed to load public leaderboard (" + metric + ", " + range + "): " + exception.getMessage());
+        }
         return leaderboard;
     }
 
@@ -378,6 +546,48 @@ public final class PlaytimeRepository {
         } catch (SQLException exception) {
             plugin.getLogger().warning("Failed to load server totals (" + range + "): " + exception.getMessage());
             return new RangeTotals(0, 0, 0);
+        }
+    }
+
+    public RangeTotals getServerRollingTotals(Instant now, int hours) {
+        int safeHours = Math.max(1, Math.min(hours, 24 * 90));
+        Instant cutoff = now.minus(safeHours, ChronoUnit.HOURS).truncatedTo(ChronoUnit.HOURS);
+        String sql = """
+                SELECT COALESCE(SUM(active_minutes), 0) AS active,
+                       COALESCE(SUM(afk_minutes), 0) AS afk,
+                       COALESCE(SUM(total_minutes), 0) AS total
+                FROM hourly_agg
+                WHERE hour_start >= ?
+                """;
+
+        try (Connection connection = provider.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setTimestamp(1, Timestamp.from(cutoff));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return new RangeTotals(0, 0, 0);
+                }
+                return new RangeTotals(resultSet.getLong("active"), resultSet.getLong("afk"), resultSet.getLong("total"));
+            }
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed to load server rolling totals (" + safeHours + "h): " + exception.getMessage());
+            return new RangeTotals(0, 0, 0);
+        }
+    }
+
+    public int getRollingUniquePlayers(Instant now, int hours) {
+        int safeHours = Math.max(1, Math.min(hours, 24 * 90));
+        Instant cutoff = now.minus(safeHours, ChronoUnit.HOURS).truncatedTo(ChronoUnit.HOURS);
+        String sql = "SELECT COUNT(DISTINCT player_uuid) AS c FROM hourly_agg WHERE hour_start >= ?";
+        try (Connection connection = provider.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setTimestamp(1, Timestamp.from(cutoff));
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? resultSet.getInt("c") : 0;
+            }
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed to load rolling unique players (" + safeHours + "h): " + exception.getMessage());
+            return 0;
         }
     }
 
@@ -449,6 +659,47 @@ public final class PlaytimeRepository {
             plugin.getLogger().warning("Failed to load joins (" + range + "): " + exception.getMessage());
             return 0;
         }
+    }
+
+    public List<RecentJoinActivity> getRecentJoinActivity(int limit) {
+        List<RecentJoinActivity> joins = new ArrayList<>();
+        int safeLimit = Math.max(1, Math.min(limit, 50));
+        String sql = """
+                SELECT j.player_uuid,
+                       j.joined_at,
+                       p.username,
+                       l.first_join
+                FROM joins_log j
+                LEFT JOIN player_profiles p ON p.player_uuid = j.player_uuid
+                LEFT JOIN lifetime_agg l ON l.player_uuid = j.player_uuid
+                ORDER BY j.joined_at DESC
+                LIMIT ?
+                """;
+
+        try (Connection connection = provider.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setInt(1, safeLimit);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    try {
+                        UUID uuid = UUID.fromString(resultSet.getString("player_uuid"));
+                        Instant joinedAt = instantOrNull(resultSet.getTimestamp("joined_at"));
+                        Instant firstJoin = instantOrNull(resultSet.getTimestamp("first_join"));
+                        joins.add(new RecentJoinActivity(
+                                uuid,
+                                fallbackUsername(resultSet.getString("username"), uuid),
+                                joinedAt,
+                                firstJoin != null && joinedAt != null && Math.abs(firstJoin.toEpochMilli() - joinedAt.toEpochMilli()) < 1000L
+                        ));
+                    } catch (IllegalArgumentException ignored) {
+                        // Ignore malformed UUID rows rather than failing the whole table.
+                    }
+                }
+            }
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed to load recent join activity: " + exception.getMessage());
+        }
+        return joins;
     }
 
     public AdminServerStats getAdminServerStats(String rangeId, Instant now) {
@@ -569,6 +820,40 @@ public final class PlaytimeRepository {
         }
     }
 
+    private void appendPublicLeaderboardRows(List<PublicLeaderboardEntry> rows, PreparedStatement statement, String metric) throws SQLException {
+        try (ResultSet resultSet = statement.executeQuery()) {
+            int rank = 1;
+            while (resultSet.next()) {
+                try {
+                    UUID uuid = UUID.fromString(resultSet.getString("player_uuid"));
+                    long active = resultSet.getLong("active");
+                    long afk = resultSet.getLong("afk");
+                    long total = resultSet.getLong("total");
+                    long value = switch (metric) {
+                        case "ACTIVE" -> active;
+                        case "AFK" -> afk;
+                        default -> total;
+                    };
+                    rows.add(new PublicLeaderboardEntry(
+                            rank++,
+                            uuid,
+                            fallbackUsername(resultSet.getString("username"), uuid),
+                            resultSet.getString("display_name"),
+                            active,
+                            afk,
+                            total,
+                            value,
+                            instantOrNull(resultSet.getTimestamp("first_seen")),
+                            instantOrNull(resultSet.getTimestamp("last_seen")),
+                            instantOrNull(resultSet.getTimestamp("updated_at"))
+                    ));
+                } catch (IllegalArgumentException ignored) {
+                    // Ignore malformed UUID rows rather than failing the whole export.
+                }
+            }
+        }
+    }
+
     private Optional<Instant> readInstantByUuid(String sql, UUID uuid, String label) {
         try (Connection connection = provider.getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -584,6 +869,21 @@ public final class PlaytimeRepository {
             plugin.getLogger().warning("Failed to load " + label + ": " + exception.getMessage());
             return Optional.empty();
         }
+    }
+
+    private String fallbackUsername(String username, UUID uuid) {
+        if (username != null && !username.isBlank()) {
+            return username;
+        }
+        return uuid.toString().substring(0, 8);
+    }
+
+    private Instant instantOrNull(Timestamp timestamp) {
+        return timestamp == null ? null : timestamp.toInstant();
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     private void tryAddLastSeenColumn(Statement statement) {

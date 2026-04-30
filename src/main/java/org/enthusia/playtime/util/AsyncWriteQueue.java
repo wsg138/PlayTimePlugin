@@ -6,6 +6,7 @@ import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.data.PlaytimeRepository.JoinRecord;
 import org.enthusia.playtime.data.model.MinuteDelta;
+import org.enthusia.playtime.data.model.PlayerProfile;
 import org.enthusia.playtime.data.model.RangeTotals;
 
 import java.time.Instant;
@@ -23,6 +24,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private final PlayTimePlugin plugin;
     private final PlaytimeRepository repository;
     private final ConcurrentHashMap<UUID, MinuteDelta> pendingMinutes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<UUID, PlayerProfile> pendingProfiles = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<JoinRecord> pendingJoins = new ConcurrentLinkedQueue<>();
     private final long flushIntervalTicks;
     private final AtomicBoolean flushInProgress = new AtomicBoolean(false);
@@ -60,6 +62,14 @@ public final class AsyncWriteQueue implements AutoCloseable {
             return;
         }
         pendingJoins.add(new JoinRecord(uuid, joinedAt));
+        scheduleImmediateFlush();
+    }
+
+    public void enqueuePlayerProfile(PlayerProfile profile) {
+        if (closed || profile == null || profile.uuid() == null) {
+            return;
+        }
+        pendingProfiles.put(profile.uuid(), profile);
         scheduleImmediateFlush();
     }
 
@@ -111,17 +121,22 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     private void flushInternal() throws Exception {
         Map<UUID, MinuteDelta> minuteBatch = drainMinuteBatch();
+        Map<UUID, PlayerProfile> profileBatch = drainProfileBatch();
         List<JoinRecord> joinBatch = drainJoinBatch();
 
         try {
             if (!joinBatch.isEmpty()) {
                 repository.batchRecordJoins(joinBatch);
             }
+            if (!profileBatch.isEmpty()) {
+                repository.batchUpsertPlayerProfiles(new ArrayList<>(profileBatch.values()));
+            }
             if (!minuteBatch.isEmpty()) {
                 repository.batchRecordMinutes(minuteBatch, Instant.now());
             }
         } catch (Exception exception) {
             requeueJoinBatch(joinBatch);
+            requeueProfileBatch(profileBatch);
             requeueMinuteBatch(minuteBatch);
             throw exception;
         }
@@ -146,6 +161,16 @@ public final class AsyncWriteQueue implements AutoCloseable {
         return batch;
     }
 
+    private Map<UUID, PlayerProfile> drainProfileBatch() {
+        Map<UUID, PlayerProfile> batch = new ConcurrentHashMap<>();
+        for (Map.Entry<UUID, PlayerProfile> entry : pendingProfiles.entrySet()) {
+            if (pendingProfiles.remove(entry.getKey(), entry.getValue())) {
+                batch.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return batch;
+    }
+
     private void requeueMinuteBatch(Map<UUID, MinuteDelta> batch) {
         for (Map.Entry<UUID, MinuteDelta> entry : batch.entrySet()) {
             pendingMinutes.merge(entry.getKey(), entry.getValue(), MinuteDelta::plus);
@@ -155,6 +180,12 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private void requeueJoinBatch(List<JoinRecord> batch) {
         for (JoinRecord record : batch) {
             pendingJoins.add(record);
+        }
+    }
+
+    private void requeueProfileBatch(Map<UUID, PlayerProfile> batch) {
+        for (Map.Entry<UUID, PlayerProfile> entry : batch.entrySet()) {
+            pendingProfiles.put(entry.getKey(), entry.getValue());
         }
     }
 

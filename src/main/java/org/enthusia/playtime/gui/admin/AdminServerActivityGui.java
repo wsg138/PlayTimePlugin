@@ -63,20 +63,13 @@ public final class AdminServerActivityGui implements PlaytimeGui {
         inventory.setItem(14, rangeItem(Range.THIRTY_DAYS, Material.PAPER));
         inventory.setItem(16, rangeItem(Range.ALL, Material.CLOCK));
 
-        double afkPct = stats.totalMinutes > 0 ? (stats.afkMinutes * 100.0D / stats.totalMinutes) : 0.0D;
         double retentionPct = stats.newPlayers > 0 ? (stats.retainedNewPlayers * 100.0D / stats.newPlayers) : 0.0D;
         double avgJoinsPerPlayer = stats.uniquePlayersJoined > 0 ? (stats.totalJoins * 1.0D / stats.uniquePlayersJoined) : 0.0D;
-        long avgMinutesPerPlayer = stats.playersWithPlaytime > 0 ? (stats.totalMinutes / stats.playersWithPlaytime) : 0L;
 
         inventory.setItem(20, buildItem(Material.PLAYER_HEAD, ChatColor.GOLD + "Players & Playtime", List.of(
                 ChatColor.YELLOW + "Players with playtime: " + ChatColor.AQUA + stats.playersWithPlaytime,
                 "",
-                ChatColor.GRAY + "Total minutes: " + ChatColor.AQUA + TimeFormats.formatMinutes(stats.totalMinutes),
                 ChatColor.GRAY + "Active minutes: " + ChatColor.GREEN + TimeFormats.formatMinutes(stats.activeMinutes),
-                ChatColor.GRAY + "AFK minutes: " + ChatColor.RED + TimeFormats.formatMinutes(stats.afkMinutes),
-                "",
-                ChatColor.YELLOW + "Avg minutes/player: " + ChatColor.AQUA + TimeFormats.formatMinutes(avgMinutesPerPlayer),
-                ChatColor.YELLOW + "AFK ratio: " + ChatColor.AQUA + String.format(Locale.US, "%.1f%%", afkPct),
                 ChatColor.YELLOW + "Avg unique players/day: " + ChatColor.AQUA + stats.avgUniquePlayersPerDay,
                 ChatColor.YELLOW + "Peak unique/day: " + ChatColor.AQUA + stats.maxUniquePlayersPerDay
         )));

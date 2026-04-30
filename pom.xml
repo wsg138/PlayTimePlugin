@@ -8,7 +8,7 @@
 
     <groupId>org.enthusia</groupId>
     <artifactId>playtime-plugin</artifactId>
-    <version>3.1.0</version>
+    <version>3.1.2</version>
     <packaging>jar</packaging>
 
     <name>EnthusiaPlaytime</name>
@@ -33,6 +33,12 @@
         <repository>
             <id>placeholderapi</id>
             <url>https://repo.extendedclip.com/releases/</url>
+        </repository>
+
+        <!-- Plan DataExtension API -->
+        <repository>
+            <id>jitpack</id>
+            <url>https://jitpack.io</url>
         </repository>
     </repositories>
 
@@ -77,6 +83,14 @@
             <groupId>net.dmulloy2</groupId>
             <artifactId>ProtocolLib</artifactId>
             <version>5.4.0</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Plan Player Analytics (optional, provided by the server if installed) -->
+        <dependency>
+            <groupId>com.github.plan-player-analytics</groupId>
+            <artifactId>Plan</artifactId>
+            <version>5.6.2965</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>

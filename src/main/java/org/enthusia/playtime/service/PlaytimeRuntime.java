@@ -1,6 +1,7 @@
 package org.enthusia.playtime.service;
 
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.HandlerList;
@@ -14,7 +15,9 @@ import org.enthusia.playtime.api.impl.PlaytimeServiceImpl;
 import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.data.DatabaseProvider;
 import org.enthusia.playtime.data.PlaytimeRepository;
+import org.enthusia.playtime.data.model.PlayerProfile;
 import org.enthusia.playtime.event.PlayerPlaytimeTickEvent;
+import org.enthusia.playtime.leaderboard.LeaderboardExportService;
 import org.enthusia.playtime.skin.HeadCache;
 import org.enthusia.playtime.util.AsyncWriteQueue;
 
@@ -36,6 +39,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private final AsyncWriteQueue writeQueue;
     private final PlaytimeReadService readService;
     private final HeadCache headCache;
+    private final LeaderboardExportService leaderboardExportService;
+    private final AutoCloseable planHook;
     private final PlaytimeServiceImpl playtimeService;
     private final Map<UUID, Integer> suspiciousStreakMinutes = new ConcurrentHashMap<>();
     private final Map<UUID, Long> processedSuspicionResetMarkers = new ConcurrentHashMap<>();
@@ -43,6 +48,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private BukkitTask minuteTickTask;
     private BukkitTask joinPurgeTask;
     private BukkitTask actionBarTask;
+    private BukkitTask initialLeaderboardExportTask;
+    private BukkitTask leaderboardExportTask;
 
     public PlaytimeRuntime(PlayTimePlugin plugin, PlaytimeConfig config, RuntimeState previousState) throws Exception {
         this.plugin = plugin;
@@ -58,6 +65,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
         this.writeQueue = new AsyncWriteQueue(plugin, repository, config.getFlushIntervalTicks());
         this.writeQueue.start();
         this.readService = new PlaytimeReadService(repository, writeQueue, config.leaderboards().cacheTtlSeconds());
+        this.leaderboardExportService = new LeaderboardExportService(plugin, repository, config.leaderboards().export());
+        this.planHook = createPlanHook();
         this.playtimeService = new PlaytimeServiceImpl(readService, repository, activityTracker, sessionManager);
 
         Bukkit.getPluginManager().registerEvents(activityTracker, plugin);
@@ -67,11 +76,13 @@ public final class PlaytimeRuntime implements AutoCloseable {
         for (Player player : Bukkit.getOnlinePlayers()) {
             activityTracker.bootstrapPlayer(player, nowMillis);
             headCache.updateHead(player);
+            writeQueue.enqueuePlayerProfile(profileFor(player, Instant.now()));
         }
 
         startMinuteTickTask();
         startJoinPurgeTask();
         startActionBarTask();
+        startLeaderboardExportTask();
     }
 
     public PlaytimeConfig config() {
@@ -106,12 +117,18 @@ public final class PlaytimeRuntime implements AutoCloseable {
         return playtimeService;
     }
 
+    public LeaderboardExportService leaderboardExportService() {
+        return leaderboardExportService;
+    }
+
     public boolean isKnownPlayer(UUID uuid) {
         return repository.hasLifetimeRecord(uuid);
     }
 
-    public boolean handleJoinRecorded(UUID uuid, Instant joinedAt) {
+    public boolean handleJoinRecorded(Player player, Instant joinedAt) {
+        UUID uuid = player.getUniqueId();
         boolean firstKnownJoin = !repository.hasLifetimeRecord(uuid);
+        writeQueue.enqueuePlayerProfile(profileFor(player, joinedAt));
         writeQueue.enqueueJoin(uuid, joinedAt);
         readService.invalidateAll();
         return firstKnownJoin;
@@ -142,8 +159,9 @@ public final class PlaytimeRuntime implements AutoCloseable {
         joinPurgeTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
             try {
                 repository.purgeOldJoins(config.getJoinRetentionDays());
+                repository.purgeOldHourlyAggregates(config.getHourlyAnalyticsRetentionDays());
             } catch (Exception exception) {
-                plugin.getLogger().log(Level.WARNING, "Failed to purge old join log rows.", exception);
+                plugin.getLogger().log(Level.WARNING, "Failed to purge old playtime analytics rows.", exception);
             }
         }, period, period);
     }
@@ -239,14 +257,28 @@ public final class PlaytimeRuntime implements AutoCloseable {
             actionBarTask.cancel();
             actionBarTask = null;
         }
+        if (initialLeaderboardExportTask != null) {
+            initialLeaderboardExportTask.cancel();
+            initialLeaderboardExportTask = null;
+        }
+        if (leaderboardExportTask != null) {
+            leaderboardExportTask.cancel();
+            leaderboardExportTask = null;
+        }
 
         Bukkit.getServicesManager().unregister(playtimeService);
+        try {
+            planHook.close();
+        } catch (Exception exception) {
+            plugin.getLogger().log(Level.FINE, "Failed to close Plan analytics integration.", exception);
+        }
         HandlerList.unregisterAll(activityTracker);
 
         Instant now = Instant.now();
         for (Player player : Bukkit.getOnlinePlayers()) {
             try {
                 repository.recordLastSeen(player.getUniqueId(), now);
+                writeQueue.enqueuePlayerProfile(profileFor(player, now));
             } catch (Exception exception) {
                 plugin.getLogger().log(Level.WARNING, "Failed to persist last seen during shutdown for " + player.getName(), exception);
             }
@@ -254,8 +286,53 @@ public final class PlaytimeRuntime implements AutoCloseable {
         }
 
         writeQueue.close();
+        leaderboardExportService.exportAll();
         headCache.save();
         databaseProvider.shutdown();
+    }
+
+    private AutoCloseable createPlanHook() {
+        if (!config.isPlanIntegrationEnabled() || Bukkit.getPluginManager().getPlugin("Plan") == null) {
+            return () -> {
+            };
+        }
+
+        try {
+            org.enthusia.playtime.plan.PlanHook hook = new org.enthusia.playtime.plan.PlanHook(plugin, repository, readService, sessionManager, config);
+            hook.hook();
+            return hook;
+        } catch (NoClassDefFoundError ignored) {
+            return () -> {
+            };
+        } catch (Exception exception) {
+            plugin.getLogger().log(Level.WARNING, "Failed to initialize Plan analytics integration.", exception);
+            return () -> {
+            };
+        }
+    }
+
+    private void startLeaderboardExportTask() {
+        PlaytimeConfig.LeaderboardExport exportConfig = config.leaderboards().export();
+        if (!exportConfig.enabled()) {
+            return;
+        }
+        long periodTicks = Math.max(20L, exportConfig.intervalSeconds() * 20L);
+        initialLeaderboardExportTask = Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
+            writeQueue.flushNow();
+            leaderboardExportService.exportAll();
+        }, 20L);
+        leaderboardExportTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+            writeQueue.flushNow();
+            leaderboardExportService.exportAll();
+        }, periodTicks, periodTicks);
+    }
+
+    private PlayerProfile profileFor(Player player, Instant seenAt) {
+        String displayName = PlainTextComponentSerializer.plainText().serialize(player.displayName());
+        if (displayName.equals(player.getName())) {
+            displayName = null;
+        }
+        return new PlayerProfile(player.getUniqueId(), player.getName(), displayName, seenAt);
     }
 
     public record RuntimeState(Map<UUID, Long> sessionStarts,

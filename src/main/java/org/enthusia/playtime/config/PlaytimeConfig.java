@@ -16,6 +16,7 @@ public final class PlaytimeConfig {
     private final ChatActivity chatActivity;
     private final Joins joins;
     private final Leaderboards leaderboards;
+    private final Analytics analytics;
     private final Gui gui;
     private final Placeholders placeholders;
     private final ActionBar actionBar;
@@ -26,6 +27,7 @@ public final class PlaytimeConfig {
                            ChatActivity chatActivity,
                            Joins joins,
                            Leaderboards leaderboards,
+                           Analytics analytics,
                            Gui gui,
                            Placeholders placeholders,
                            ActionBar actionBar,
@@ -35,6 +37,7 @@ public final class PlaytimeConfig {
         this.chatActivity = chatActivity;
         this.joins = joins;
         this.leaderboards = leaderboards;
+        this.analytics = analytics;
         this.gui = gui;
         this.placeholders = placeholders;
         this.actionBar = actionBar;
@@ -108,7 +111,17 @@ public final class PlaytimeConfig {
         Leaderboards leaderboards = new Leaderboards(
                 stringValue(cfg, List.of("leaderboards.default-metric"), "total").toUpperCase(Locale.ROOT),
                 stringValue(cfg, List.of("leaderboards.default-range"), "all").toUpperCase(Locale.ROOT),
-                Math.max(5, intValue(cfg, List.of("leaderboards.cache-ttl-seconds"), 30))
+                Math.max(5, intValue(cfg, List.of("leaderboards.cache-ttl-seconds"), 30)),
+                new LeaderboardExport(
+                        booleanValue(cfg, List.of("leaderboards.export.enabled"), true),
+                        stringValue(cfg, List.of("leaderboards.export.directory"), "public-leaderboards"),
+                        Math.max(30, intValue(cfg, List.of("leaderboards.export.interval-seconds"), 300))
+                )
+        );
+
+        Analytics analytics = new Analytics(
+                new PlanIntegration(booleanValue(cfg, List.of("analytics.plan.enabled"), true)),
+                Math.max(1, intValue(cfg, List.of("analytics.hourly-retention-days"), 90))
         );
 
         Gui gui = new Gui(
@@ -144,7 +157,7 @@ public final class PlaytimeConfig {
                 booleanValue(cfg, List.of("debug.log-suspicious"), true)
         );
 
-        return new PlaytimeConfig(storage, sampling, chatActivity, joins, leaderboards, gui, placeholders, actionBar, debug);
+        return new PlaytimeConfig(storage, sampling, chatActivity, joins, leaderboards, analytics, gui, placeholders, actionBar, debug);
     }
 
     public Storage storage() {
@@ -165,6 +178,10 @@ public final class PlaytimeConfig {
 
     public Leaderboards leaderboards() {
         return leaderboards;
+    }
+
+    public Analytics analytics() {
+        return analytics;
     }
 
     public Gui gui() {
@@ -287,6 +304,14 @@ public final class PlaytimeConfig {
         return debug.enabled;
     }
 
+    public boolean isPlanIntegrationEnabled() {
+        return analytics.plan().enabled();
+    }
+
+    public int getHourlyAnalyticsRetentionDays() {
+        return analytics.hourlyRetentionDays();
+    }
+
     public record Storage(StorageType type, String sqliteFile, Mysql mysql, long flushIntervalTicks) {
     }
 
@@ -316,7 +341,18 @@ public final class PlaytimeConfig {
     public record Ping(boolean enabled, String sound, float volume, float pitch) {
     }
 
-    public record Leaderboards(String defaultMetric, String defaultRange, int cacheTtlSeconds) {
+    public record Leaderboards(String defaultMetric, String defaultRange, int cacheTtlSeconds, LeaderboardExport export) {
+    }
+
+    public record LeaderboardExport(boolean enabled,
+                                    String directory,
+                                    int intervalSeconds) {
+    }
+
+    public record Analytics(PlanIntegration plan, int hourlyRetentionDays) {
+    }
+
+    public record PlanIntegration(boolean enabled) {
     }
 
     public record Gui(boolean enabled, String fillerMaterial, BedrockGui bedrock) {
