@@ -1,6 +1,6 @@
 name: EnthusiaPlaytime
 main: org.enthusia.playtime.PlayTimePlugin
-version: 3.2.3
+version: 3.2.4
 api-version: '1.21'
 author: Enthusia
 description: Advanced playtime tracking with AFK detection, GUIs, leaderboards, admin tools, and PlaceholderAPI support.

@@ -162,7 +162,7 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         return switch (field) {
             case "name" -> safe(entry.username);
             case "uuid" -> entry.uuid == null ? fallback() : entry.uuid.toString();
-            case "value" -> String.valueOf(metricValueSeconds(entry, metric));
+            case "value" -> String.valueOf(metricValueMinutes(entry, metric));
             case "formatted" -> TimeFormats.formatMinutes(metricValueMinutes(entry, metric));
             default -> fallback();
         };
@@ -174,10 +174,6 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
             case "afk" -> entry.afkMinutes;
             default -> entry.totalMinutes;
         };
-    }
-
-    private long metricValueSeconds(PublicLeaderboardEntry entry, String metric) {
-        return metricValueMinutes(entry, metric) * 60L;
     }
 
     private String safe(String value) {

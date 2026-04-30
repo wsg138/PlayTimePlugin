@@ -118,6 +118,7 @@ placeholders:
   # Ranges: all, today, 7d, 30d
   # Ranks: 1 through top-leaderboard-max-rank
   # Fields: name, uuid, value, formatted
+  # value returns raw minutes
   # Examples:
   # %playtime_top_active_all_1_name%
   # %playtime_top_active_all_1_uuid%
