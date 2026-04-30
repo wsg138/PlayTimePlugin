@@ -4,17 +4,22 @@ import me.clip.placeholderapi.expansion.PlaceholderExpansion;
 import org.bukkit.entity.Player;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.activity.ActivityState;
+import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.data.model.PlaytimeSnapshot;
+import org.enthusia.playtime.data.model.PublicLeaderboardEntry;
 import org.enthusia.playtime.data.model.RangeTotals;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 import org.enthusia.playtime.util.RomanTiering;
 import org.enthusia.playtime.util.TimeFormats;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 
 public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
+
+    private static final int MAX_TOP_RANK = 100;
 
     private final PlayTimePlugin plugin;
 
@@ -51,17 +56,21 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
 
     @Override
     public String onPlaceholderRequest(Player player, String identifier) {
-        if (player == null) {
-            return "";
-        }
-
         PlaytimeRuntime runtime = plugin.runtime();
         if (runtime == null) {
             return "";
         }
 
-        UUID uuid = player.getUniqueId();
         String id = identifier.toLowerCase(Locale.ROOT);
+        if (id.startsWith("top_")) {
+            return resolveTopPlaceholder(runtime, id.substring(4));
+        }
+
+        if (player == null) {
+            return "";
+        }
+
+        UUID uuid = player.getUniqueId();
 
         if (id.equals("state")) {
             ActivityState state = runtime.activityTracker().getState(uuid, System.currentTimeMillis());
@@ -117,11 +126,78 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         return null;
     }
 
+    private String resolveTopPlaceholder(PlaytimeRuntime runtime, String body) {
+        String[] parts = body.split("_");
+        if (parts.length != 4) {
+            return fallback();
+        }
+
+        String metric = parts[0];
+        String range = parts[1];
+        int rank;
+        try {
+            rank = Integer.parseInt(parts[2]);
+        } catch (NumberFormatException exception) {
+            return fallback();
+        }
+        String field = parts[3];
+
+        PlaytimeConfig.Placeholders config = plugin.getRuntimeConfig().placeholders();
+        if (rank < 1 || rank > Math.min(MAX_TOP_RANK, config.topLeaderboardMaxRank())) {
+            return fallback();
+        }
+        if (!isMetric(metric) || !isRange(range) || !isField(field)) {
+            return fallback();
+        }
+
+        List<PublicLeaderboardEntry> entries = runtime.readService().getPublicLeaderboard(metric, range, config.topLeaderboardMaxRank());
+        PublicLeaderboardEntry entry = entries.stream()
+                .filter(candidate -> candidate.rank == rank)
+                .findFirst()
+                .orElse(null);
+        if (entry == null) {
+            return fallback();
+        }
+
+        return switch (field) {
+            case "name" -> safe(entry.username);
+            case "uuid" -> entry.uuid == null ? fallback() : entry.uuid.toString();
+            case "value" -> String.valueOf(metricValueSeconds(entry, metric));
+            case "formatted" -> TimeFormats.formatMinutes(metricValueMinutes(entry, metric));
+            default -> fallback();
+        };
+    }
+
+    private long metricValueMinutes(PublicLeaderboardEntry entry, String metric) {
+        return switch (metric) {
+            case "active" -> entry.activeMinutes;
+            case "afk" -> entry.afkMinutes;
+            default -> entry.totalMinutes;
+        };
+    }
+
+    private long metricValueSeconds(PublicLeaderboardEntry entry, String metric) {
+        return metricValueMinutes(entry, metric) * 60L;
+    }
+
+    private String safe(String value) {
+        return value == null || value.isBlank() ? fallback() : value;
+    }
+
+    private String fallback() {
+        String fallback = plugin.getRuntimeConfig().placeholders().leaderboardFallback();
+        return fallback == null ? "" : fallback;
+    }
+
     private boolean isMetric(String metric) {
         return metric.equals("total") || metric.equals("active") || metric.equals("afk");
     }
 
     private boolean isRange(String range) {
         return range.equals("today") || range.equals("7d") || range.equals("30d") || range.equals("all");
+    }
+
+    private boolean isField(String field) {
+        return field.equals("name") || field.equals("uuid") || field.equals("value") || field.equals("formatted");
     }
 }

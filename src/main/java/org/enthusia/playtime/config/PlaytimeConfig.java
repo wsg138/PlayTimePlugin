@@ -135,7 +135,9 @@ public final class PlaytimeConfig {
         );
 
         Placeholders placeholders = new Placeholders(
-                booleanValue(cfg, List.of("placeholders.enabled"), true)
+                booleanValue(cfg, List.of("placeholders.enabled"), true),
+                stringValue(cfg, List.of("placeholders.leaderboard-fallback"), ""),
+                Math.max(10, intValue(cfg, List.of("placeholders.top-leaderboard-max-rank"), 100))
         );
 
         ActionBar actionBar = new ActionBar(
@@ -361,7 +363,7 @@ public final class PlaytimeConfig {
     public record BedrockGui(boolean enabled, int mainMenuRows, int leaderboardRows) {
     }
 
-    public record Placeholders(boolean enabled) {
+    public record Placeholders(boolean enabled, String leaderboardFallback, int topLeaderboardMaxRank) {
     }
 
     public record ActionBar(boolean enabled,

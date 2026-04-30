@@ -79,7 +79,7 @@ leaderboards:
   default-metric: "total"
   default-range: "all"
 
-  # Cache TTL for leaderboard/admin/stat reads.
+  # Cached leaderboard results are reused by placeholder lookups and GUI reads.
   cache-ttl-seconds: 30
 
   export:
@@ -110,6 +110,19 @@ gui:
 
 placeholders:
   enabled: true
+  leaderboard-fallback: ""
+  top-leaderboard-max-rank: 100
+  # Global leaderboard placeholders are not player-relative.
+  # Format: %playtime_top_<type>_<range>_<rank>_<field>%
+  # Types: active, total, afk
+  # Ranges: all, today, 7d, 30d
+  # Ranks: 1 through top-leaderboard-max-rank
+  # Fields: name, uuid, value, formatted
+  # Examples:
+  # %playtime_top_active_all_1_name%
+  # %playtime_top_active_all_1_uuid%
+  # %playtime_top_active_all_1_value%
+  # %playtime_top_active_all_1_formatted%
 
 ux:
   show-afk-title: false

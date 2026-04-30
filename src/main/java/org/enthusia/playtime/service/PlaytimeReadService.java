@@ -3,6 +3,7 @@ package org.enthusia.playtime.service;
 import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.data.model.AdminServerStats;
 import org.enthusia.playtime.data.model.LeaderboardEntry;
+import org.enthusia.playtime.data.model.PublicLeaderboardEntry;
 import org.enthusia.playtime.data.model.PlaytimeSnapshot;
 import org.enthusia.playtime.data.model.RangeTotals;
 import org.enthusia.playtime.util.AsyncWriteQueue;
@@ -23,6 +24,7 @@ public final class PlaytimeReadService {
     private final Map<UUID, CacheEntry<Optional<PlaytimeSnapshot>>> lifetimeCache = new ConcurrentHashMap<>();
     private final Map<String, CacheEntry<RangeTotals>> rangeCache = new ConcurrentHashMap<>();
     private final Map<String, CacheEntry<List<LeaderboardEntry>>> leaderboardCache = new ConcurrentHashMap<>();
+    private final Map<String, CacheEntry<List<PublicLeaderboardEntry>>> publicLeaderboardCache = new ConcurrentHashMap<>();
     private final Map<String, CacheEntry<AdminServerStats>> adminStatsCache = new ConcurrentHashMap<>();
 
     public PlaytimeReadService(PlaytimeRepository repository, AsyncWriteQueue writeQueue, int ttlSeconds) {
@@ -93,6 +95,21 @@ public final class PlaytimeReadService {
         return cached.value();
     }
 
+    public List<PublicLeaderboardEntry> getPublicLeaderboard(String metric, String range, int limit) {
+        String normalizedMetric = normalizeMetric(metric);
+        String normalizedRange = normalizeRange(range);
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        String key = normalizedMetric + ":" + normalizedRange + ":" + safeLimit;
+        CacheEntry<List<PublicLeaderboardEntry>> cached = publicLeaderboardCache.compute(key, (ignored, current) -> {
+            if (current != null && !current.isExpired(ttlMillis)) {
+                return current;
+            }
+            return new CacheEntry<>(repository.getPublicLeaderboard(normalizedMetric, normalizedRange, Instant.now(), safeLimit),
+                    System.currentTimeMillis());
+        });
+        return cached.value();
+    }
+
     public AdminServerStats getAdminServerStats(String range) {
         String normalizedRange = normalizeRange(range);
         CacheEntry<AdminServerStats> cached = adminStatsCache.compute(normalizedRange, (ignored, current) -> {
@@ -114,12 +131,14 @@ public final class PlaytimeReadService {
         rangeCache.keySet().removeIf(key -> key.startsWith(uuid.toString() + ":"));
         adminStatsCache.clear();
         leaderboardCache.clear();
+        publicLeaderboardCache.clear();
     }
 
     public void invalidateAll() {
         lifetimeCache.clear();
         rangeCache.clear();
         leaderboardCache.clear();
+        publicLeaderboardCache.clear();
         adminStatsCache.clear();
     }
 
