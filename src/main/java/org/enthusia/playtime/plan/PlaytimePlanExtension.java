@@ -14,14 +14,15 @@ import com.djrapitops.plan.extension.icon.Family;
 import com.djrapitops.plan.extension.icon.Icon;
 import com.djrapitops.plan.extension.table.Table;
 import com.djrapitops.plan.extension.table.TableColumnFormat;
+import org.enthusia.playtime.activity.SessionManager;
 import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.data.model.AdminServerStats;
-import org.enthusia.playtime.data.model.PublicLeaderboardEntry;
-import org.enthusia.playtime.data.model.RecentJoinActivity;
-import org.enthusia.playtime.activity.SessionManager;
 import org.enthusia.playtime.data.model.PlaytimeSnapshot;
+import org.enthusia.playtime.data.model.PublicLeaderboardEntry;
 import org.enthusia.playtime.data.model.RangeTotals;
+import org.enthusia.playtime.data.model.RecentJoinActivity;
 import org.enthusia.playtime.service.PlaytimeReadService;
+import org.enthusia.playtime.util.TimeFormats;
 
 import java.time.Instant;
 import java.util.List;
@@ -155,11 +156,11 @@ public final class PlaytimePlanExtension implements DataExtension {
         return Table.builder()
                 .columnOne("Range", icon("calendar", Color.TEAL))
                 .columnTwo("Active", icon("person-running", Color.GREEN))
-                .columnTwoFormat(TableColumnFormat.TIME_MILLISECONDS)
-                .addRow("Last 24h", minutesToMillis(last24h))
-                .addRow("Last 7d", minutesToMillis(last7d))
-                .addRow("Last 30d", minutesToMillis(last30d))
-                .addRow("All Time", minutesToMillis(all))
+                .columnTwoFormat(TableColumnFormat.NONE)
+                .addRow("Last 24h", TimeFormats.formatDurationMillis(minutesToMillis(last24h)))
+                .addRow("Last 7d", TimeFormats.formatDurationMillis(minutesToMillis(last7d)))
+                .addRow("Last 30d", TimeFormats.formatDurationMillis(minutesToMillis(last30d)))
+                .addRow("All Time", TimeFormats.formatDurationMillis(minutesToMillis(all)))
                 .build();
     }
 
@@ -227,11 +228,11 @@ public final class PlaytimePlanExtension implements DataExtension {
                 .columnOne("Range", icon("calendar", Color.TEAL))
                 .columnTwo("Active", icon("person-running", Color.GREEN))
                 .columnThree("Players", icon("users", Color.BLUE))
-                .columnTwoFormat(TableColumnFormat.TIME_MILLISECONDS)
-                .addRow("Last 24h", minutesToMillis(last24h.activeMinutes), repository.getRollingUniquePlayers(now, 24))
-                .addRow("Last 7d", minutesToMillis(last7d.activeMinutes), last7d.playersWithPlaytime)
-                .addRow("Last 30d", minutesToMillis(last30d.activeMinutes), last30d.playersWithPlaytime)
-                .addRow("All Time", minutesToMillis(all.activeMinutes), all.playersWithPlaytime)
+                .columnTwoFormat(TableColumnFormat.NONE)
+                .addRow("Last 24h", TimeFormats.formatDurationMillis(minutesToMillis(last24h.activeMinutes)), repository.getRollingUniquePlayers(now, 24))
+                .addRow("Last 7d", TimeFormats.formatDurationMillis(minutesToMillis(last7d.activeMinutes)), last7d.playersWithPlaytime)
+                .addRow("Last 30d", TimeFormats.formatDurationMillis(minutesToMillis(last30d.activeMinutes)), last30d.playersWithPlaytime)
+                .addRow("All Time", TimeFormats.formatDurationMillis(minutesToMillis(all.activeMinutes)), all.playersWithPlaytime)
                 .build();
     }
 
@@ -244,12 +245,17 @@ public final class PlaytimePlanExtension implements DataExtension {
                 .columnThree("Active", icon("person-running", Color.GREEN))
                 .columnFour("Last Seen", icon("door-open", Color.BLUE))
                 .columnTwoFormat(TableColumnFormat.PLAYER_NAME)
-                .columnThreeFormat(TableColumnFormat.TIME_MILLISECONDS)
-                .columnFourFormat(TableColumnFormat.DATE_SECOND);
+                .columnThreeFormat(TableColumnFormat.NONE)
+                .columnFourFormat(TableColumnFormat.NONE);
 
         List<PublicLeaderboardEntry> leaders = repository.getPublicLeaderboard("ACTIVE", "ALL", Instant.now(), 10);
         for (PublicLeaderboardEntry leader : leaders) {
-            table.addRow(leader.rank, leader.username, minutesToMillis(leader.activeMinutes), instantMillis(leader.lastSeen));
+            table.addRow(
+                    leader.rank,
+                    leader.username,
+                    TimeFormats.formatDurationMillis(minutesToMillis(leader.activeMinutes)),
+                    leader.lastSeen == null ? "Unknown" : leader.lastSeen.toString()
+            );
         }
         return table.build();
     }
