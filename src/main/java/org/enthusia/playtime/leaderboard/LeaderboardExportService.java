@@ -27,12 +27,14 @@ public final class LeaderboardExportService {
     private final PlaytimeRepository repository;
     private final PlaytimeConfig.LeaderboardExport config;
     private final Path exportDirectory;
+    private final CloudflareR2Uploader r2Uploader;
 
     public LeaderboardExportService(JavaPlugin plugin, PlaytimeRepository repository, PlaytimeConfig.LeaderboardExport config) {
         this.plugin = plugin;
         this.repository = repository;
         this.config = config;
         this.exportDirectory = plugin.getDataFolder().toPath().resolve(config.directory()).normalize();
+        this.r2Uploader = new CloudflareR2Uploader(plugin, config.r2());
     }
 
     public void exportAll() {
@@ -67,6 +69,7 @@ public final class LeaderboardExportService {
             index.append("\n").append(indent(1)).append("]\n");
             index.append("}\n");
             writeAtomic(exportDirectory.resolve("index.json"), index.toString());
+            r2Uploader.uploadFiles(exportDirectory, List.of("index.json", fileName));
         } catch (Exception exception) {
             plugin.getLogger().warning("Failed to export public playtime leaderboards: " + exception.getMessage());
         }

@@ -90,6 +90,17 @@ leaderboards:
     directory: "public-leaderboards"
     interval-seconds: 300
 
+    # Optional Cloudflare R2 upload. This is useful on hosted panels where you cannot run
+    # rclone or cron jobs. Create an R2 API token with read/write access to this bucket,
+    # then fill in the access key values in your live server config.yml.
+    r2:
+      enabled: false
+      account-id: "83982f6d6277634f57d216e6a7f24125"
+      bucket: "playtime-leaderboard"
+      access-key-id: ""
+      secret-access-key: ""
+      prefix: "leaderboards"
+
 analytics:
   # Optional Plan Player Analytics integration. Requires the Plan plugin to be installed.
   # When enabled, this plugin exposes stored playtime and join analytics through Plan's DataExtension API.
