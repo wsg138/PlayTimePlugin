@@ -115,7 +115,15 @@ public final class PlaytimeConfig {
                 new LeaderboardExport(
                         booleanValue(cfg, List.of("leaderboards.export.enabled"), true),
                         stringValue(cfg, List.of("leaderboards.export.directory"), "public-leaderboards"),
-                        Math.max(30, intValue(cfg, List.of("leaderboards.export.interval-seconds"), 300))
+                        Math.max(30, intValue(cfg, List.of("leaderboards.export.interval-seconds"), 300)),
+                        new R2Export(
+                                booleanValue(cfg, List.of("leaderboards.export.r2.enabled"), false),
+                                stringValue(cfg, List.of("leaderboards.export.r2.account-id"), ""),
+                                stringValue(cfg, List.of("leaderboards.export.r2.bucket"), ""),
+                                stringValue(cfg, List.of("leaderboards.export.r2.access-key-id"), ""),
+                                stringValue(cfg, List.of("leaderboards.export.r2.secret-access-key"), ""),
+                                stringValue(cfg, List.of("leaderboards.export.r2.prefix"), "leaderboards")
+                        )
                 )
         );
 
@@ -348,7 +356,16 @@ public final class PlaytimeConfig {
 
     public record LeaderboardExport(boolean enabled,
                                     String directory,
-                                    int intervalSeconds) {
+                                    int intervalSeconds,
+                                    R2Export r2) {
+    }
+
+    public record R2Export(boolean enabled,
+                           String accountId,
+                           String bucket,
+                           String accessKeyId,
+                           String secretAccessKey,
+                           String prefix) {
     }
 
     public record Analytics(PlanIntegration plan, int hourlyRetentionDays) {
