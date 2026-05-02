@@ -1,6 +1,7 @@
 package org.enthusia.playtime.util;
 
 import org.bukkit.Bukkit;
+import org.bukkit.plugin.IllegalPluginAccessException;
 import org.bukkit.scheduler.BukkitTask;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.PlaytimeRepository;
@@ -71,6 +72,13 @@ public final class AsyncWriteQueue implements AutoCloseable {
         }
         pendingProfiles.put(profile.uuid(), profile);
         scheduleImmediateFlush();
+    }
+
+    public void enqueuePlayerProfileForShutdown(PlayerProfile profile) {
+        if (closed || profile == null || profile.uuid() == null) {
+            return;
+        }
+        pendingProfiles.put(profile.uuid(), profile);
     }
 
     public RangeTotals getPendingTotals(UUID uuid) {
@@ -190,8 +198,18 @@ public final class AsyncWriteQueue implements AutoCloseable {
     }
 
     private void scheduleImmediateFlush() {
+        if (closed || !plugin.isEnabled()) {
+            return;
+        }
         if (immediateFlushScheduled.compareAndSet(false, true)) {
-            Bukkit.getScheduler().runTaskAsynchronously(plugin, this::flushAsyncSafely);
+            try {
+                Bukkit.getScheduler().runTaskAsynchronously(plugin, this::flushAsyncSafely);
+            } catch (IllegalPluginAccessException exception) {
+                immediateFlushScheduled.set(false);
+                if (plugin.isEnabled()) {
+                    throw exception;
+                }
+            }
         }
     }
 

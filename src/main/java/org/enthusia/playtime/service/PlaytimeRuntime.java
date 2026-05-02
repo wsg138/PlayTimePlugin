@@ -278,7 +278,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         for (Player player : Bukkit.getOnlinePlayers()) {
             try {
                 repository.recordLastSeen(player.getUniqueId(), now);
-                writeQueue.enqueuePlayerProfile(profileFor(player, now));
+                writeQueue.enqueuePlayerProfileForShutdown(profileFor(player, now));
             } catch (Exception exception) {
                 plugin.getLogger().log(Level.WARNING, "Failed to persist last seen during shutdown for " + player.getName(), exception);
             }
