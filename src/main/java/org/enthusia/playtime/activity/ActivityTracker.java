@@ -62,8 +62,8 @@ public final class ActivityTracker implements Listener {
             long sinceNonClick = nowMillis - activityData.lastNonClickActivity;
             if (config.sampling().suspicion().enabled()
                     && sinceNonClick >= config.sampling().suspicion().nonClickGraceSeconds() * 1000L
-                    && isSuspiciousSwingPattern(activityData, nowMillis)) {
-                return ActivityState.SUSPICIOUS;
+                    && isAutoclickerPattern(activityData, nowMillis)) {
+                return ActivityState.AFK;
             }
 
             if (sinceAny >= config.sampling().idleSeconds() * 1000L) {
@@ -103,14 +103,22 @@ public final class ActivityTracker implements Listener {
         return suspiciousResetMarkers.getOrDefault(uuid, 0L);
     }
 
-    private boolean isSuspiciousSwingPattern(ActivityData data, long nowMillis) {
+    private boolean isAutoclickerPattern(ActivityData data, long nowMillis) {
         long cutoff = nowMillis - (config.sampling().suspicion().windowSeconds() * 1000L);
         while (!data.swingTimes.isEmpty() && data.swingTimes.peekFirst() < cutoff) {
             data.swingTimes.pollFirst();
         }
 
         int count = data.swingTimes.size();
-        if (count < config.sampling().suspicion().minSwings() || count <= 2) {
+        if (count < config.sampling().suspicion().minSwings()) {
+            return false;
+        }
+
+        if (hasOnlyClickActivity(data, nowMillis)) {
+            return true;
+        }
+
+        if (count <= 2) {
             return false;
         }
 
@@ -147,6 +155,11 @@ public final class ActivityTracker implements Listener {
         double stdDev = Math.sqrt(variance);
         double cv = stdDev / mean;
         return cv <= config.sampling().suspicion().maxCv();
+    }
+
+    private boolean hasOnlyClickActivity(ActivityData data, long nowMillis) {
+        long cutoff = nowMillis - (config.sampling().suspicion().windowSeconds() * 1000L);
+        return data.lastNonClickActivity < cutoff;
     }
 
     public String actionBarMessage(ActivityState state) {
