@@ -89,6 +89,9 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
                 || id.equals("roman")) {
 
             Optional<PlaytimeSnapshot> optional = runtime.readService().getLifetime(uuid);
+            if (optional.isEmpty() && runtime.readService().isLifetimeLoading(uuid)) {
+                return "";
+            }
             PlaytimeSnapshot snapshot = optional.orElseGet(() -> new PlaytimeSnapshot(0, 0, 0));
 
             if (id.equals("roman")) {
@@ -116,6 +119,9 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
             }
 
             RangeTotals totals = runtime.readService().getRangeTotals(uuid, range.toUpperCase(Locale.ROOT));
+            if (totals.totalMinutes <= 0L && runtime.readService().isRangeLoading(uuid, range.toUpperCase(Locale.ROOT))) {
+                return "";
+            }
             long minutes = switch (metric) {
                 case "active" -> totals.activeMinutes;
                 case "afk" -> totals.afkMinutes;

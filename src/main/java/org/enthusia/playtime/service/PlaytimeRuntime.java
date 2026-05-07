@@ -55,6 +55,9 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private BukkitTask performanceLogTask;
     private BukkitTask initialLeaderboardExportTask;
     private BukkitTask leaderboardExportTask;
+    private volatile int auditBatchSize;
+    private volatile int auditRemaining;
+    private volatile long nextAuditAtMillis;
 
     public PlaytimeRuntime(PlayTimePlugin plugin, PlaytimeConfig config, RuntimeState previousState) throws Exception {
         this.plugin = plugin;
@@ -130,6 +133,18 @@ public final class PlaytimeRuntime implements AutoCloseable {
 
     public PerformanceCounters counters() {
         return counters;
+    }
+
+    public String performanceSummary() {
+        String auditStatus = config.playtimeAudit().enabled()
+                ? "audit queue=" + auditRemaining + "/" + auditBatchSize
+                + ", next audit in=" + Math.max(0L, nextAuditAtMillis - System.currentTimeMillis()) / 1000L + "s"
+                : "audit disabled";
+        String exportStatus = config.leaderboards().export().enabled()
+                ? "export interval=" + config.leaderboards().export().intervalSeconds() + "s, R2="
+                + (config.leaderboards().export().r2().enabled() ? "enabled" : "disabled")
+                : "export disabled";
+        return counters.summary() + ", " + auditStatus + ", " + exportStatus;
     }
 
     public boolean isKnownPlayer(UUID uuid) {
@@ -211,7 +226,6 @@ public final class PlaytimeRuntime implements AutoCloseable {
         auditTask = Bukkit.getScheduler().runTaskTimer(plugin, new Runnable() {
             private int cursor;
             private Player[] batch = new Player[0];
-            private long nextAuditAtMillis;
 
             @Override
             public void run() {
@@ -223,10 +237,13 @@ public final class PlaytimeRuntime implements AutoCloseable {
                     batch = Bukkit.getOnlinePlayers().toArray(Player[]::new);
                     cursor = 0;
                     nextAuditAtMillis = nowMillis + config.playtimeAudit().intervalMinutes() * 60_000L;
+                    auditBatchSize = batch.length;
                 }
                 if (batch.length == 0) {
+                    auditRemaining = 0;
                     return;
                 }
+                auditRemaining = batch.length - cursor;
                 int max = Math.min(config.playtimeAudit().maxPlayersPerTick(), batch.length - cursor);
                 for (int i = 0; i < max; i++) {
                     Player player = batch[cursor++];
@@ -235,6 +252,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
                     }
                     auditPlayer(player, nowMillis);
                 }
+                auditRemaining = batch.length - cursor;
             }
         }, periodTicks, 1L);
         counters.reloadTaskRestarts.increment();
@@ -272,7 +290,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         }
         long periodTicks = Math.max(20L, config.debug().performance().logIntervalSeconds() * 20L);
         performanceLogTask = Bukkit.getScheduler().runTaskTimer(plugin,
-                () -> plugin.getLogger().info("Playtime performance counters: " + counters.summary()),
+                () -> plugin.getLogger().info("Playtime performance counters: " + performanceSummary()),
                 periodTicks, periodTicks);
         counters.reloadTaskRestarts.increment();
     }

@@ -62,6 +62,16 @@ public final class PlayTimePlugin extends JavaPlugin {
     }
 
     private synchronized boolean reloadPluginRuntime(String reason) {
+        PlaytimeConfig config;
+        try {
+            reloadConfig();
+            new ConfigMigrator(this).migrateConfig();
+            config = PlaytimeConfig.load(this);
+        } catch (Exception exception) {
+            getLogger().log(Level.SEVERE, "Failed to parse playtime config. Existing runtime was left running.", exception);
+            return false;
+        }
+
         PlaytimeRuntime.RuntimeState state = null;
         PlaytimeRuntime oldRuntime = this.runtime;
         if (oldRuntime != null) {
@@ -71,9 +81,6 @@ public final class PlayTimePlugin extends JavaPlugin {
         }
 
         try {
-            reloadConfig();
-            new ConfigMigrator(this).migrateConfig();
-            PlaytimeConfig config = PlaytimeConfig.load(this);
             PlaytimeRuntime newRuntime = new PlaytimeRuntime(this, config, state);
             this.runtime = newRuntime;
             refreshPlaceholderExpansion();
@@ -85,7 +92,8 @@ public final class PlayTimePlugin extends JavaPlugin {
             }
             return true;
         } catch (Exception exception) {
-            getLogger().log(Level.SEVERE, "Failed to " + (reason == null ? "initialize" : "reload") + " playtime runtime.", exception);
+            getLogger().log(Level.SEVERE, "Failed to " + (reason == null ? "initialize" : "reload")
+                    + " playtime runtime after the previous runtime was closed. A server restart may be needed.", exception);
             return false;
         }
     }

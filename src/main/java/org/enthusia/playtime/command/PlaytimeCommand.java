@@ -166,7 +166,7 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             if (plugin.reloadPluginRuntime()) {
                 send(sender, ChatColor.GREEN + "Playtime plugin reloaded safely.");
             } else {
-                send(sender, ChatColor.RED + "Reload failed. Check console for details.");
+                send(sender, ChatColor.RED + "Reload failed. Check console; a server restart may be needed if runtime startup failed.");
             }
             return true;
         }
@@ -198,7 +198,7 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
                 send(sender, ChatColor.RED + "Playtime runtime is not available.");
                 return true;
             }
-            send(sender, ChatColor.YELLOW + runtime.counters().summary());
+            send(sender, ChatColor.YELLOW + runtime.performanceSummary());
             return true;
         }
 

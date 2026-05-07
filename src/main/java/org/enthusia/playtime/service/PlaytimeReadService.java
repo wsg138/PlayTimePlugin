@@ -149,6 +149,11 @@ public final class PlaytimeReadService {
         return entry != null && entry.refreshing.get();
     }
 
+    public boolean isLifetimeLoading(UUID uuid) {
+        CacheEntry<Optional<PlaytimeSnapshot>> entry = lifetimeCache.get(uuid);
+        return entry != null && entry.refreshing.get();
+    }
+
     private <K, T> CacheEntry<T> getCached(Map<K, CacheEntry<T>> cache, K key, T emptyValue, Supplier<T> loader) {
         CacheEntry<T> current = cache.get(key);
         if (current == null) {
