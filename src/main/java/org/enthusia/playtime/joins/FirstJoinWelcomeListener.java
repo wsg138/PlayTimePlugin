@@ -39,18 +39,18 @@ public final class FirstJoinWelcomeListener implements Listener {
         }
 
         Player player = event.getPlayer();
-        boolean firstKnownJoin = !runtime.isKnownPlayer(player.getUniqueId());
-        if (!firstKnownJoin) {
+        PlaytimeRuntime.JoinDecision joinDecision = runtime.consumeJoinDecision(player.getUniqueId());
+        if (!joinDecision.firstKnownJoin()) {
             return;
         }
 
-        String broadcast = format(config.getFirstJoinBroadcast(), player, runtime);
+        String broadcast = format(config.getFirstJoinBroadcast(), player, joinDecision.uniqueNumber());
         if (!broadcast.isBlank()) {
             Bukkit.broadcastMessage(broadcast);
         }
 
         for (String line : config.getFirstJoinPlayerLines()) {
-            String formatted = format(line, player, runtime);
+            String formatted = format(line, player, joinDecision.uniqueNumber());
             if (!formatted.isBlank()) {
                 player.sendMessage(formatted);
             }
@@ -64,11 +64,10 @@ public final class FirstJoinWelcomeListener implements Listener {
         }
     }
 
-    private String format(String message, Player player, PlaytimeRuntime runtime) {
+    private String format(String message, Player player, int uniqueNumber) {
         if (message == null) {
             return "";
         }
-        int uniqueNumber = runtime.repository().countKnownPlayers() + 1;
         String replaced = message.replace("%player%", player.getName())
                 .replace("{USERNAME}", player.getName())
                 .replace("{UNIQUE}", String.valueOf(uniqueNumber));

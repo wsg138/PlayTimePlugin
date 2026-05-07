@@ -13,6 +13,7 @@ public final class PlaytimeConfig {
 
     private final Storage storage;
     private final Sampling sampling;
+    private final Activity activity;
     private final ChatActivity chatActivity;
     private final Joins joins;
     private final Leaderboards leaderboards;
@@ -20,10 +21,12 @@ public final class PlaytimeConfig {
     private final Gui gui;
     private final Placeholders placeholders;
     private final ActionBar actionBar;
+    private final PlaytimeAudit playtimeAudit;
     private final Debug debug;
 
     private PlaytimeConfig(Storage storage,
                            Sampling sampling,
+                           Activity activity,
                            ChatActivity chatActivity,
                            Joins joins,
                            Leaderboards leaderboards,
@@ -31,9 +34,11 @@ public final class PlaytimeConfig {
                            Gui gui,
                            Placeholders placeholders,
                            ActionBar actionBar,
+                           PlaytimeAudit playtimeAudit,
                            Debug debug) {
         this.storage = storage;
         this.sampling = sampling;
+        this.activity = activity;
         this.chatActivity = chatActivity;
         this.joins = joins;
         this.leaderboards = leaderboards;
@@ -41,6 +46,7 @@ public final class PlaytimeConfig {
         this.gui = gui;
         this.placeholders = placeholders;
         this.actionBar = actionBar;
+        this.playtimeAudit = playtimeAudit;
         this.debug = debug;
     }
 
@@ -82,6 +88,13 @@ public final class PlaytimeConfig {
                 )
         );
 
+        Activity activity = new Activity(
+                Math.max(0L, longValue(cfg, List.of("activity.movement-throttle-ms"), 250L)),
+                booleanValue(cfg, List.of("activity.count-head-rotation"), true),
+                Math.max(0.0D, doubleValue(cfg, List.of("activity.tiny-movement-threshold"), 0.01D)),
+                booleanValue(cfg, List.of("activity.suspicious-swing-tracking-enabled"), true)
+        );
+
         ChatActivity chatActivity = new ChatActivity(
                 booleanValue(cfg, List.of("chat.count-chat-as-activity"), true),
                 booleanValue(cfg, List.of("chat.count-commands-as-activity"), true)
@@ -118,12 +131,15 @@ public final class PlaytimeConfig {
                         Math.max(30, intValue(cfg, List.of("leaderboards.export.interval-seconds"), 300)),
                         new R2Export(
                                 booleanValue(cfg, List.of("leaderboards.export.r2.enabled"), false),
-                                stringValue(cfg, List.of("leaderboards.export.r2.account-id"), ""),
-                                stringValue(cfg, List.of("leaderboards.export.r2.bucket"), ""),
-                                stringValue(cfg, List.of("leaderboards.export.r2.access-key-id"), ""),
-                                stringValue(cfg, List.of("leaderboards.export.r2.secret-access-key"), ""),
+                                credentialValue(cfg, "leaderboards.export.r2.account-id", "PLAYTIME_R2_ACCOUNT_ID", "playtime.r2.accountId"),
+                                credentialValue(cfg, "leaderboards.export.r2.bucket", "PLAYTIME_R2_BUCKET", "playtime.r2.bucket"),
+                                credentialValue(cfg, "leaderboards.export.r2.access-key-id", "PLAYTIME_R2_ACCESS_KEY_ID", "playtime.r2.accessKeyId"),
+                                credentialValue(cfg, "leaderboards.export.r2.secret-access-key", "PLAYTIME_R2_SECRET_ACCESS_KEY", "playtime.r2.secretAccessKey"),
                                 stringValue(cfg, List.of("leaderboards.export.r2.prefix"), "leaderboards")
-                        )
+                        ),
+                        booleanValue(cfg, List.of("leaderboards.export.run-on-reload-close"), false),
+                        booleanValue(cfg, List.of("leaderboards.export.run-on-disable"), true),
+                        Math.max(1, intValue(cfg, List.of("leaderboards.export.shutdown-timeout-seconds"), 10))
                 )
         );
 
@@ -162,12 +178,24 @@ public final class PlaytimeConfig {
                 )
         );
 
-        Debug debug = new Debug(
-                booleanValue(cfg, List.of("debug.enabled"), false),
-                booleanValue(cfg, List.of("debug.log-suspicious"), true)
+        PlaytimeAudit playtimeAudit = new PlaytimeAudit(
+                booleanValue(cfg, List.of("playtime-audit.enabled"), true),
+                Math.max(1, intValue(cfg, List.of("playtime-audit.interval-minutes"), 5)),
+                Math.max(1, intValue(cfg, List.of("playtime-audit.max-players-per-tick"), 1)),
+                booleanValue(cfg, List.of("playtime-audit.repair-mode"), true),
+                booleanValue(cfg, List.of("playtime-audit.debug-log-repairs"), false)
         );
 
-        return new PlaytimeConfig(storage, sampling, chatActivity, joins, leaderboards, analytics, gui, placeholders, actionBar, debug);
+        Debug debug = new Debug(
+                booleanValue(cfg, List.of("debug.enabled"), false),
+                booleanValue(cfg, List.of("debug.log-suspicious"), true),
+                new PerformanceDebug(
+                        booleanValue(cfg, List.of("debug.performance.enabled"), false),
+                        Math.max(30, intValue(cfg, List.of("debug.performance.log-interval-seconds"), 300))
+                )
+        );
+
+        return new PlaytimeConfig(storage, sampling, activity, chatActivity, joins, leaderboards, analytics, gui, placeholders, actionBar, playtimeAudit, debug);
     }
 
     public Storage storage() {
@@ -176,6 +204,10 @@ public final class PlaytimeConfig {
 
     public Sampling sampling() {
         return sampling;
+    }
+
+    public Activity activity() {
+        return activity;
     }
 
     public ChatActivity chatActivity() {
@@ -204,6 +236,10 @@ public final class PlaytimeConfig {
 
     public ActionBar actionBar() {
         return actionBar;
+    }
+
+    public PlaytimeAudit playtimeAudit() {
+        return playtimeAudit;
     }
 
     public Debug debug() {
@@ -339,6 +375,12 @@ public final class PlaytimeConfig {
                             int maxCountedConsecutiveMinutes) {
     }
 
+    public record Activity(long movementThrottleMs,
+                           boolean countHeadRotation,
+                           double tinyMovementThreshold,
+                           boolean suspiciousSwingTrackingEnabled) {
+    }
+
     public record ChatActivity(boolean countChatAsActivity, boolean countCommandsAsActivity) {
     }
 
@@ -357,7 +399,10 @@ public final class PlaytimeConfig {
     public record LeaderboardExport(boolean enabled,
                                     String directory,
                                     int intervalSeconds,
-                                    R2Export r2) {
+                                    R2Export r2,
+                                    boolean runOnReloadClose,
+                                    boolean runOnDisable,
+                                    int shutdownTimeoutSeconds) {
     }
 
     public record R2Export(boolean enabled,
@@ -394,7 +439,17 @@ public final class PlaytimeConfig {
     public record ActionBarText(String active, String idle, String afk, String suspicious) {
     }
 
-    public record Debug(boolean enabled, boolean logSuspicious) {
+    public record PlaytimeAudit(boolean enabled,
+                                int intervalMinutes,
+                                int maxPlayersPerTick,
+                                boolean repairMode,
+                                boolean debugLogRepairs) {
+    }
+
+    public record Debug(boolean enabled, boolean logSuspicious, PerformanceDebug performance) {
+    }
+
+    public record PerformanceDebug(boolean enabled, int logIntervalSeconds) {
     }
 
     private static String stringValue(FileConfiguration cfg, List<String> paths, String defaultValue) {
@@ -405,6 +460,18 @@ public final class PlaytimeConfig {
             }
         }
         return defaultValue;
+    }
+
+    private static String credentialValue(FileConfiguration cfg, String path, String envName, String propertyName) {
+        String property = System.getProperty(propertyName);
+        if (property != null && !property.isBlank()) {
+            return property;
+        }
+        String env = System.getenv(envName);
+        if (env != null && !env.isBlank()) {
+            return env;
+        }
+        return stringValue(cfg, List.of(path), "");
     }
 
     private static int intValue(FileConfiguration cfg, List<String> paths, int defaultValue) {

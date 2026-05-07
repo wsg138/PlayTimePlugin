@@ -62,10 +62,11 @@ public final class SeenCommand implements CommandExecutor, TabCompleter {
 
         OfflinePlayer offline = Bukkit.getOfflinePlayerIfCached(targetName);
         UUID cachedUuid = runtime.headCache().findUuidByName(targetName);
-        if ((offline == null || offline.getUniqueId() == null) && cachedUuid != null) {
-            offline = Bukkit.getOfflinePlayer(cachedUuid);
-        }
         if (offline == null || offline.getUniqueId() == null) {
+            if (cachedUuid != null) {
+                showSeen(sender, runtime, cachedUuid, targetName, false);
+                return true;
+            }
             sender.sendMessage(PREFIX + ChatColor.RED + "Player '" + targetName + "' has never joined.");
             return true;
         }
@@ -80,21 +81,25 @@ public final class SeenCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        Optional<Instant> lastSeenOpt = runtime.repository().getLastSeen(uuid);
-        if (lastSeenOpt.isEmpty()) {
-            sender.sendMessage(PREFIX + ChatColor.RED + "No last-seen record found for " + name + ".");
-            return;
-        }
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            Optional<Instant> lastSeenOpt = runtime.repository().getLastSeen(uuid);
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                if (lastSeenOpt.isEmpty()) {
+                    sender.sendMessage(PREFIX + ChatColor.RED + "No last-seen record found for " + name + ".");
+                    return;
+                }
 
-        Instant lastSeen = lastSeenOpt.get();
-        Instant now = Instant.now();
-        long agoMillis = Math.max(0L, Duration.between(lastSeen, now).toMillis());
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, uuuu h:mm a z", Locale.US).withZone(runtime.config().joins().zoneId());
+                Instant lastSeen = lastSeenOpt.get();
+                Instant now = Instant.now();
+                long agoMillis = Math.max(0L, Duration.between(lastSeen, now).toMillis());
+                DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, uuuu h:mm a z", Locale.US).withZone(runtime.config().joins().zoneId());
 
-        sender.sendMessage(PREFIX + name + ChatColor.GRAY + " | "
-                + ChatColor.YELLOW + "Last seen " + ChatColor.AQUA + TimeFormats.formatDurationMillis(agoMillis)
-                + ChatColor.YELLOW + " ago "
-                + ChatColor.GRAY + "(" + ChatColor.WHITE + formatter.format(lastSeen) + ChatColor.GRAY + ")");
+                sender.sendMessage(PREFIX + name + ChatColor.GRAY + " | "
+                        + ChatColor.YELLOW + "Last seen " + ChatColor.AQUA + TimeFormats.formatDurationMillis(agoMillis)
+                        + ChatColor.YELLOW + " ago "
+                        + ChatColor.GRAY + "(" + ChatColor.WHITE + formatter.format(lastSeen) + ChatColor.GRAY + ")");
+            });
+        });
     }
 
     @Override

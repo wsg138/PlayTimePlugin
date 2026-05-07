@@ -60,6 +60,7 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         if (runtime == null) {
             return "";
         }
+        runtime.counters().placeholderCachedReturns.increment();
 
         String id = identifier.toLowerCase(Locale.ROOT);
         if (id.startsWith("top_")) {
@@ -151,6 +152,9 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         }
 
         List<PublicLeaderboardEntry> entries = runtime.readService().getPublicLeaderboard(metric, range, config.topLeaderboardMaxRank());
+        if (entries.isEmpty()) {
+            runtime.counters().placeholderStaleRefreshes.increment();
+        }
         PublicLeaderboardEntry entry = entries.stream()
                 .filter(candidate -> candidate.rank == rank)
                 .findFirst()

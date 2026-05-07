@@ -2,19 +2,23 @@ package org.enthusia.playtime.skin;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
-import org.bukkit.OfflinePlayer;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.SkullMeta;
 import org.enthusia.playtime.PlayTimePlugin;
+import org.enthusia.playtime.util.PerformanceCounters;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -31,14 +35,17 @@ import java.util.logging.Level;
 public final class HeadCache {
 
     private final PlayTimePlugin plugin;
+    private final PerformanceCounters counters;
 
     private final Map<UUID, ItemStack> heads = new ConcurrentHashMap<>();
     private final Map<UUID, String> names = new ConcurrentHashMap<>();
 
     private final File file;
+    private final AtomicBoolean saveQueued = new AtomicBoolean(false);
 
-    public HeadCache(PlayTimePlugin plugin) {
+    public HeadCache(PlayTimePlugin plugin, PerformanceCounters counters) {
         this.plugin = plugin;
+        this.counters = counters;
         if (!plugin.getDataFolder().exists()) {
             //noinspection ResultOfMethodCallIgnored
             plugin.getDataFolder().mkdirs();
@@ -67,6 +74,11 @@ public final class HeadCache {
 
         heads.put(uuid, head);
         names.put(uuid, name);
+        queueSave();
+    }
+
+    public void updateHeadDebounced(Player player) {
+        updateHead(player);
     }
 
     /**
@@ -77,18 +89,12 @@ public final class HeadCache {
     public ItemStack createHead(UUID uuid) {
         ItemStack cached = heads.get(uuid);
         if (cached != null) {
+            counters.headCacheHits.increment();
             return cached.clone();
         }
+        counters.headCacheMisses.increment();
 
-        // Fallback: generic head resolved from offline player
-        ItemStack head = new ItemStack(Material.PLAYER_HEAD);
-        SkullMeta meta = (SkullMeta) head.getItemMeta();
-        if (meta != null) {
-            OfflinePlayer off = Bukkit.getOfflinePlayer(uuid);
-            meta.setOwningPlayer(off);
-            head.setItemMeta(meta);
-        }
-        return head;
+        return new ItemStack(Material.PLAYER_HEAD);
     }
 
     /**
@@ -115,12 +121,28 @@ public final class HeadCache {
      * (typically called onDisable).
      */
     public void save() {
-        YamlConfiguration out = new YamlConfiguration();
+        saveQueued.set(false);
+        saveSnapshot(new HashMap<>(heads), new HashMap<>(names));
+    }
 
-        for (Map.Entry<UUID, ItemStack> entry : heads.entrySet()) {
+    private void queueSave() {
+        if (!plugin.isEnabled() || !saveQueued.compareAndSet(false, true)) {
+            return;
+        }
+        Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
+            saveQueued.set(false);
+            saveSnapshot(new HashMap<>(heads), new HashMap<>(names));
+        }, 20L * 60L);
+    }
+
+    private void saveSnapshot(Map<UUID, ItemStack> headSnapshot, Map<UUID, String> nameSnapshot) {
+        YamlConfiguration out = new YamlConfiguration();
+        out.set("meta.version", 1);
+
+        for (Map.Entry<UUID, ItemStack> entry : headSnapshot.entrySet()) {
             UUID uuid = entry.getKey();
             ItemStack head = entry.getValue();
-            String name = names.get(uuid);
+            String name = nameSnapshot.get(uuid);
 
             String base = "heads." + uuid;
             out.set(base + ".item", head);
@@ -130,7 +152,14 @@ public final class HeadCache {
         }
 
         try {
-            out.save(file);
+            File temp = new File(file.getParentFile(), file.getName() + ".tmp");
+            out.save(temp);
+            try {
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException atomicMoveFailure) {
+                Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
+            counters.headCacheSaves.increment();
         } catch (IOException ex) {
             plugin.getLogger().log(Level.WARNING,
                     "[EnthusiaPlaytime] Failed to save skins.yml", ex);

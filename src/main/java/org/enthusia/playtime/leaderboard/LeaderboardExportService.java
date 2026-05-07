@@ -4,6 +4,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.data.model.PublicLeaderboardEntry;
+import org.enthusia.playtime.util.PerformanceCounters;
 import org.enthusia.playtime.util.TimeFormats;
 
 import java.io.IOException;
@@ -26,15 +27,17 @@ public final class LeaderboardExportService {
     private final JavaPlugin plugin;
     private final PlaytimeRepository repository;
     private final PlaytimeConfig.LeaderboardExport config;
+    private final PerformanceCounters counters;
     private final Path exportDirectory;
     private final CloudflareR2Uploader r2Uploader;
 
-    public LeaderboardExportService(JavaPlugin plugin, PlaytimeRepository repository, PlaytimeConfig.LeaderboardExport config) {
+    public LeaderboardExportService(JavaPlugin plugin, PlaytimeRepository repository, PlaytimeConfig.LeaderboardExport config, PerformanceCounters counters) {
         this.plugin = plugin;
         this.repository = repository;
         this.config = config;
+        this.counters = counters;
         this.exportDirectory = plugin.getDataFolder().toPath().resolve(config.directory()).normalize();
-        this.r2Uploader = new CloudflareR2Uploader(plugin, config.r2());
+        this.r2Uploader = new CloudflareR2Uploader(plugin, config.r2(), counters);
     }
 
     public void exportAll() {
@@ -70,6 +73,7 @@ public final class LeaderboardExportService {
             index.append("}\n");
             writeAtomic(exportDirectory.resolve("index.json"), index.toString());
             r2Uploader.uploadFiles(exportDirectory, List.of("index.json", fileName));
+            counters.leaderboardExports.increment();
         } catch (Exception exception) {
             plugin.getLogger().warning("Failed to export public playtime leaderboards: " + exception.getMessage());
         }

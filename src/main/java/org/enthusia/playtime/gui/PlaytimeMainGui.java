@@ -52,7 +52,13 @@ public final class PlaytimeMainGui implements PlaytimeGui {
 
         List<String> lore = new ArrayList<>();
         if (optional.isEmpty()) {
-            lore.add(ChatColor.RED + "No playtime recorded yet.");
+            if (runtime != null && runtime.readService().isLoading()) {
+                runtime.counters().guiLoadingRenders.increment();
+                lore.add(ChatColor.YELLOW + "Refreshing cached playtime...");
+                scheduleRefresh();
+            } else {
+                lore.add(ChatColor.RED + "No playtime recorded yet.");
+            }
         } else {
             PlaytimeSnapshot snapshot = optional.get();
             lore.add(ChatColor.GRAY + "Total: " + ChatColor.AQUA + TimeFormats.formatMinutes(snapshot.totalMinutes));
@@ -109,6 +115,18 @@ public final class PlaytimeMainGui implements PlaytimeGui {
         for (int slot = 0; slot < inventory.getSize(); slot++) {
             inventory.setItem(slot, filler);
         }
+    }
+
+    private void scheduleRefresh() {
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!viewer.isOnline()) {
+                return;
+            }
+            if (viewer.getOpenInventory().getTopInventory().getHolder() instanceof PlaytimeGuiHolder holder
+                    && holder.getGui() == this) {
+                render();
+            }
+        }, 20L);
     }
 
     @Override

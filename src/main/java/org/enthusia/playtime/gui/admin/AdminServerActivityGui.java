@@ -57,6 +57,9 @@ public final class AdminServerActivityGui implements PlaytimeGui {
 
         PlaytimeRuntime runtime = plugin.runtime();
         AdminServerStats stats = runtime == null ? new AdminServerStats() : runtime.readService().getAdminServerStats(currentRange.key);
+        if (runtime != null && runtime.readService().isLoading()) {
+            runtime.counters().guiLoadingRenders.increment();
+        }
 
         inventory.setItem(10, rangeItem(Range.TODAY, Material.FILLED_MAP));
         inventory.setItem(12, rangeItem(Range.SEVEN_DAYS, Material.NETHER_STAR));
@@ -131,7 +134,7 @@ public final class AdminServerActivityGui implements PlaytimeGui {
     private ItemStack rangeItem(Range range, Material material) {
         boolean selected = range == currentRange;
         return buildItem(material,
-                (selected ? ChatColor.GREEN + "● " : ChatColor.YELLOW + "○ ") + range.label,
+                (selected ? ChatColor.GREEN + "* " : ChatColor.YELLOW + "- ") + range.label,
                 List.of(
                         ChatColor.GRAY + "Click to view:",
                         ChatColor.AQUA + range.label,

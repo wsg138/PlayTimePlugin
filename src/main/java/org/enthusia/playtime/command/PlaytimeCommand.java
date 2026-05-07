@@ -97,11 +97,16 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
 
         OfflinePlayer offline = Bukkit.getOfflinePlayerIfCached(targetName);
         UUID cachedUuid = runtime.headCache().findUuidByName(targetName);
-        if ((offline == null || offline.getUniqueId() == null) && cachedUuid != null) {
-            offline = Bukkit.getOfflinePlayer(cachedUuid);
-        }
 
         if (offline == null || offline.getUniqueId() == null) {
+            if (cachedUuid != null) {
+                if (!sender.hasPermission("playtime.others")) {
+                    send(sender, ChatColor.RED + "You don't have permission to view others' playtime.");
+                    return true;
+                }
+                showPlaytime(sender, runtime, cachedUuid, targetName);
+                return true;
+            }
             send(sender, ChatColor.RED + "Player '" + targetName + "' has never joined.");
             return true;
         }
@@ -127,7 +132,7 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
 
         if (args.length == 1) {
             if (!(sender instanceof Player player)) {
-                send(sender, "Usage: /" + label + " admin <players|activity|reload|debug>");
+                send(sender, "Usage: /" + label + " admin <players|activity|reload|debug|performance>");
                 return true;
             }
             new AdminMainGui(plugin, player).open();
@@ -183,7 +188,21 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        send(sender, "Usage: /" + label + " admin [players|activity|reload|debug]");
+        if (subcommand.equals("performance")) {
+            if (!sender.hasPermission("playtime.admin.debug")) {
+                send(sender, ChatColor.RED + "You don't have permission to view performance counters.");
+                return true;
+            }
+            PlaytimeRuntime runtime = plugin.runtime();
+            if (runtime == null) {
+                send(sender, ChatColor.RED + "Playtime runtime is not available.");
+                return true;
+            }
+            send(sender, ChatColor.YELLOW + runtime.counters().summary());
+            return true;
+        }
+
+        send(sender, "Usage: /" + label + " admin [players|activity|reload|debug|performance]");
         return true;
     }
 
@@ -231,7 +250,9 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
         int offset = (page - 1) * pageSize;
         List<LeaderboardEntry> rows = runtime.readService().getLeaderboard(metric.toUpperCase(Locale.ROOT), range.toUpperCase(Locale.ROOT), pageSize, offset);
         if (rows.isEmpty()) {
-            send(sender, ChatColor.RED + "No leaderboard data for that metric/range yet.");
+            send(sender, runtime.readService().isLoading()
+                    ? ChatColor.YELLOW + "Leaderboard cache is refreshing. Try again in a moment."
+                    : ChatColor.RED + "No leaderboard data for that metric/range yet.");
             return;
         }
 
@@ -250,7 +271,9 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
     private void showPlaytime(CommandSender sender, PlaytimeRuntime runtime, UUID uuid, String name) {
         Optional<PlaytimeSnapshot> optional = runtime.readService().getLifetime(uuid);
         if (optional.isEmpty()) {
-            send(sender, ChatColor.RED + "No playtime recorded for " + name + ".");
+            send(sender, runtime.readService().isLoading()
+                    ? ChatColor.YELLOW + "Playtime cache is refreshing for " + name + ". Try again in a moment."
+                    : ChatColor.RED + "No playtime recorded for " + name + ".");
             return;
         }
 
@@ -276,7 +299,8 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(ChatColor.GRAY + "You (active): " + ChatColor.AQUA + TimeFormats.formatMinutes(snapshot.activeMinutes)
                         + ChatColor.GRAY + " -> " + ChatColor.GOLD + (tier == null ? ChatColor.DARK_GRAY + "None" : tier.label()));
             } else {
-                sender.sendMessage(ChatColor.GRAY + "You: " + ChatColor.RED + "No playtime recorded yet.");
+                sender.sendMessage(ChatColor.GRAY + "You: "
+                        + (runtime.readService().isLoading() ? ChatColor.YELLOW + "Refreshing cached playtime..." : ChatColor.RED + "No playtime recorded yet."));
             }
         }
 
@@ -302,10 +326,6 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             if (cached != null && !cached.isBlank()) {
                 return cached;
             }
-        }
-        OfflinePlayer offline = Bukkit.getOfflinePlayer(uuid);
-        if (offline.getName() != null) {
-            return offline.getName();
         }
         return uuid.toString().substring(0, 8);
     }
@@ -355,7 +375,7 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
         } else if (args.length == 3 && args[0].equalsIgnoreCase("top")) {
             addMatches(result, args[2], "today", "7d", "30d", "all");
         } else if (args.length == 2 && args[0].equalsIgnoreCase("admin")) {
-            addMatches(result, args[1], "players", "activity", "reload", "debug");
+            addMatches(result, args[1], "players", "activity", "reload", "debug", "performance");
         }
         return result;
     }

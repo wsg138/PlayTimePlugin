@@ -1,14 +1,13 @@
 package org.enthusia.playtime;
 
 import org.bukkit.Bukkit;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.enthusia.playtime.api.PlaytimeService;
 import org.enthusia.playtime.bedrock.BedrockSupport;
 import org.enthusia.playtime.command.FirstJoinCommand;
 import org.enthusia.playtime.command.PlaytimeCommand;
 import org.enthusia.playtime.command.SeenCommand;
+import org.enthusia.playtime.config.ConfigMigrator;
 import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.gui.GuiListener;
 import org.enthusia.playtime.joins.FirstJoinWelcomeListener;
@@ -17,9 +16,6 @@ import org.enthusia.playtime.placeholders.PlaytimePlaceholderExpansion;
 import org.enthusia.playtime.skin.HeadCacheListener;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
 import java.util.logging.Level;
 
 public final class PlayTimePlugin extends JavaPlugin {
@@ -30,12 +26,9 @@ public final class PlayTimePlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        saveDefaultConfig();
-        reloadConfig();
-        int addedConfig = ensureConfigDefaults();
-        if (addedConfig > 0) {
-            getLogger().info("Added " + addedConfig + " missing config setting" + (addedConfig == 1 ? "" : "s") + " using defaults.");
-        }
+        ConfigMigrator migrator = new ConfigMigrator(this);
+        migrator.migrateConfig();
+        migrator.backupSkinsIfNeeded();
 
         this.bedrockSupport = new BedrockSupport(this);
         registerAdapters();
@@ -59,7 +52,7 @@ public final class PlayTimePlugin extends JavaPlugin {
         PlaytimeRuntime existing = runtime;
         runtime = null;
         if (existing != null) {
-            existing.close();
+            existing.close(false);
         }
         Bukkit.getServicesManager().unregisterAll(this);
     }
@@ -73,19 +66,22 @@ public final class PlayTimePlugin extends JavaPlugin {
         PlaytimeRuntime oldRuntime = this.runtime;
         if (oldRuntime != null) {
             state = oldRuntime.snapshotState();
-            oldRuntime.close();
+            oldRuntime.close(true);
             this.runtime = null;
         }
 
         try {
             reloadConfig();
-            ensureConfigDefaults();
+            new ConfigMigrator(this).migrateConfig();
             PlaytimeConfig config = PlaytimeConfig.load(this);
             PlaytimeRuntime newRuntime = new PlaytimeRuntime(this, config, state);
             this.runtime = newRuntime;
             refreshPlaceholderExpansion();
             if (reason != null) {
-                getLogger().info("Playtime runtime reloaded successfully.");
+                getLogger().info("Playtime runtime reloaded successfully. Flush interval="
+                        + config.getFlushIntervalTicks() + " ticks, leaderboard export="
+                        + (config.leaderboards().export().enabled() ? config.leaderboards().export().intervalSeconds() + "s" : "disabled")
+                        + ", audit=" + (config.playtimeAudit().enabled() ? config.playtimeAudit().intervalMinutes() + "m" : "disabled") + ".");
             }
             return true;
         } catch (Exception exception) {
@@ -159,32 +155,4 @@ public final class PlayTimePlugin extends JavaPlugin {
         }
     }
 
-    private int ensureConfigDefaults() {
-        FileConfiguration config = getConfig();
-        int added = 0;
-
-        try (InputStream in = getResource("config.yml")) {
-            if (in == null) {
-                getLogger().warning("Default config.yml missing from jar; cannot backfill defaults.");
-                return 0;
-            }
-
-            YamlConfiguration defaults = YamlConfiguration.loadConfiguration(new InputStreamReader(in, StandardCharsets.UTF_8));
-            for (String path : defaults.getKeys(true)) {
-                if (defaults.isConfigurationSection(path) || config.isSet(path)) {
-                    continue;
-                }
-                config.set(path, defaults.get(path));
-                added++;
-            }
-
-            if (added > 0) {
-                saveConfig();
-            }
-        } catch (Exception exception) {
-            getLogger().log(Level.WARNING, "Failed to load default config.yml for backfill.", exception);
-        }
-
-        return added;
-    }
 }

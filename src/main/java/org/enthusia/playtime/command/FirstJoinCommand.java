@@ -63,10 +63,11 @@ public final class FirstJoinCommand implements CommandExecutor, TabCompleter {
 
         OfflinePlayer offline = Bukkit.getOfflinePlayerIfCached(targetName);
         UUID cachedUuid = runtime.headCache().findUuidByName(targetName);
-        if ((offline == null || offline.getUniqueId() == null) && cachedUuid != null) {
-            offline = Bukkit.getOfflinePlayer(cachedUuid);
-        }
         if (offline == null || offline.getUniqueId() == null) {
+            if (cachedUuid != null) {
+                showFirstJoin(sender, runtime, cachedUuid, targetName);
+                return true;
+            }
             sender.sendMessage(PREFIX + ChatColor.RED + "Player '" + targetName + "' has never joined.");
             return true;
         }
@@ -76,20 +77,24 @@ public final class FirstJoinCommand implements CommandExecutor, TabCompleter {
     }
 
     private void showFirstJoin(CommandSender sender, PlaytimeRuntime runtime, UUID uuid, String name) {
-        Optional<Instant> firstJoinOpt = runtime.repository().getFirstJoin(uuid);
-        if (firstJoinOpt.isEmpty()) {
-            sender.sendMessage(PREFIX + ChatColor.RED + "No first-join record found for " + name + ".");
-            return;
-        }
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            Optional<Instant> firstJoinOpt = runtime.repository().getFirstJoin(uuid);
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                if (firstJoinOpt.isEmpty()) {
+                    sender.sendMessage(PREFIX + ChatColor.RED + "No first-join record found for " + name + ".");
+                    return;
+                }
 
-        ZoneId zoneId = runtime.config().joins().zoneId();
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, uuuu h:mm a z", Locale.US).withZone(zoneId);
-        ZonedDateTime then = firstJoinOpt.get().atZone(zoneId);
-        ZonedDateTime now = Instant.now().atZone(zoneId);
+                ZoneId zoneId = runtime.config().joins().zoneId();
+                DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, uuuu h:mm a z", Locale.US).withZone(zoneId);
+                ZonedDateTime then = firstJoinOpt.get().atZone(zoneId);
+                ZonedDateTime now = Instant.now().atZone(zoneId);
 
-        sender.sendMessage(PREFIX + "First join for " + ChatColor.AQUA + name + ChatColor.YELLOW
-                + ": " + ChatColor.WHITE + formatter.format(then)
-                + ChatColor.GRAY + " (" + formatAgo(then, now) + " ago)");
+                sender.sendMessage(PREFIX + "First join for " + ChatColor.AQUA + name + ChatColor.YELLOW
+                        + ": " + ChatColor.WHITE + formatter.format(then)
+                        + ChatColor.GRAY + " (" + formatAgo(then, now) + " ago)");
+            });
+        });
     }
 
     private String formatAgo(ZonedDateTime then, ZonedDateTime now) {

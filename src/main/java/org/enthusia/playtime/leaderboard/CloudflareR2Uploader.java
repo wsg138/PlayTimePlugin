@@ -2,6 +2,7 @@ package org.enthusia.playtime.leaderboard;
 
 import org.bukkit.plugin.java.JavaPlugin;
 import org.enthusia.playtime.config.PlaytimeConfig;
+import org.enthusia.playtime.util.PerformanceCounters;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -33,12 +34,14 @@ public final class CloudflareR2Uploader {
 
     private final JavaPlugin plugin;
     private final PlaytimeConfig.R2Export config;
+    private final PerformanceCounters counters;
     private final HttpClient httpClient;
     private boolean warnedInvalidConfig;
 
-    public CloudflareR2Uploader(JavaPlugin plugin, PlaytimeConfig.R2Export config) {
+    public CloudflareR2Uploader(JavaPlugin plugin, PlaytimeConfig.R2Export config, PerformanceCounters counters) {
         this.plugin = plugin;
         this.config = config;
+        this.counters = counters;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -46,9 +49,11 @@ public final class CloudflareR2Uploader {
 
     public void uploadFiles(Path directory, List<String> fileNames) {
         if (!config.enabled()) {
+            counters.r2UploadsSkipped.increment();
             return;
         }
         if (!hasRequiredConfig()) {
+            counters.r2UploadsSkipped.increment();
             warnInvalidConfig();
             return;
         }
@@ -56,8 +61,10 @@ public final class CloudflareR2Uploader {
         for (String fileName : fileNames) {
             Path file = directory.resolve(fileName);
             try {
+                counters.r2UploadsAttempted.increment();
                 uploadFile(file, objectKey(fileName));
             } catch (Exception exception) {
+                counters.r2UploadsFailed.increment();
                 plugin.getLogger().warning("Failed to upload leaderboard export to Cloudflare R2 (" + fileName + "): " + exception.getMessage());
             }
         }

@@ -24,6 +24,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     private final PlayTimePlugin plugin;
     private final PlaytimeRepository repository;
+    private final PerformanceCounters counters;
     private final ConcurrentHashMap<UUID, MinuteDelta> pendingMinutes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, PlayerProfile> pendingProfiles = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<JoinRecord> pendingJoins = new ConcurrentLinkedQueue<>();
@@ -34,9 +35,10 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private volatile BukkitTask flushTask;
     private volatile boolean closed;
 
-    public AsyncWriteQueue(PlayTimePlugin plugin, PlaytimeRepository repository, long flushIntervalTicks) {
+    public AsyncWriteQueue(PlayTimePlugin plugin, PlaytimeRepository repository, PerformanceCounters counters, long flushIntervalTicks) {
         this.plugin = plugin;
         this.repository = repository;
+        this.counters = counters;
         this.flushIntervalTicks = flushIntervalTicks;
     }
 
@@ -56,6 +58,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
             return;
         }
         pendingMinutes.merge(uuid, delta, MinuteDelta::plus);
+        counters.minuteDeltasQueued.increment();
     }
 
     public void enqueueJoin(UUID uuid, Instant joinedAt) {
@@ -142,6 +145,9 @@ public final class AsyncWriteQueue implements AutoCloseable {
             if (!minuteBatch.isEmpty()) {
                 repository.batchRecordMinutes(minuteBatch, Instant.now());
             }
+            if (!joinBatch.isEmpty() || !profileBatch.isEmpty() || !minuteBatch.isEmpty()) {
+                counters.flushBatches.increment();
+            }
         } catch (Exception exception) {
             requeueJoinBatch(joinBatch);
             requeueProfileBatch(profileBatch);
@@ -215,19 +221,24 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     @Override
     public void close() {
+        close(10);
+    }
+
+    public void close(int timeoutSeconds) {
         closed = true;
         if (flushTask != null) {
             flushTask.cancel();
             flushTask = null;
         }
-        waitForActiveFlush();
+        waitForActiveFlush(timeoutSeconds);
         flushSyncInternal();
-        waitForActiveFlush();
+        waitForActiveFlush(timeoutSeconds);
     }
 
-    private void waitForActiveFlush() {
+    private void waitForActiveFlush(int timeoutSeconds) {
         int spins = 0;
-        while (flushInProgress.get() && spins++ < 200) {
+        int maxSpins = Math.max(1, timeoutSeconds) * 100;
+        while (flushInProgress.get() && spins++ < maxSpins) {
             try {
                 Thread.sleep(10L);
             } catch (InterruptedException interruptedException) {

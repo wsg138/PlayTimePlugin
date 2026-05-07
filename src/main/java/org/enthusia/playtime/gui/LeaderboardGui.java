@@ -3,7 +3,6 @@ package org.enthusia.playtime.gui;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
-import org.bukkit.OfflinePlayer;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
@@ -73,6 +72,12 @@ public final class LeaderboardGui implements PlaytimeGui {
         List<LeaderboardEntry> entries = runtime == null
                 ? List.of()
                 : runtime.readService().getLeaderboard(metric, range, pageSize, (page - 1) * pageSize);
+        if (runtime != null && entries.isEmpty()
+                && runtime.readService().isLeaderboardLoading(metric, range, pageSize, (page - 1) * pageSize)) {
+            runtime.counters().guiLoadingRenders.increment();
+            inventory.setItem(entrySlots.get(0), loadingItem());
+            scheduleRefresh();
+        }
 
         LeaderboardEntry selfEntry = null;
         for (int index = 0; index < entries.size() && index < entrySlots.size(); index++) {
@@ -203,12 +208,16 @@ public final class LeaderboardGui implements PlaytimeGui {
         RangeTotals totals = runtime == null
                 ? new RangeTotals(0, 0, 0)
                 : runtime.readService().getRangeTotals(viewer.getUniqueId(), range);
+        boolean loading = runtime != null && runtime.readService().isRangeLoading(viewer.getUniqueId(), range);
 
         ItemStack book = new ItemStack(Material.BOOK);
         ItemMeta meta = book.getItemMeta();
         meta.setDisplayName(ChatColor.AQUA + "Your stats - " + niceMetric(metric) + ", " + niceRange(range));
         List<String> lore = new ArrayList<>();
         lore.add(ChatColor.GRAY + "Rank: " + (selfEntry == null ? ChatColor.DARK_GRAY + "Not on this page" : ChatColor.YELLOW + "#" + selfEntry.rank));
+        if (loading) {
+            lore.add(ChatColor.YELLOW + "Refreshing cached stats...");
+        }
         lore.add(lineForMetric("TOTAL", ChatColor.YELLOW, totals.totalMinutes));
         lore.add(lineForMetric("ACTIVE", ChatColor.GREEN, totals.activeMinutes));
         lore.add(lineForMetric("AFK", ChatColor.RED, totals.afkMinutes));
@@ -242,8 +251,28 @@ public final class LeaderboardGui implements PlaytimeGui {
                 return cached;
             }
         }
-        OfflinePlayer offline = Bukkit.getOfflinePlayer(uuid);
-        return offline.getName() != null ? offline.getName() : uuid.toString().substring(0, 8);
+        return uuid.toString().substring(0, 8);
+    }
+
+    private ItemStack loadingItem() {
+        ItemStack item = new ItemStack(Material.CLOCK);
+        ItemMeta meta = item.getItemMeta();
+        meta.setDisplayName(ChatColor.YELLOW + "Loading leaderboard...");
+        meta.setLore(List.of(ChatColor.GRAY + "Cached data is being refreshed."));
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    private void scheduleRefresh() {
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!viewer.isOnline()) {
+                return;
+            }
+            if (viewer.getOpenInventory().getTopInventory().getHolder() instanceof PlaytimeGuiHolder holder
+                    && holder.getGui() == this) {
+                render();
+            }
+        }, 20L);
     }
 
     private static String normalizeMetric(String metric) {

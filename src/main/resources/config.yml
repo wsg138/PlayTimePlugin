@@ -1,3 +1,5 @@
+config-version: 2
+
 storage:
   # sqlite is the intended default target.
   # mysql and mariadb remain supported for future scale-out if you decide to move later.
@@ -48,6 +50,19 @@ sampling:
     # returns to a non-suspicious state.
     max-counted-consecutive-minutes: 10
 
+activity:
+  # Minimum time between movement-based activity mutations for the same player.
+  movement-throttle-ms: 250
+
+  # Existing behavior counted meaningful head rotation as activity.
+  count-head-rotation: true
+
+  # Squared distance threshold used to ignore tiny movement noise.
+  tiny-movement-threshold: 0.01
+
+  # Keeps suspicious/autoclick swing tracking enabled without making other activity events heavier.
+  suspicious-swing-tracking-enabled: true
+
 chat:
   count-chat-as-activity: true
   count-commands-as-activity: true
@@ -95,11 +110,22 @@ leaderboards:
     # then fill in the access key values in your live server config.yml.
     r2:
       enabled: false
-      account-id: "83982f6d6277634f57d216e6a7f24125"
+      account-id: ""
       bucket: "playtime-leaderboard"
       access-key-id: ""
       secret-access-key: ""
       prefix: "leaderboards"
+
+    run-on-reload-close: false
+    run-on-disable: true
+    shutdown-timeout-seconds: 10
+
+playtime-audit:
+  enabled: true
+  interval-minutes: 5
+  max-players-per-tick: 1
+  repair-mode: true
+  debug-log-repairs: false
 
 analytics:
   # Optional Plan Player Analytics integration. Requires the Plan plugin to be installed.
@@ -155,3 +181,6 @@ ux:
 debug:
   enabled: false
   log-suspicious: true
+  performance:
+    enabled: false
+    log-interval-seconds: 300
