@@ -205,7 +205,7 @@ public final class ActivityTracker implements Listener {
             case ACTIVE -> config.actionBar().showActive() ? stripColor(config.actionBar().text().active()) : null;
             case IDLE -> config.actionBar().showIdle() ? stripColor(config.actionBar().text().idle()) : null;
             case AFK -> config.actionBar().showAfk() ? stripColor(config.actionBar().text().afk()) : null;
-            case SUSPICIOUS -> config.actionBar().showSuspicious() ? stripColor(config.actionBar().text().suspicious()) : null;
+            case SUSPICIOUS -> null;
         };
     }
 
