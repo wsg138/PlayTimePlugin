@@ -8,7 +8,7 @@
 
     <groupId>org.enthusia</groupId>
     <artifactId>playtime-plugin</artifactId>
-    <version>3.4.0</version>
+    <version>3.4.1</version>
     <packaging>jar</packaging>
 
     <name>EnthusiaPlaytime</name>

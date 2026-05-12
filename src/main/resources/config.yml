@@ -170,7 +170,7 @@ ux:
     show-active: false
     show-idle: false
     show-afk: true
-    show-suspicious: true
+    show-suspicious: false
 
     text:
       active: "Playing"

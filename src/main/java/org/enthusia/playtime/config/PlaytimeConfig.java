@@ -169,7 +169,7 @@ public final class PlaytimeConfig {
                 booleanValue(cfg, List.of("ux.actionbar.show-active"), false),
                 booleanValue(cfg, List.of("ux.actionbar.show-idle"), false),
                 booleanValue(cfg, List.of("ux.actionbar.show-afk"), true),
-                booleanValue(cfg, List.of("ux.actionbar.show-suspicious"), true),
+                booleanValue(cfg, List.of("ux.actionbar.show-suspicious"), false),
                 new ActionBarText(
                         stringValue(cfg, List.of("ux.actionbar.text.active"), "Playing"),
                         stringValue(cfg, List.of("ux.actionbar.text.idle"), "Idle"),
