@@ -7,6 +7,7 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.SkullMeta;
+import org.bukkit.plugin.IllegalPluginAccessException;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.util.PerformanceCounters;
 
@@ -129,10 +130,17 @@ public final class HeadCache {
         if (!plugin.isEnabled() || !saveQueued.compareAndSet(false, true)) {
             return;
         }
-        Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
+        try {
+            Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
+                saveQueued.set(false);
+                saveSnapshot(new HashMap<>(heads), new HashMap<>(names));
+            }, 20L * 60L);
+        } catch (IllegalPluginAccessException exception) {
             saveQueued.set(false);
-            saveSnapshot(new HashMap<>(heads), new HashMap<>(names));
-        }, 20L * 60L);
+            if (plugin.isEnabled()) {
+                throw exception;
+            }
+        }
     }
 
     private void saveSnapshot(Map<UUID, ItemStack> headSnapshot, Map<UUID, String> nameSnapshot) {

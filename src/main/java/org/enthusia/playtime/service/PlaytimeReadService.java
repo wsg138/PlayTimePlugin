@@ -1,6 +1,7 @@
 package org.enthusia.playtime.service;
 
 import org.bukkit.Bukkit;
+import org.bukkit.plugin.IllegalPluginAccessException;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.data.model.AdminServerStats;
@@ -181,17 +182,25 @@ public final class PlaytimeReadService {
             return;
         }
         counters.asyncRefreshesStarted.increment();
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            try {
-                T value = loader.get();
-                cache.put(key, new CacheEntry<>(value, System.currentTimeMillis()));
-                counters.asyncRefreshesCompleted.increment();
-            } catch (Exception exception) {
-                entry.refreshing.set(false);
-                counters.asyncRefreshesFailed.increment();
-                plugin.getLogger().log(Level.WARNING, "Failed to refresh playtime display cache for " + key + ".", exception);
+        try {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                try {
+                    T value = loader.get();
+                    cache.put(key, new CacheEntry<>(value, System.currentTimeMillis()));
+                    counters.asyncRefreshesCompleted.increment();
+                } catch (Exception exception) {
+                    entry.refreshing.set(false);
+                    counters.asyncRefreshesFailed.increment();
+                    plugin.getLogger().log(Level.WARNING, "Failed to refresh playtime display cache for " + key + ".", exception);
+                }
+            });
+        } catch (IllegalPluginAccessException exception) {
+            entry.refreshing.set(false);
+            counters.asyncRefreshesFailed.increment();
+            if (plugin.isEnabled()) {
+                throw exception;
             }
-        });
+        }
     }
 
     private <T> void expire(CacheEntry<T> entry) {

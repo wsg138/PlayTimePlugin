@@ -8,6 +8,7 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
+import org.bukkit.plugin.IllegalPluginAccessException;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 import org.enthusia.playtime.util.TimeFormats;
@@ -81,25 +82,49 @@ public final class SeenCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            Optional<Instant> lastSeenOpt = runtime.repository().getLastSeen(uuid);
-            Bukkit.getScheduler().runTask(plugin, () -> {
-                if (lastSeenOpt.isEmpty()) {
-                    sender.sendMessage(PREFIX + ChatColor.RED + "No last-seen record found for " + name + ".");
+        if (!plugin.isEnabled()) {
+            return;
+        }
+        try {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                Optional<Instant> lastSeenOpt = runtime.repository().getLastSeen(uuid);
+                if (!plugin.isEnabled()) {
                     return;
                 }
-
-                Instant lastSeen = lastSeenOpt.get();
-                Instant now = Instant.now();
-                long agoMillis = Math.max(0L, Duration.between(lastSeen, now).toMillis());
-                DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, uuuu h:mm a z", Locale.US).withZone(runtime.config().joins().zoneId());
-
-                sender.sendMessage(PREFIX + name + ChatColor.GRAY + " | "
-                        + ChatColor.YELLOW + "Last seen " + ChatColor.AQUA + TimeFormats.formatDurationMillis(agoMillis)
-                        + ChatColor.YELLOW + " ago "
-                        + ChatColor.GRAY + "(" + ChatColor.WHITE + formatter.format(lastSeen) + ChatColor.GRAY + ")");
+                try {
+                    Bukkit.getScheduler().runTask(plugin, () -> sendSeen(sender, runtime, name, lastSeenOpt));
+                } catch (IllegalPluginAccessException exception) {
+                    if (plugin.isEnabled()) {
+                        throw exception;
+                    }
+                }
             });
-        });
+        } catch (IllegalPluginAccessException exception) {
+            if (plugin.isEnabled()) {
+                throw exception;
+            }
+        }
+    }
+
+    private void sendSeen(CommandSender sender, PlaytimeRuntime runtime, String name, Optional<Instant> lastSeenOpt) {
+        PlaytimeRuntime current = plugin.runtime();
+        if (current != runtime) {
+            return;
+        }
+        if (lastSeenOpt.isEmpty()) {
+            sender.sendMessage(PREFIX + ChatColor.RED + "No last-seen record found for " + name + ".");
+            return;
+        }
+
+        Instant lastSeen = lastSeenOpt.get();
+        Instant now = Instant.now();
+        long agoMillis = Math.max(0L, Duration.between(lastSeen, now).toMillis());
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, uuuu h:mm a z", Locale.US).withZone(runtime.config().joins().zoneId());
+
+        sender.sendMessage(PREFIX + name + ChatColor.GRAY + " | "
+                + ChatColor.YELLOW + "Last seen " + ChatColor.AQUA + TimeFormats.formatDurationMillis(agoMillis)
+                + ChatColor.YELLOW + " ago "
+                + ChatColor.GRAY + "(" + ChatColor.WHITE + formatter.format(lastSeen) + ChatColor.GRAY + ")");
     }
 
     @Override

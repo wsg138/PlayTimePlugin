@@ -10,6 +10,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.plugin.IllegalPluginAccessException;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.model.PlaytimeSnapshot;
 import org.enthusia.playtime.service.PlaytimeRuntime;
@@ -118,15 +119,24 @@ public final class PlaytimeMainGui implements PlaytimeGui {
     }
 
     private void scheduleRefresh() {
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (!viewer.isOnline()) {
-                return;
+        if (!plugin.isEnabled()) {
+            return;
+        }
+        try {
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (!viewer.isOnline()) {
+                    return;
+                }
+                if (viewer.getOpenInventory().getTopInventory().getHolder() instanceof PlaytimeGuiHolder holder
+                        && holder.getGui() == this) {
+                    render();
+                }
+            }, 20L);
+        } catch (IllegalPluginAccessException exception) {
+            if (plugin.isEnabled()) {
+                throw exception;
             }
-            if (viewer.getOpenInventory().getTopInventory().getHolder() instanceof PlaytimeGuiHolder holder
-                    && holder.getGui() == this) {
-                render();
-            }
-        }, 20L);
+        }
     }
 
     @Override

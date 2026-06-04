@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 public final class PlaytimeRuntime implements AutoCloseable {
@@ -44,6 +45,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private final PerformanceCounters counters = new PerformanceCounters();
     private final AutoCloseable planHook;
     private final PlaytimeServiceImpl playtimeService;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
     private final Map<UUID, Integer> suspiciousStreakMinutes = new ConcurrentHashMap<>();
     private final Map<UUID, Long> processedSuspicionResetMarkers = new ConcurrentHashMap<>();
     private final Map<UUID, JoinDecision> recentJoinDecisions = new ConcurrentHashMap<>();
@@ -359,6 +361,9 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     public void close(boolean reloadClose) {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
         if (minuteTickTask != null) {
             minuteTickTask.cancel();
             minuteTickTask = null;

@@ -5,6 +5,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.plugin.IllegalPluginAccessException;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 
@@ -18,12 +19,21 @@ public final class HeadCacheListener implements Listener {
 
     @EventHandler(ignoreCancelled = true)
     public void onJoin(PlayerJoinEvent event) {
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            PlaytimeRuntime runtime = plugin.runtime();
-            Player player = Bukkit.getPlayer(event.getPlayer().getUniqueId());
-            if (runtime != null && player != null && player.isOnline()) {
-                runtime.noteHead(player);
+        if (!plugin.isEnabled()) {
+            return;
+        }
+        try {
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                PlaytimeRuntime runtime = plugin.runtime();
+                Player player = Bukkit.getPlayer(event.getPlayer().getUniqueId());
+                if (runtime != null && player != null && player.isOnline()) {
+                    runtime.noteHead(player);
+                }
+            }, 2L);
+        } catch (IllegalPluginAccessException exception) {
+            if (plugin.isEnabled()) {
+                throw exception;
             }
-        }, 2L);
+        }
     }
 }

@@ -18,7 +18,7 @@ import org.enthusia.playtime.service.PlaytimeRuntime;
 
 import java.util.logging.Level;
 
-public final class PlayTimePlugin extends JavaPlugin {
+public class PlayTimePlugin extends JavaPlugin {
 
     private volatile PlaytimeRuntime runtime;
     private BedrockSupport bedrockSupport;
@@ -52,7 +52,11 @@ public final class PlayTimePlugin extends JavaPlugin {
         PlaytimeRuntime existing = runtime;
         runtime = null;
         if (existing != null) {
-            existing.close(false);
+            try {
+                existing.close(false);
+            } catch (Exception exception) {
+                getLogger().log(Level.SEVERE, "Failed to close playtime runtime during disable.", exception);
+            }
         }
         Bukkit.getServicesManager().unregisterAll(this);
     }
@@ -76,13 +80,18 @@ public final class PlayTimePlugin extends JavaPlugin {
         PlaytimeRuntime oldRuntime = this.runtime;
         if (oldRuntime != null) {
             state = oldRuntime.snapshotState();
-            oldRuntime.close(true);
-            this.runtime = null;
         }
 
         try {
             PlaytimeRuntime newRuntime = new PlaytimeRuntime(this, config, state);
             this.runtime = newRuntime;
+            if (oldRuntime != null) {
+                try {
+                    oldRuntime.close(true);
+                } catch (Exception closeException) {
+                    getLogger().log(Level.WARNING, "New playtime runtime is active, but the old runtime did not close cleanly.", closeException);
+                }
+            }
             refreshPlaceholderExpansion();
             if (reason != null) {
                 getLogger().info("Playtime runtime reloaded successfully. Flush interval="
@@ -93,7 +102,7 @@ public final class PlayTimePlugin extends JavaPlugin {
             return true;
         } catch (Exception exception) {
             getLogger().log(Level.SEVERE, "Failed to " + (reason == null ? "initialize" : "reload")
-                    + " playtime runtime after the previous runtime was closed. A server restart may be needed.", exception);
+                    + " playtime runtime. Existing runtime was left running when available.", exception);
             return false;
         }
     }

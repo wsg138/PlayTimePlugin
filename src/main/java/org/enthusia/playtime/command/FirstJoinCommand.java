@@ -8,6 +8,7 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
+import org.bukkit.plugin.IllegalPluginAccessException;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 
@@ -77,24 +78,48 @@ public final class FirstJoinCommand implements CommandExecutor, TabCompleter {
     }
 
     private void showFirstJoin(CommandSender sender, PlaytimeRuntime runtime, UUID uuid, String name) {
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            Optional<Instant> firstJoinOpt = runtime.repository().getFirstJoin(uuid);
-            Bukkit.getScheduler().runTask(plugin, () -> {
-                if (firstJoinOpt.isEmpty()) {
-                    sender.sendMessage(PREFIX + ChatColor.RED + "No first-join record found for " + name + ".");
+        if (!plugin.isEnabled()) {
+            return;
+        }
+        try {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                Optional<Instant> firstJoinOpt = runtime.repository().getFirstJoin(uuid);
+                if (!plugin.isEnabled()) {
                     return;
                 }
-
-                ZoneId zoneId = runtime.config().joins().zoneId();
-                DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, uuuu h:mm a z", Locale.US).withZone(zoneId);
-                ZonedDateTime then = firstJoinOpt.get().atZone(zoneId);
-                ZonedDateTime now = Instant.now().atZone(zoneId);
-
-                sender.sendMessage(PREFIX + "First join for " + ChatColor.AQUA + name + ChatColor.YELLOW
-                        + ": " + ChatColor.WHITE + formatter.format(then)
-                        + ChatColor.GRAY + " (" + formatAgo(then, now) + " ago)");
+                try {
+                    Bukkit.getScheduler().runTask(plugin, () -> sendFirstJoin(sender, runtime, name, firstJoinOpt));
+                } catch (IllegalPluginAccessException exception) {
+                    if (plugin.isEnabled()) {
+                        throw exception;
+                    }
+                }
             });
-        });
+        } catch (IllegalPluginAccessException exception) {
+            if (plugin.isEnabled()) {
+                throw exception;
+            }
+        }
+    }
+
+    private void sendFirstJoin(CommandSender sender, PlaytimeRuntime runtime, String name, Optional<Instant> firstJoinOpt) {
+        PlaytimeRuntime current = plugin.runtime();
+        if (current != runtime) {
+            return;
+        }
+        if (firstJoinOpt.isEmpty()) {
+            sender.sendMessage(PREFIX + ChatColor.RED + "No first-join record found for " + name + ".");
+            return;
+        }
+
+        ZoneId zoneId = runtime.config().joins().zoneId();
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, uuuu h:mm a z", Locale.US).withZone(zoneId);
+        ZonedDateTime then = firstJoinOpt.get().atZone(zoneId);
+        ZonedDateTime now = Instant.now().atZone(zoneId);
+
+        sender.sendMessage(PREFIX + "First join for " + ChatColor.AQUA + name + ChatColor.YELLOW
+                + ": " + ChatColor.WHITE + formatter.format(then)
+                + ChatColor.GRAY + " (" + formatAgo(then, now) + " ago)");
     }
 
     private String formatAgo(ZonedDateTime then, ZonedDateTime now) {
