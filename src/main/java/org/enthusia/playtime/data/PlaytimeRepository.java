@@ -228,11 +228,25 @@ public final class PlaytimeRepository {
     }
 
     public Optional<Instant> getFirstJoin(UUID uuid) {
-        return readInstantByUuid("SELECT first_join FROM lifetime_agg WHERE player_uuid = ?", uuid, "first join");
+        try (Connection connection = provider.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT first_join FROM lifetime_agg WHERE player_uuid = ?")) {
+            return readInstantByUuid(statement, uuid);
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed to load first join: " + exception.getMessage());
+            return Optional.empty();
+        }
     }
 
     public Optional<Instant> getLastJoin(UUID uuid) {
-        return readInstantByUuid("SELECT last_join FROM lifetime_agg WHERE player_uuid = ?", uuid, "last join");
+        try (Connection connection = provider.getConnection();
+             PreparedStatement statement = connection.prepareStatement(
+                     "SELECT last_join FROM lifetime_agg WHERE player_uuid = ?")) {
+            return readInstantByUuid(statement, uuid);
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed to load last join: " + exception.getMessage());
+            return Optional.empty();
+        }
     }
 
     public Optional<Instant> getLastSeen(UUID uuid) {
@@ -516,13 +530,7 @@ public final class PlaytimeRepository {
     public RangeTotals getServerRangeTotals(String rangeId, Instant now) {
         String range = normalizeRange(rangeId);
         if (range.equals("ALL")) {
-            String sql = """
-                    SELECT COALESCE(SUM(active_minutes), 0) AS active,
-                           COALESCE(SUM(afk_minutes), 0) AS afk,
-                           COALESCE(SUM(total_minutes), 0) AS total
-                    FROM lifetime_agg
-                    """;
-            return singleTotalsQuery(sql);
+            return getLifetimeServerTotals();
         }
 
         DateRange dateRange = dateRangeFor(range, now);
@@ -787,9 +795,14 @@ public final class PlaytimeRepository {
         return stats;
     }
 
-    private RangeTotals singleTotalsQuery(String sql) {
+    private RangeTotals getLifetimeServerTotals() {
         try (Connection connection = provider.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql);
+             PreparedStatement statement = connection.prepareStatement("""
+                     SELECT COALESCE(SUM(active_minutes), 0) AS active,
+                            COALESCE(SUM(afk_minutes), 0) AS afk,
+                            COALESCE(SUM(total_minutes), 0) AS total
+                     FROM lifetime_agg
+                     """);
              ResultSet resultSet = statement.executeQuery()) {
             if (!resultSet.next()) {
                 return new RangeTotals(0, 0, 0);
@@ -854,20 +867,14 @@ public final class PlaytimeRepository {
         }
     }
 
-    private Optional<Instant> readInstantByUuid(String sql, UUID uuid, String label) {
-        try (Connection connection = provider.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, uuid.toString());
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    return Optional.empty();
-                }
-                Timestamp timestamp = resultSet.getTimestamp(1);
-                return Optional.ofNullable(timestamp).map(Timestamp::toInstant);
+    private Optional<Instant> readInstantByUuid(PreparedStatement statement, UUID uuid) throws SQLException {
+        statement.setString(1, uuid.toString());
+        try (ResultSet resultSet = statement.executeQuery()) {
+            if (!resultSet.next()) {
+                return Optional.empty();
             }
-        } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load " + label + ": " + exception.getMessage());
-            return Optional.empty();
+            Timestamp timestamp = resultSet.getTimestamp(1);
+            return Optional.ofNullable(timestamp).map(Timestamp::toInstant);
         }
     }
 

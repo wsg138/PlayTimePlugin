@@ -18,6 +18,7 @@ import org.enthusia.playtime.util.TimeFormats;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -103,7 +104,7 @@ public final class PlaytimeMainGui implements PlaytimeGui {
         Material fillerMaterial = Material.GRAY_STAINED_GLASS_PANE;
         if (runtime != null) {
             try {
-                fillerMaterial = Material.valueOf(runtime.config().gui().fillerMaterial().toUpperCase());
+                fillerMaterial = Material.valueOf(runtime.config().gui().fillerMaterial().toUpperCase(Locale.ROOT));
             } catch (IllegalArgumentException ignored) {
                 fillerMaterial = Material.GRAY_STAINED_GLASS_PANE;
             }

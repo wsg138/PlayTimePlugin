@@ -14,6 +14,7 @@ import org.enthusia.playtime.util.PerformanceCounters;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -230,8 +231,9 @@ public final class PlaytimeReadService {
         if (rangeId == null) {
             return "ALL";
         }
-        return switch (rangeId.toUpperCase()) {
-            case "TODAY", "7D", "30D", "ALL" -> rangeId.toUpperCase();
+        String normalized = rangeId.toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "TODAY", "7D", "30D", "ALL" -> normalized;
             default -> "ALL";
         };
     }
@@ -240,8 +242,9 @@ public final class PlaytimeReadService {
         if (metricId == null) {
             return "TOTAL";
         }
-        return switch (metricId.toUpperCase()) {
-            case "ACTIVE", "AFK", "TOTAL" -> metricId.toUpperCase();
+        String normalized = metricId.toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "ACTIVE", "AFK", "TOTAL" -> normalized;
             default -> "TOTAL";
         };
     }
