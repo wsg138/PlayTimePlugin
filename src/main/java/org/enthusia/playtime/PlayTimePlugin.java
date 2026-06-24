@@ -20,7 +20,7 @@ import java.util.logging.Level;
 
 public class PlayTimePlugin extends JavaPlugin {
 
-    private volatile PlaytimeRuntime runtime;
+    private volatile PlaytimeRuntime activeRuntime;
     private BedrockSupport bedrockSupport;
     private PlaytimePlaceholderExpansion placeholderExpansion;
 
@@ -49,8 +49,8 @@ public class PlayTimePlugin extends JavaPlugin {
             placeholderExpansion.unregister();
             placeholderExpansion = null;
         }
-        PlaytimeRuntime existing = runtime;
-        runtime = null;
+        PlaytimeRuntime existing = activeRuntime;
+        activeRuntime = null;
         if (existing != null) {
             try {
                 existing.close(false);
@@ -77,14 +77,14 @@ public class PlayTimePlugin extends JavaPlugin {
         }
 
         PlaytimeRuntime.RuntimeState state = null;
-        PlaytimeRuntime oldRuntime = this.runtime;
+        PlaytimeRuntime oldRuntime = this.activeRuntime;
         if (oldRuntime != null) {
             state = oldRuntime.snapshotState();
         }
 
         try {
             PlaytimeRuntime newRuntime = new PlaytimeRuntime(this, config, state);
-            this.runtime = newRuntime;
+            this.activeRuntime = newRuntime;
             if (oldRuntime != null) {
                 try {
                     oldRuntime.close(true);
@@ -108,11 +108,11 @@ public class PlayTimePlugin extends JavaPlugin {
     }
 
     public PlaytimeRuntime runtime() {
-        return runtime;
+        return activeRuntime;
     }
 
     public PlaytimeConfig getRuntimeConfig() {
-        PlaytimeRuntime current = runtime;
+        PlaytimeRuntime current = activeRuntime;
         return current == null ? PlaytimeConfig.load(this) : current.config();
     }
 
@@ -121,7 +121,7 @@ public class PlayTimePlugin extends JavaPlugin {
     }
 
     public PlaytimeService getPlaytimeService() {
-        PlaytimeRuntime current = runtime;
+        PlaytimeRuntime current = activeRuntime;
         return current == null ? null : current.playtimeService();
     }
 

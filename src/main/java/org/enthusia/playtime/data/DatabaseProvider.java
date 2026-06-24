@@ -11,6 +11,7 @@ import java.io.File;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Locale;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public final class DatabaseProvider {
@@ -51,14 +52,18 @@ public final class DatabaseProvider {
         }
 
         Logger log = plugin.getLogger();
-        log.warning("SQLite database file appears to have been moved; reopening the connection pool.");
+        if (log.isLoggable(Level.WARNING)) {
+            log.warning("SQLite database file appears to have been moved; reopening the connection pool.");
+        }
 
         synchronized (lock) {
             try {
                 rebuildDataSource();
                 return true;
             } catch (RuntimeException rte) {
-                log.severe("Failed to reopen SQLite database after move: " + rte.getMessage());
+                if (log.isLoggable(Level.SEVERE)) {
+                    log.severe("Failed to reopen SQLite database after move: " + rte.getMessage());
+                }
                 return false;
             }
         }
@@ -128,7 +133,9 @@ public final class DatabaseProvider {
             // ok
         } catch (Exception e) {
             Logger log = plugin.getLogger();
-            log.severe("Failed to open initial database connection: " + e.getMessage());
+            if (log.isLoggable(Level.SEVERE)) {
+                log.severe("Failed to open initial database connection: " + e.getMessage());
+            }
             throw new RuntimeException(e);
         }
     }

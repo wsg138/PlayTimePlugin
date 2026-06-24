@@ -38,7 +38,7 @@ public final class RomanTiering {
         long hours = totalMinutes / 60;
         Tier best = null;
         for (Tier tier : TIERS) {
-            if (hours >= tier.requiredHours && (best == null || tier.requiredHours > best.requiredHours)) {
+            if (hours >= tier.requiredHourCount && (best == null || tier.requiredHourCount > best.requiredHourCount)) {
                 best = tier;
             }
         }
@@ -50,20 +50,20 @@ public final class RomanTiering {
     }
 
     public static final class Tier {
-        private final String label;
-        private final long requiredHours;
+        private final String tierLabel;
+        private final long requiredHourCount;
 
         public Tier(String label, long requiredHours) {
-            this.label = label;
-            this.requiredHours = requiredHours;
+            this.tierLabel = label;
+            this.requiredHourCount = requiredHours;
         }
 
         public String label() {
-            return label;
+            return tierLabel;
         }
 
         public long requiredHours() {
-            return requiredHours;
+            return requiredHourCount;
         }
     }
 }
