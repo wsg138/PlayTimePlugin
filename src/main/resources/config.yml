@@ -13,7 +13,7 @@ storage:
     port: 3306
     database: "playtime"
     username: "root"
-    password: "password"
+    password: ""
     use-ssl: false
     pool-size: 10
 

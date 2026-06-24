@@ -11,18 +11,18 @@ import java.util.Locale;
 
 public final class PlaytimeConfig {
 
-    private final Storage storage;
-    private final Sampling sampling;
-    private final Activity activity;
-    private final ChatActivity chatActivity;
-    private final Joins joins;
-    private final Leaderboards leaderboards;
-    private final Analytics analytics;
-    private final Gui gui;
-    private final Placeholders placeholders;
-    private final ActionBar actionBar;
-    private final PlaytimeAudit playtimeAudit;
-    private final Debug debug;
+    private final Storage storageConfig;
+    private final Sampling samplingConfig;
+    private final Activity activityConfig;
+    private final ChatActivity chatActivityConfig;
+    private final Joins joinsConfig;
+    private final Leaderboards leaderboardsConfig;
+    private final Analytics analyticsConfig;
+    private final Gui guiConfig;
+    private final Placeholders placeholdersConfig;
+    private final ActionBar actionBarConfig;
+    private final PlaytimeAudit playtimeAuditConfig;
+    private final Debug debugConfig;
 
     private PlaytimeConfig(Storage storage,
                            Sampling sampling,
@@ -36,18 +36,18 @@ public final class PlaytimeConfig {
                            ActionBar actionBar,
                            PlaytimeAudit playtimeAudit,
                            Debug debug) {
-        this.storage = storage;
-        this.sampling = sampling;
-        this.activity = activity;
-        this.chatActivity = chatActivity;
-        this.joins = joins;
-        this.leaderboards = leaderboards;
-        this.analytics = analytics;
-        this.gui = gui;
-        this.placeholders = placeholders;
-        this.actionBar = actionBar;
-        this.playtimeAudit = playtimeAudit;
-        this.debug = debug;
+        this.storageConfig = storage;
+        this.samplingConfig = sampling;
+        this.activityConfig = activity;
+        this.chatActivityConfig = chatActivity;
+        this.joinsConfig = joins;
+        this.leaderboardsConfig = leaderboards;
+        this.analyticsConfig = analytics;
+        this.guiConfig = gui;
+        this.placeholdersConfig = placeholders;
+        this.actionBarConfig = actionBar;
+        this.playtimeAuditConfig = playtimeAudit;
+        this.debugConfig = debug;
     }
 
     public static PlaytimeConfig load(JavaPlugin plugin) {
@@ -67,7 +67,7 @@ public final class PlaytimeConfig {
                         intValue(cfg, List.of("storage.mysql.port"), 3306),
                         stringValue(cfg, List.of("storage.mysql.database"), "playtime"),
                         stringValue(cfg, List.of("storage.mysql.username"), "root"),
-                        stringValue(cfg, List.of("storage.mysql.password"), "password"),
+                        stringValue(cfg, List.of("storage.mysql.password"), ""),
                         booleanValue(cfg, List.of("storage.mysql.use-ssl"), false),
                         Math.max(2, intValue(cfg, List.of("storage.mysql.pool-size"), 10))
                 ),
@@ -199,163 +199,163 @@ public final class PlaytimeConfig {
     }
 
     public Storage storage() {
-        return storage;
+        return storageConfig;
     }
 
     public Sampling sampling() {
-        return sampling;
+        return samplingConfig;
     }
 
     public Activity activity() {
-        return activity;
+        return activityConfig;
     }
 
     public ChatActivity chatActivity() {
-        return chatActivity;
+        return chatActivityConfig;
     }
 
     public Joins joins() {
-        return joins;
+        return joinsConfig;
     }
 
     public Leaderboards leaderboards() {
-        return leaderboards;
+        return leaderboardsConfig;
     }
 
     public Analytics analytics() {
-        return analytics;
+        return analyticsConfig;
     }
 
     public Gui gui() {
-        return gui;
+        return guiConfig;
     }
 
     public Placeholders placeholders() {
-        return placeholders;
+        return placeholdersConfig;
     }
 
     public ActionBar actionBar() {
-        return actionBar;
+        return actionBarConfig;
     }
 
     public PlaytimeAudit playtimeAudit() {
-        return playtimeAudit;
+        return playtimeAuditConfig;
     }
 
     public Debug debug() {
-        return debug;
+        return debugConfig;
     }
 
     public StorageType getStorageType() {
-        return storage.type;
+        return storageConfig.type;
     }
 
     public String getSqliteFile() {
-        return storage.sqliteFile;
+        return storageConfig.sqliteFile;
     }
 
     public String getMysqlHost() {
-        return storage.mysql.host;
+        return storageConfig.mysql.host;
     }
 
     public int getMysqlPort() {
-        return storage.mysql.port;
+        return storageConfig.mysql.port;
     }
 
     public String getMysqlDatabase() {
-        return storage.mysql.database;
+        return storageConfig.mysql.database;
     }
 
     public String getMysqlUsername() {
-        return storage.mysql.username;
+        return storageConfig.mysql.username;
     }
 
     public String getMysqlPassword() {
-        return storage.mysql.password;
+        return storageConfig.mysql.password;
     }
 
     public boolean isMysqlUseSsl() {
-        return storage.mysql.useSsl;
+        return storageConfig.mysql.useSsl;
     }
 
     public int getMysqlPoolSize() {
-        return storage.mysql.poolSize;
+        return storageConfig.mysql.poolSize;
     }
 
     public long getFlushIntervalTicks() {
-        return storage.flushIntervalTicks;
+        return storageConfig.flushIntervalTicks;
     }
 
     public int getIdleSeconds() {
-        return (int) sampling.idleSeconds;
+        return (int) samplingConfig.idleSeconds;
     }
 
     public int getAfkSeconds() {
-        return (int) sampling.afkSeconds;
+        return (int) samplingConfig.afkSeconds;
     }
 
     public boolean countChatAsActivity() {
-        return chatActivity.countChatAsActivity;
+        return chatActivityConfig.countChatAsActivity;
     }
 
     public boolean countCommandsAsActivity() {
-        return chatActivity.countCommandsAsActivity;
+        return chatActivityConfig.countCommandsAsActivity;
     }
 
     public int getJoinRetentionDays() {
-        return joins.retentionDays;
+        return joinsConfig.retentionDays;
     }
 
     public String getJoinTimezoneId() {
-        return joins.zoneId.getId();
+        return joinsConfig.zoneId.getId();
     }
 
     public boolean isFirstJoinEnabled() {
-        return joins.firstJoin.enabled;
+        return joinsConfig.firstJoin.enabled;
     }
 
     public String getFirstJoinBroadcast() {
-        return joins.firstJoin.broadcast;
+        return joinsConfig.firstJoin.broadcast;
     }
 
     public List<String> getFirstJoinPlayerLines() {
-        return joins.firstJoin.playerMessage;
+        return joinsConfig.firstJoin.playerMessage;
     }
 
     public boolean isFirstJoinPingEnabled() {
-        return joins.firstJoin.ping.enabled;
+        return joinsConfig.firstJoin.ping.enabled;
     }
 
     public String getFirstJoinPingSound() {
-        return joins.firstJoin.ping.sound;
+        return joinsConfig.firstJoin.ping.sound;
     }
 
     public float getFirstJoinPingVolume() {
-        return joins.firstJoin.ping.volume;
+        return joinsConfig.firstJoin.ping.volume;
     }
 
     public float getFirstJoinPingPitch() {
-        return joins.firstJoin.ping.pitch;
+        return joinsConfig.firstJoin.ping.pitch;
     }
 
     public boolean isGuiEnabled() {
-        return gui.enabled;
+        return guiConfig.enabled;
     }
 
     public boolean isPlaceholdersEnabled() {
-        return placeholders.enabled;
+        return placeholdersConfig.enabled;
     }
 
     public boolean isDebugEnabled() {
-        return debug.enabled;
+        return debugConfig.enabled;
     }
 
     public boolean isPlanIntegrationEnabled() {
-        return analytics.plan().enabled();
+        return analyticsConfig.plan().enabled();
     }
 
     public int getHourlyAnalyticsRetentionDays() {
-        return analytics.hourlyRetentionDays();
+        return analyticsConfig.hourlyRetentionDays();
     }
 
     public record Storage(StorageType type, String sqliteFile, Mysql mysql, long flushIntervalTicks) {
