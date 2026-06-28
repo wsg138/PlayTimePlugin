@@ -8,7 +8,7 @@
 
     <groupId>org.enthusia</groupId>
     <artifactId>playtime-plugin</artifactId>
-    <version>3.4.0</version>
+    <version>3.5.0</version>
     <packaging>jar</packaging>
 
     <name>EnthusiaPlaytime</name>
@@ -132,6 +132,9 @@
                         </goals>
                         <configuration>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
                             <relocations>
                                 <relocation>
                                     <pattern>com.zaxxer.hikari</pattern>

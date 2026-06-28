@@ -105,6 +105,7 @@ public final class DatabaseProvider {
 
             String jdbcUrl = "jdbc:sqlite:" + sqliteFile.getAbsolutePath();
             hikariConfig.setJdbcUrl(jdbcUrl);
+            hikariConfig.setDriverClassName(org.sqlite.JDBC.class.getName());
             hikariConfig.setConnectionTestQuery("SELECT 1");
             hikariConfig.setMaximumPoolSize(5);
         } else {
@@ -116,6 +117,7 @@ public final class DatabaseProvider {
                     "&useSSL=" + config.isMysqlUseSsl();
 
             hikariConfig.setJdbcUrl(jdbcUrl);
+            hikariConfig.setDriverClassName(org.mariadb.jdbc.Driver.class.getName());
             hikariConfig.setUsername(config.getMysqlUsername());
             hikariConfig.setPassword(config.getMysqlPassword());
             hikariConfig.setMaximumPoolSize(config.getMysqlPoolSize());
