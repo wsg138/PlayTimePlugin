@@ -16,7 +16,7 @@ import java.util.UUID;
 public final class PlaytimeServiceImpl implements PlaytimeService {
 
     private final PlaytimeReadService readService;
-    private final PlaytimeRepository repository;
+    private final PlaytimeRepository playtimeRepository;
     private final ActivityTracker tracker;
     private final SessionManager sessionManager;
 
@@ -25,7 +25,7 @@ public final class PlaytimeServiceImpl implements PlaytimeService {
                                ActivityTracker tracker,
                                SessionManager sessionManager) {
         this.readService = readService;
-        this.repository = repository;
+        this.playtimeRepository = repository;
         this.tracker = tracker;
         this.sessionManager = sessionManager;
     }
@@ -57,6 +57,6 @@ public final class PlaytimeServiceImpl implements PlaytimeService {
     }
 
     public PlaytimeRepository repository() {
-        return repository;
+        return playtimeRepository;
     }
 }

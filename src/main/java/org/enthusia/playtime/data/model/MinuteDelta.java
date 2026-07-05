@@ -2,31 +2,31 @@ package org.enthusia.playtime.data.model;
 
 public final class MinuteDelta {
 
-    private final long activeMinutes;
-    private final long afkMinutes;
+    private final long activeMinuteCount;
+    private final long afkMinuteCount;
 
     public MinuteDelta(long activeMinutes, long afkMinutes) {
-        this.activeMinutes = Math.max(0L, activeMinutes);
-        this.afkMinutes = Math.max(0L, afkMinutes);
+        this.activeMinuteCount = Math.max(0L, activeMinutes);
+        this.afkMinuteCount = Math.max(0L, afkMinutes);
     }
 
     public long activeMinutes() {
-        return activeMinutes;
+        return activeMinuteCount;
     }
 
     public long afkMinutes() {
-        return afkMinutes;
+        return afkMinuteCount;
     }
 
     public long totalMinutes() {
-        return activeMinutes + afkMinutes;
+        return activeMinuteCount + afkMinuteCount;
     }
 
     public MinuteDelta plus(MinuteDelta other) {
-        return new MinuteDelta(this.activeMinutes + other.activeMinutes, this.afkMinutes + other.afkMinutes);
+        return new MinuteDelta(this.activeMinuteCount + other.activeMinuteCount, this.afkMinuteCount + other.afkMinuteCount);
     }
 
     public RangeTotals toRangeTotals() {
-        return new RangeTotals(activeMinutes, afkMinutes, totalMinutes());
+        return new RangeTotals(activeMinuteCount, afkMinuteCount, totalMinutes());
     }
 }

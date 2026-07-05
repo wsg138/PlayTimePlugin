@@ -12,7 +12,6 @@ public final class BedrockSupport {
     private final JavaPlugin plugin;
     private final boolean floodgatePresent;
     private Object floodgateApi;
-    private Method fgGetInstance;
     private Method fgIsFloodgatePlayer;
 
     public BedrockSupport(JavaPlugin plugin) {
@@ -25,9 +24,9 @@ public final class BedrockSupport {
         if (!floodgatePresent) return;
         try {
             Class<?> apiClass = Class.forName("org.geysermc.floodgate.api.FloodgateApi");
-            fgGetInstance = apiClass.getMethod("getInstance");
+            Method getInstance = apiClass.getMethod("getInstance");
             fgIsFloodgatePlayer = apiClass.getMethod("isFloodgatePlayer", UUID.class);
-            floodgateApi = fgGetInstance.invoke(null);
+            floodgateApi = getInstance.invoke(null);
             plugin.getLogger().info("Floodgate detected, Bedrock-aware GUIs enabled.");
         } catch (Exception e) {
             plugin.getLogger().warning("Failed to hook Floodgate API via reflection: " + e.getMessage());

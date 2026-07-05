@@ -266,17 +266,17 @@ public final class PlaytimeReadService {
     }
 
     private static final class CacheEntry<T> {
-        private final T value;
+        private final T cachedValue;
         private volatile long loadedAtMillis;
         private final AtomicBoolean refreshing = new AtomicBoolean(false);
 
         private CacheEntry(T value, long loadedAtMillis) {
-            this.value = value;
+            this.cachedValue = value;
             this.loadedAtMillis = loadedAtMillis;
         }
 
         private T value() {
-            return value;
+            return cachedValue;
         }
 
         private boolean isExpired(long ttlMillis) {

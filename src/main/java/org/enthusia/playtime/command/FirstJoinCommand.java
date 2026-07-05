@@ -27,6 +27,8 @@ public final class FirstJoinCommand implements CommandExecutor, TabCompleter {
 
     private static final String PREFIX = ChatColor.GOLD + "[Playtime] " + ChatColor.YELLOW;
     private static final int TARGET_ARG_COUNT = 1;
+    private static final long MIN_DURATION_PART = 1L;
+    private static final long SINGULAR_AMOUNT = 1L;
     private static final long SECONDS_PER_DAY = 86_400L;
     private static final long SECONDS_PER_HOUR = 3_600L;
     private static final long SECONDS_PER_MINUTE = 60L;
@@ -152,14 +154,14 @@ public final class FirstJoinCommand implements CommandExecutor, TabCompleter {
     }
 
     private void appendDurationPart(StringBuilder builder, long amount, String unit) {
-        if (amount <= 0L) {
+        if (amount < MIN_DURATION_PART) {
             return;
         }
         if (!builder.isEmpty()) {
             builder.append(", ");
         }
         builder.append(amount).append(' ').append(unit);
-        if (amount != 1L) {
+        if (amount != SINGULAR_AMOUNT) {
             builder.append('s');
         }
     }

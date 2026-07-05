@@ -25,6 +25,7 @@ import java.util.UUID;
 public final class SeenCommand implements CommandExecutor, TabCompleter {
 
     private static final String PREFIX = ChatColor.GOLD + "[Playtime] " + ChatColor.YELLOW;
+    private static final int TARGET_ARG_COUNT = 1;
 
     private final PlayTimePlugin plugin;
 
@@ -54,11 +55,15 @@ public final class SeenCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        String targetName = args[0];
+        showTargetSeen(sender, runtime, args[0]);
+        return true;
+    }
+
+    private void showTargetSeen(CommandSender sender, PlaytimeRuntime runtime, String targetName) {
         Player online = Bukkit.getPlayerExact(targetName);
         if (online != null) {
             showSeen(sender, runtime, online.getUniqueId(), online.getName(), true);
-            return true;
+            return;
         }
 
         OfflinePlayer offline = Bukkit.getOfflinePlayerIfCached(targetName);
@@ -66,14 +71,13 @@ public final class SeenCommand implements CommandExecutor, TabCompleter {
         if (offline == null || offline.getUniqueId() == null) {
             if (cachedUuid != null) {
                 showSeen(sender, runtime, cachedUuid, targetName, false);
-                return true;
+                return;
             }
             sender.sendMessage(PREFIX + ChatColor.RED + "Player '" + targetName + "' has never joined.");
-            return true;
+            return;
         }
 
         showSeen(sender, runtime, offline.getUniqueId(), offline.getName() != null ? offline.getName() : targetName, false);
-        return true;
     }
 
     private void showSeen(CommandSender sender, PlaytimeRuntime runtime, UUID uuid, String name, boolean online) {
@@ -130,7 +134,7 @@ public final class SeenCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> result = new ArrayList<>();
-        if (args.length == 1) {
+        if (args.length == TARGET_ARG_COUNT) {
             String prefix = args[0].toLowerCase(Locale.ROOT);
             for (Player player : Bukkit.getOnlinePlayers()) {
                 if (player.getName().toLowerCase(Locale.ROOT).startsWith(prefix)) {
