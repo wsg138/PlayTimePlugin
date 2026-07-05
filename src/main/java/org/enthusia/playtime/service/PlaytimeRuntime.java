@@ -33,18 +33,18 @@ import java.util.logging.Level;
 public final class PlaytimeRuntime implements AutoCloseable {
 
     private final PlayTimePlugin plugin;
-    private final PlaytimeConfig config;
+    private final PlaytimeConfig runtimeConfig;
     private final DatabaseProvider databaseProvider;
-    private final PlaytimeRepository repository;
-    private final SessionManager sessionManager;
-    private final ActivityTracker activityTracker;
-    private final AsyncWriteQueue writeQueue;
-    private final PlaytimeReadService readService;
-    private final HeadCache headCache;
-    private final LeaderboardExportService leaderboardExportService;
-    private final PerformanceCounters counters = new PerformanceCounters();
+    private final PlaytimeRepository playtimeRepository;
+    private final SessionManager sessions;
+    private final ActivityTracker activities;
+    private final AsyncWriteQueue storageQueue;
+    private final PlaytimeReadService reads;
+    private final HeadCache playerHeadCache;
+    private final LeaderboardExportService exportService;
+    private final PerformanceCounters performanceCounters = new PerformanceCounters();
     private final AutoCloseable planHook;
-    private final PlaytimeServiceImpl playtimeService;
+    private final PlaytimeServiceImpl serviceApi;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final Map<UUID, Integer> suspiciousStreakMinutes = new ConcurrentHashMap<>();
     private final Map<UUID, Long> processedSuspicionResetMarkers = new ConcurrentHashMap<>();
@@ -63,30 +63,30 @@ public final class PlaytimeRuntime implements AutoCloseable {
 
     public PlaytimeRuntime(PlayTimePlugin plugin, PlaytimeConfig config, RuntimeState previousState) throws Exception {
         this.plugin = plugin;
-        this.config = config;
+        this.runtimeConfig = config;
         this.databaseProvider = new DatabaseProvider(plugin, config);
         this.databaseProvider.init(config.getStorageType());
-        this.repository = new PlaytimeRepository(plugin, databaseProvider, config);
-        this.repository.initSchema();
-        this.sessionManager = new SessionManager(previousState == null ? Map.of() : previousState.sessionStarts());
-        this.activityTracker = new ActivityTracker(config, sessionManager, previousState == null ? Map.of() : previousState.activitySnapshots(), counters);
+        this.playtimeRepository = new PlaytimeRepository(plugin, databaseProvider, config);
+        this.playtimeRepository.initSchema();
+        this.sessions = new SessionManager(previousState == null ? Map.of() : previousState.sessionStarts());
+        this.activities = new ActivityTracker(config, sessions, previousState == null ? Map.of() : previousState.activitySnapshots(), performanceCounters);
 
-        this.headCache = new HeadCache(plugin, counters);
-        this.writeQueue = new AsyncWriteQueue(plugin, repository, counters, config.getFlushIntervalTicks());
-        this.writeQueue.start();
-        this.readService = new PlaytimeReadService(plugin, repository, writeQueue, counters, config.leaderboards().cacheTtlSeconds());
-        this.leaderboardExportService = new LeaderboardExportService(plugin, repository, config.leaderboards().export(), counters);
+        this.playerHeadCache = new HeadCache(plugin, performanceCounters);
+        this.storageQueue = new AsyncWriteQueue(plugin, playtimeRepository, performanceCounters, config.getFlushIntervalTicks());
+        this.storageQueue.start();
+        this.reads = new PlaytimeReadService(plugin, playtimeRepository, storageQueue, performanceCounters, config.leaderboards().cacheTtlSeconds());
+        this.exportService = new LeaderboardExportService(plugin, playtimeRepository, config.leaderboards().export(), performanceCounters);
         this.planHook = createPlanHook();
-        this.playtimeService = new PlaytimeServiceImpl(readService, repository, activityTracker, sessionManager);
+        this.serviceApi = new PlaytimeServiceImpl(reads, playtimeRepository, activities, sessions);
 
-        Bukkit.getPluginManager().registerEvents(activityTracker, plugin);
-        Bukkit.getServicesManager().register(PlaytimeService.class, playtimeService, plugin, org.bukkit.plugin.ServicePriority.Normal);
+        Bukkit.getPluginManager().registerEvents(activities, plugin);
+        Bukkit.getServicesManager().register(PlaytimeService.class, serviceApi, plugin, org.bukkit.plugin.ServicePriority.Normal);
 
         long nowMillis = System.currentTimeMillis();
         for (Player player : Bukkit.getOnlinePlayers()) {
-            activityTracker.bootstrapPlayer(player, nowMillis);
-            headCache.updateHead(player);
-            writeQueue.enqueuePlayerProfile(profileFor(player, Instant.now()));
+            activities.bootstrapPlayer(player, nowMillis);
+            playerHeadCache.updateHead(player);
+            storageQueue.enqueuePlayerProfile(profileFor(player, Instant.now()));
         }
 
         startMinuteTickTask();
@@ -98,76 +98,76 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     public PlaytimeConfig config() {
-        return config;
+        return runtimeConfig;
     }
 
     public PlaytimeRepository repository() {
-        return repository;
+        return playtimeRepository;
     }
 
     public SessionManager sessionManager() {
-        return sessionManager;
+        return sessions;
     }
 
     public ActivityTracker activityTracker() {
-        return activityTracker;
+        return activities;
     }
 
     public AsyncWriteQueue writeQueue() {
-        return writeQueue;
+        return storageQueue;
     }
 
     public PlaytimeReadService readService() {
-        return readService;
+        return reads;
     }
 
     public HeadCache headCache() {
-        return headCache;
+        return playerHeadCache;
     }
 
     public PlaytimeService playtimeService() {
-        return playtimeService;
+        return serviceApi;
     }
 
     public LeaderboardExportService leaderboardExportService() {
-        return leaderboardExportService;
+        return exportService;
     }
 
     public PerformanceCounters counters() {
-        return counters;
+        return performanceCounters;
     }
 
     public String performanceSummary() {
-        String auditStatus = config.playtimeAudit().enabled()
+        String auditStatus = runtimeConfig.playtimeAudit().enabled()
                 ? "audit queue=" + auditRemaining + "/" + auditBatchSize
                 + ", next audit in=" + Math.max(0L, nextAuditAtMillis - System.currentTimeMillis()) / 1000L + "s"
                 : "audit disabled";
-        String exportStatus = config.leaderboards().export().enabled()
-                ? "export interval=" + config.leaderboards().export().intervalSeconds() + "s, R2="
-                + (config.leaderboards().export().r2().enabled() ? "enabled" : "disabled")
+        String exportStatus = runtimeConfig.leaderboards().export().enabled()
+                ? "export interval=" + runtimeConfig.leaderboards().export().intervalSeconds() + "s, R2="
+                + (runtimeConfig.leaderboards().export().r2().enabled() ? "enabled" : "disabled")
                 : "export disabled";
-        return counters.summary() + ", " + auditStatus + ", " + exportStatus;
+        return performanceCounters.summary() + ", " + auditStatus + ", " + exportStatus;
     }
 
     public boolean isKnownPlayer(UUID uuid) {
-        return repository.hasLifetimeRecord(uuid);
+        return playtimeRepository.hasLifetimeRecord(uuid);
     }
 
     public boolean handleJoinRecorded(Player player, Instant joinedAt) {
         UUID uuid = player.getUniqueId();
-        boolean firstKnownJoin = !repository.hasLifetimeRecord(uuid);
-        int uniqueNumber = firstKnownJoin ? repository.countKnownPlayers() + 1 : 0;
+        boolean firstKnownJoin = !playtimeRepository.hasLifetimeRecord(uuid);
+        int uniqueNumber = firstKnownJoin ? playtimeRepository.countKnownPlayers() + 1 : 0;
         recentJoinDecisions.put(uuid, new JoinDecision(firstKnownJoin, uniqueNumber, System.currentTimeMillis()));
-        writeQueue.enqueuePlayerProfile(profileFor(player, joinedAt));
-        writeQueue.enqueueJoin(uuid, joinedAt);
-        readService.invalidateAll();
+        storageQueue.enqueuePlayerProfile(profileFor(player, joinedAt));
+        storageQueue.enqueueJoin(uuid, joinedAt);
+        reads.invalidateAll();
         return firstKnownJoin;
     }
 
     public JoinDecision consumeJoinDecision(UUID uuid) {
         JoinDecision decision = recentJoinDecisions.remove(uuid);
         if (decision == null || System.currentTimeMillis() - decision.createdAtMillis() > 30_000L) {
-            return new JoinDecision(!isKnownPlayer(uuid), repository.countKnownPlayers() + 1, System.currentTimeMillis());
+            return new JoinDecision(!isKnownPlayer(uuid), playtimeRepository.countKnownPlayers() + 1, System.currentTimeMillis());
         }
         return decision;
     }
@@ -175,17 +175,17 @@ public final class PlaytimeRuntime implements AutoCloseable {
     public void handleQuitRecorded(UUID uuid, Instant quitAt) {
         resetSuspiciousTracking(uuid);
         recentJoinDecisions.remove(uuid);
-        repository.recordLastSeenAsync(plugin, uuid, quitAt);
+        playtimeRepository.recordLastSeenAsync(plugin, uuid, quitAt);
     }
 
     public void noteHead(Player player) {
-        headCache.updateHead(player);
+        playerHeadCache.updateHead(player);
     }
 
     public RuntimeState snapshotState() {
         return new RuntimeState(
-                new HashMap<>(sessionManager.snapshot()),
-                new HashMap<>(activityTracker.snapshot())
+                new HashMap<>(sessions.snapshot()),
+                new HashMap<>(activities.snapshot())
         );
     }
 
@@ -197,8 +197,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
         long period = 20L * 60L * 60L;
         joinPurgeTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
             try {
-                repository.purgeOldJoins(config.getJoinRetentionDays());
-                repository.purgeOldHourlyAggregates(config.getHourlyAnalyticsRetentionDays());
+                playtimeRepository.purgeOldJoins(runtimeConfig.getJoinRetentionDays());
+                playtimeRepository.purgeOldHourlyAggregates(runtimeConfig.getHourlyAnalyticsRetentionDays());
             } catch (Exception exception) {
                 plugin.getLogger().log(Level.WARNING, "Failed to purge old playtime analytics rows.", exception);
             }
@@ -206,13 +206,13 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     private void startActionBarTask() {
-        if (!config.actionBar().enabled()) {
+        if (!runtimeConfig.actionBar().enabled()) {
             return;
         }
         actionBarTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             long nowMillis = System.currentTimeMillis();
             for (Player player : Bukkit.getOnlinePlayers()) {
-                String message = activityTracker.actionBarMessage(activityTracker.getState(player.getUniqueId(), nowMillis));
+                String message = activities.actionBarMessage(activities.getState(player.getUniqueId(), nowMillis));
                 if (message != null && !message.isBlank()) {
                     player.sendActionBar(Component.text(message));
                 }
@@ -221,10 +221,10 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     private void startAuditTask() {
-        if (!config.playtimeAudit().enabled()) {
+        if (!runtimeConfig.playtimeAudit().enabled()) {
             return;
         }
-        long periodTicks = Math.max(20L, config.playtimeAudit().intervalMinutes() * 60L * 20L);
+        long periodTicks = Math.max(20L, runtimeConfig.playtimeAudit().intervalMinutes() * 60L * 20L);
         auditTask = Bukkit.getScheduler().runTaskTimer(plugin, new Runnable() {
             private int cursor;
             private Player[] batch = new Player[0];
@@ -238,7 +238,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
                     }
                     batch = Bukkit.getOnlinePlayers().toArray(Player[]::new);
                     cursor = 0;
-                    nextAuditAtMillis = nowMillis + config.playtimeAudit().intervalMinutes() * 60_000L;
+                    nextAuditAtMillis = nowMillis + runtimeConfig.playtimeAudit().intervalMinutes() * 60_000L;
                     auditBatchSize = batch.length;
                 }
                 if (batch.length == 0) {
@@ -246,7 +246,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
                     return;
                 }
                 auditRemaining = batch.length - cursor;
-                int max = Math.min(config.playtimeAudit().maxPlayersPerTick(), batch.length - cursor);
+                int max = Math.min(runtimeConfig.playtimeAudit().maxPlayersPerTick(), batch.length - cursor);
                 for (int i = 0; i < max; i++) {
                     Player player = batch[cursor++];
                     if (!player.isOnline()) {
@@ -257,83 +257,96 @@ public final class PlaytimeRuntime implements AutoCloseable {
                 auditRemaining = batch.length - cursor;
             }
         }, periodTicks, 1L);
-        counters.reloadTaskRestarts.increment();
+        performanceCounters.reloadTaskRestarts.increment();
     }
 
     private void auditPlayer(Player player, long nowMillis) {
-        counters.backstopScans.increment();
+        performanceCounters.backstopScans.increment();
         boolean repaired = false;
-        if (sessionManager.getCurrentSessionMillis(player.getUniqueId(), nowMillis) <= 0L && config.playtimeAudit().repairMode()) {
-            sessionManager.handleJoin(player.getUniqueId(), nowMillis);
+        boolean repairMode = runtimeConfig.playtimeAudit().repairMode();
+        if (repairMode && repairMissingSession(player, nowMillis)) {
             repaired = true;
         }
-        if (activityTracker.ensureTracked(player, nowMillis) && config.playtimeAudit().repairMode()) {
+        if (repairMode && activities.ensureTracked(player, nowMillis)) {
             repaired = true;
         }
-        if (config.playtimeAudit().repairMode()) {
-            writeQueue.enqueuePlayerProfile(profileFor(player, Instant.now()));
-            headCache.updateHeadDebounced(player);
+        if (repairMode) {
+            storageQueue.enqueuePlayerProfile(profileFor(player, Instant.now()));
+            playerHeadCache.updateHeadDebounced(player);
         }
-        if (readService.isLoading()) {
-            readService.invalidatePlayer(player.getUniqueId());
+        if (reads.isLoading()) {
+            reads.invalidatePlayer(player.getUniqueId());
             repaired = true;
         }
         if (repaired) {
-            counters.backstopRepairs.increment();
-            if (config.playtimeAudit().debugLogRepairs()) {
+            performanceCounters.backstopRepairs.increment();
+            if (runtimeConfig.playtimeAudit().debugLogRepairs()) {
                 plugin.getLogger().info("Playtime audit repaired cached state for " + player.getName() + ".");
             }
         }
     }
 
+    private boolean repairMissingSession(Player player, long nowMillis) {
+        if (sessions.getCurrentSessionMillis(player.getUniqueId(), nowMillis) > 0L) {
+            return false;
+        }
+        sessions.handleJoin(player.getUniqueId(), nowMillis);
+        return true;
+    }
+
     private void startPerformanceLogTask() {
-        if (!config.debug().performance().enabled()) {
+        if (!runtimeConfig.debug().performance().enabled()) {
             return;
         }
-        long periodTicks = Math.max(20L, config.debug().performance().logIntervalSeconds() * 20L);
+        long periodTicks = Math.max(20L, runtimeConfig.debug().performance().logIntervalSeconds() * 20L);
         performanceLogTask = Bukkit.getScheduler().runTaskTimer(plugin,
                 () -> plugin.getLogger().info("Playtime performance counters: " + performanceSummary()),
                 periodTicks, periodTicks);
-        counters.reloadTaskRestarts.increment();
+        performanceCounters.reloadTaskRestarts.increment();
     }
 
     private void runMinuteTick() {
         long nowMillis = System.currentTimeMillis();
 
         for (Player player : Bukkit.getOnlinePlayers()) {
-            ActivityState state = activityTracker.getState(player.getUniqueId(), nowMillis);
+            ActivityState state = activities.getState(player.getUniqueId(), nowMillis);
             int suspiciousStreak = updateSuspiciousStreak(player.getUniqueId(), state);
+            MinuteCredit credit = minuteCredit(state);
 
-            int activeMinutes = 0;
-            int afkMinutes = 0;
-
-            switch (state) {
-                case ACTIVE -> activeMinutes = 1;
-                case IDLE, AFK -> afkMinutes = 1;
-                case SUSPICIOUS -> afkMinutes = 1;
-                default -> {
-                }
-            }
-
-            PlayerPlaytimeTickEvent event = new PlayerPlaytimeTickEvent(player, state, activeMinutes, afkMinutes);
+            PlayerPlaytimeTickEvent event = new PlayerPlaytimeTickEvent(player, state, credit.activeMinutes(), credit.afkMinutes());
             Bukkit.getPluginManager().callEvent(event);
             if (event.isCancelled()) {
                 continue;
             }
 
-            if (config.debug().enabled() && config.debug().logSuspicious() && state == ActivityState.SUSPICIOUS
-                    && suspiciousStreak == config.sampling().suspicion().maxCountedConsecutiveMinutes()) {
-                plugin.getLogger().info("Suspicious activity threshold reached for " + player.getName()
-                        + "; suspicious minutes are being counted as AFK until the player returns to a non-suspicious state.");
-            }
+            logSuspiciousThreshold(player, state, suspiciousStreak);
 
             if (event.getActiveMinutes() <= 0 && event.getAfkMinutes() <= 0) {
                 continue;
             }
 
-            writeQueue.enqueueMinute(player.getUniqueId(), event.getActiveMinutes(), event.getAfkMinutes());
-            readService.invalidatePlayer(player.getUniqueId());
+            storageQueue.enqueueMinute(player.getUniqueId(), event.getActiveMinutes(), event.getAfkMinutes());
+            reads.invalidatePlayer(player.getUniqueId());
         }
+    }
+
+    private MinuteCredit minuteCredit(ActivityState state) {
+        return switch (state) {
+            case ACTIVE -> new MinuteCredit(1, 0);
+            case IDLE, AFK, SUSPICIOUS -> new MinuteCredit(0, 1);
+            default -> new MinuteCredit(0, 0);
+        };
+    }
+
+    private void logSuspiciousThreshold(Player player, ActivityState state, int suspiciousStreak) {
+        if (!runtimeConfig.debug().enabled() || !runtimeConfig.debug().logSuspicious()) {
+            return;
+        }
+        if (state != ActivityState.SUSPICIOUS || suspiciousStreak != runtimeConfig.sampling().suspicion().maxCountedConsecutiveMinutes()) {
+            return;
+        }
+        plugin.getLogger().info("Suspicious activity threshold reached for " + player.getName()
+                + "; suspicious minutes are being counted as AFK until the player returns to a non-suspicious state.");
     }
 
     private int updateSuspiciousStreak(UUID uuid, ActivityState state) {
@@ -341,7 +354,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
             resetSuspiciousTracking(uuid);
             return 0;
         }
-        long resetMarker = activityTracker.getSuspiciousResetMarker(uuid);
+        long resetMarker = activities.getSuspiciousResetMarker(uuid);
         Long processedMarker = processedSuspicionResetMarkers.get(uuid);
         if (processedMarker == null || resetMarker > processedMarker) {
             processedSuspicionResetMarkers.put(uuid, resetMarker);
@@ -365,6 +378,15 @@ public final class PlaytimeRuntime implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
+        cancelRuntimeTasks();
+        unregisterRuntimeServices();
+        persistOnlinePlayersForShutdown();
+        closeStorageAndExport(reloadClose);
+        playerHeadCache.save();
+        databaseProvider.shutdown();
+    }
+
+    private void cancelRuntimeTasks() {
         if (minuteTickTask != null) {
             minuteTickTask.cancel();
         }
@@ -386,45 +408,49 @@ public final class PlaytimeRuntime implements AutoCloseable {
         if (leaderboardExportTask != null) {
             leaderboardExportTask.cancel();
         }
+    }
 
-        Bukkit.getServicesManager().unregister(playtimeService);
+    private void unregisterRuntimeServices() {
+        Bukkit.getServicesManager().unregister(serviceApi);
         try {
             planHook.close();
         } catch (Exception exception) {
             plugin.getLogger().log(Level.FINE, "Failed to close Plan analytics integration.", exception);
         }
-        HandlerList.unregisterAll(activityTracker);
+        HandlerList.unregisterAll(activities);
+    }
 
+    private void persistOnlinePlayersForShutdown() {
         Instant now = Instant.now();
         for (Player player : Bukkit.getOnlinePlayers()) {
             try {
-                repository.recordLastSeen(player.getUniqueId(), now);
-                writeQueue.enqueuePlayerProfileForShutdown(profileFor(player, now));
+                playtimeRepository.recordLastSeen(player.getUniqueId(), now);
+                storageQueue.enqueuePlayerProfileForShutdown(profileFor(player, now));
             } catch (Exception exception) {
                 plugin.getLogger().log(Level.WARNING, "Failed to persist last seen during shutdown for " + player.getName(), exception);
             }
             resetSuspiciousTracking(player.getUniqueId());
         }
+    }
 
-        writeQueue.close(config.leaderboards().export().shutdownTimeoutSeconds());
+    private void closeStorageAndExport(boolean reloadClose) {
+        storageQueue.close(runtimeConfig.leaderboards().export().shutdownTimeoutSeconds());
         boolean exportOnClose = reloadClose
-                ? config.leaderboards().export().runOnReloadClose()
-                : config.leaderboards().export().runOnDisable();
+                ? runtimeConfig.leaderboards().export().runOnReloadClose()
+                : runtimeConfig.leaderboards().export().runOnDisable();
         if (exportOnClose) {
-            leaderboardExportService.exportAll();
+            exportService.exportAll();
         }
-        headCache.save();
-        databaseProvider.shutdown();
     }
 
     private AutoCloseable createPlanHook() {
-        if (!config.isPlanIntegrationEnabled() || Bukkit.getPluginManager().getPlugin("Plan") == null) {
+        if (!runtimeConfig.isPlanIntegrationEnabled() || Bukkit.getPluginManager().getPlugin("Plan") == null) {
             return () -> {
             };
         }
 
         try {
-            org.enthusia.playtime.plan.PlanHook hook = new org.enthusia.playtime.plan.PlanHook(plugin, repository, readService, sessionManager, config);
+            org.enthusia.playtime.plan.PlanHook hook = new org.enthusia.playtime.plan.PlanHook(plugin, playtimeRepository, reads, sessions, runtimeConfig);
             hook.hook();
             return hook;
         } catch (NoClassDefFoundError ignored) {
@@ -438,18 +464,18 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     private void startLeaderboardExportTask() {
-        PlaytimeConfig.LeaderboardExport exportConfig = config.leaderboards().export();
+        PlaytimeConfig.LeaderboardExport exportConfig = runtimeConfig.leaderboards().export();
         if (!exportConfig.enabled()) {
             return;
         }
         long periodTicks = Math.max(20L, exportConfig.intervalSeconds() * 20L);
         initialLeaderboardExportTask = Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
-            writeQueue.flushNow();
-            leaderboardExportService.exportAll();
+            storageQueue.flushNow();
+            exportService.exportAll();
         }, 20L);
         leaderboardExportTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
-            writeQueue.flushNow();
-            leaderboardExportService.exportAll();
+            storageQueue.flushNow();
+            exportService.exportAll();
         }, periodTicks, periodTicks);
     }
 
@@ -464,5 +490,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     public record JoinDecision(boolean firstKnownJoin, int uniqueNumber, long createdAtMillis) {
+    }
+
+    private record MinuteCredit(int activeMinutes, int afkMinutes) {
     }
 }

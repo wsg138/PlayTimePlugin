@@ -24,6 +24,14 @@ import java.util.UUID;
 
 public final class LeaderboardGui implements PlaytimeGui {
 
+    private static final String METRIC_ACTIVE = "ACTIVE";
+    private static final String METRIC_TOTAL = "TOTAL";
+    private static final String METRIC_AFK = "AFK";
+    private static final String RANGE_TODAY = "TODAY";
+    private static final String RANGE_7D = "7D";
+    private static final String RANGE_30D = "30D";
+    private static final String RANGE_ALL = "ALL";
+
     private final PlayTimePlugin plugin;
     private final Player viewer;
     private final Inventory inventory;
@@ -58,14 +66,7 @@ public final class LeaderboardGui implements PlaytimeGui {
     private void render() {
         inventory.clear();
         fillBackground();
-
-        inventory.setItem(SLOT_METRIC_ACTIVE, metricItem("ACTIVE"));
-        inventory.setItem(SLOT_METRIC_TOTAL, metricItem("TOTAL"));
-        inventory.setItem(SLOT_METRIC_AFK, metricItem("AFK"));
-        inventory.setItem(SLOT_RANGE_TODAY, rangeItem("TODAY"));
-        inventory.setItem(SLOT_RANGE_7D, rangeItem("7D"));
-        inventory.setItem(SLOT_RANGE_30D, rangeItem("30D"));
-        inventory.setItem(SLOT_RANGE_ALL, rangeItem("ALL"));
+        renderControls();
 
         List<Integer> entrySlots = buildEntrySlots();
         int pageSize = entrySlots.size();
@@ -89,31 +90,33 @@ public final class LeaderboardGui implements PlaytimeGui {
             }
         }
 
-        ItemStack prev = new ItemStack(Material.ARROW);
-        ItemMeta prevMeta = prev.getItemMeta();
-        prevMeta.setDisplayName(ChatColor.YELLOW + "Previous page (" + Math.max(page - 1, 1) + ")");
-        prev.setItemMeta(prevMeta);
-        inventory.setItem(SLOT_PREV_PAGE, prev);
-
-        ItemStack next = new ItemStack(Material.ARROW);
-        ItemMeta nextMeta = next.getItemMeta();
-        nextMeta.setDisplayName(ChatColor.YELLOW + "Next page (" + (page + 1) + ")");
-        next.setItemMeta(nextMeta);
-        inventory.setItem(SLOT_NEXT_PAGE, next);
-
-        ItemStack back = new ItemStack(Material.OAK_DOOR);
-        ItemMeta backMeta = back.getItemMeta();
-        backMeta.setDisplayName(ChatColor.AQUA + "Back to main menu");
-        back.setItemMeta(backMeta);
-        inventory.setItem(SLOT_BACK, back);
-
-        ItemStack close = new ItemStack(Material.BARRIER);
-        ItemMeta closeMeta = close.getItemMeta();
-        closeMeta.setDisplayName(ChatColor.RED + "Close");
-        close.setItemMeta(closeMeta);
-        inventory.setItem(SLOT_CLOSE, close);
-
+        renderFooter();
         inventory.setItem(SLOT_SELF, selfItem(selfEntry));
+    }
+
+    private void renderControls() {
+        inventory.setItem(SLOT_METRIC_ACTIVE, metricItem(METRIC_ACTIVE));
+        inventory.setItem(SLOT_METRIC_TOTAL, metricItem(METRIC_TOTAL));
+        inventory.setItem(SLOT_METRIC_AFK, metricItem(METRIC_AFK));
+        inventory.setItem(SLOT_RANGE_TODAY, rangeItem(RANGE_TODAY));
+        inventory.setItem(SLOT_RANGE_7D, rangeItem(RANGE_7D));
+        inventory.setItem(SLOT_RANGE_30D, rangeItem(RANGE_30D));
+        inventory.setItem(SLOT_RANGE_ALL, rangeItem(RANGE_ALL));
+    }
+
+    private void renderFooter() {
+        inventory.setItem(SLOT_PREV_PAGE, namedItem(Material.ARROW, ChatColor.YELLOW + "Previous page (" + Math.max(page - 1, 1) + ")"));
+        inventory.setItem(SLOT_NEXT_PAGE, namedItem(Material.ARROW, ChatColor.YELLOW + "Next page (" + (page + 1) + ")"));
+        inventory.setItem(SLOT_BACK, namedItem(Material.OAK_DOOR, ChatColor.AQUA + "Back to main menu"));
+        inventory.setItem(SLOT_CLOSE, namedItem(Material.BARRIER, ChatColor.RED + "Close"));
+    }
+
+    private ItemStack namedItem(Material material, String displayName) {
+        ItemStack item = new ItemStack(material);
+        ItemMeta meta = item.getItemMeta();
+        meta.setDisplayName(displayName);
+        item.setItemMeta(meta);
+        return item;
     }
 
     private void fillBackground() {
@@ -143,13 +146,13 @@ public final class LeaderboardGui implements PlaytimeGui {
 
     private ItemStack metricItem(String metric) {
         Material material = switch (metric) {
-            case "ACTIVE" -> Material.LIME_DYE;
-            case "AFK" -> Material.RED_DYE;
+            case METRIC_ACTIVE -> Material.LIME_DYE;
+            case METRIC_AFK -> Material.RED_DYE;
             default -> Material.EXPERIENCE_BOTTLE;
         };
         ChatColor color = switch (metric) {
-            case "ACTIVE" -> ChatColor.GREEN;
-            case "AFK" -> ChatColor.RED;
+            case METRIC_ACTIVE -> ChatColor.GREEN;
+            case METRIC_AFK -> ChatColor.RED;
             default -> ChatColor.GOLD;
         };
 
@@ -164,9 +167,9 @@ public final class LeaderboardGui implements PlaytimeGui {
 
     private ItemStack rangeItem(String range) {
         Material material = switch (range) {
-            case "TODAY" -> Material.MAP;
-            case "7D" -> Material.NETHER_STAR;
-            case "30D" -> Material.PAPER;
+            case RANGE_TODAY -> Material.MAP;
+            case RANGE_7D -> Material.NETHER_STAR;
+            case RANGE_30D -> Material.PAPER;
             default -> Material.CLOCK;
         };
 
@@ -195,9 +198,9 @@ public final class LeaderboardGui implements PlaytimeGui {
         ItemMeta meta = head.getItemMeta();
         meta.setDisplayName(ChatColor.AQUA + "#" + entry.rank + " " + resolveName(entry.uuid));
         meta.setLore(List.of(
-                lineForMetric("TOTAL", ChatColor.YELLOW, entry.totalMinutes),
-                lineForMetric("ACTIVE", ChatColor.GREEN, entry.activeMinutes),
-                lineForMetric("AFK", ChatColor.RED, entry.afkMinutes)
+                lineForMetric(METRIC_TOTAL, ChatColor.YELLOW, entry.totalMinutes),
+                lineForMetric(METRIC_ACTIVE, ChatColor.GREEN, entry.activeMinutes),
+                lineForMetric(METRIC_AFK, ChatColor.RED, entry.afkMinutes)
         ));
         meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         head.setItemMeta(meta);
@@ -219,9 +222,9 @@ public final class LeaderboardGui implements PlaytimeGui {
         if (loading) {
             lore.add(ChatColor.YELLOW + "Refreshing cached stats...");
         }
-        lore.add(lineForMetric("TOTAL", ChatColor.YELLOW, totals.totalMinutes));
-        lore.add(lineForMetric("ACTIVE", ChatColor.GREEN, totals.activeMinutes));
-        lore.add(lineForMetric("AFK", ChatColor.RED, totals.afkMinutes));
+        lore.add(lineForMetric(METRIC_TOTAL, ChatColor.YELLOW, totals.totalMinutes));
+        lore.add(lineForMetric(METRIC_ACTIVE, ChatColor.GREEN, totals.activeMinutes));
+        lore.add(lineForMetric(METRIC_AFK, ChatColor.RED, totals.afkMinutes));
         lore.add("");
         lore.add(ChatColor.DARK_GRAY + "Compare this with the heads above.");
         meta.setLore(lore);
@@ -233,8 +236,8 @@ public final class LeaderboardGui implements PlaytimeGui {
     private String lineForMetric(String lineMetric, ChatColor valueColor, long minutes) {
         boolean highlighted = this.metric.equals(lineMetric);
         String prefix = switch (lineMetric) {
-            case "ACTIVE" -> "Active";
-            case "AFK" -> "AFK";
+            case METRIC_ACTIVE -> "Active";
+            case METRIC_AFK -> "AFK";
             default -> "Total";
         };
         return (highlighted ? ChatColor.BOLD.toString() : "") + ChatColor.GRAY + prefix + ": " + valueColor + TimeFormats.formatMinutes(minutes);
@@ -286,34 +289,34 @@ public final class LeaderboardGui implements PlaytimeGui {
     }
 
     private static String normalizeMetric(String metric) {
-        String normalized = metric == null ? "TOTAL" : metric.toUpperCase(Locale.ROOT);
+        String normalized = metric == null ? METRIC_TOTAL : metric.toUpperCase(Locale.ROOT);
         return switch (normalized) {
-            case "ACTIVE", "AFK", "TOTAL" -> normalized;
-            default -> "TOTAL";
+            case METRIC_ACTIVE, METRIC_AFK, METRIC_TOTAL -> normalized;
+            default -> METRIC_TOTAL;
         };
     }
 
     private static String normalizeRange(String range) {
-        String normalized = range == null ? "ALL" : range.toUpperCase(Locale.ROOT);
+        String normalized = range == null ? RANGE_ALL : range.toUpperCase(Locale.ROOT);
         return switch (normalized) {
-            case "TODAY", "7D", "30D", "ALL" -> normalized;
-            default -> "ALL";
+            case RANGE_TODAY, RANGE_7D, RANGE_30D, RANGE_ALL -> normalized;
+            default -> RANGE_ALL;
         };
     }
 
     private static String niceMetric(String metric) {
         return switch (metric) {
-            case "ACTIVE" -> "Active";
-            case "AFK" -> "AFK";
+            case METRIC_ACTIVE -> "Active";
+            case METRIC_AFK -> "AFK";
             default -> "Total";
         };
     }
 
     private static String niceRange(String range) {
         return switch (range) {
-            case "TODAY" -> "Today";
-            case "7D" -> "Last 7 days";
-            case "30D" -> "Last 30 days";
+            case RANGE_TODAY -> "Today";
+            case RANGE_7D -> "Last 7 days";
+            case RANGE_30D -> "Last 30 days";
             default -> "All time";
         };
     }
@@ -336,67 +339,46 @@ public final class LeaderboardGui implements PlaytimeGui {
     @Override
     public void handleClick(InventoryClickEvent event) {
         int slot = event.getRawSlot();
-        if (slot == SLOT_PREV_PAGE) {
-            if (page > 1) {
-                page--;
-                render();
+        switch (slot) {
+            case SLOT_PREV_PAGE -> previousPage();
+            case SLOT_NEXT_PAGE -> nextPage();
+            case SLOT_BACK -> new PlaytimeMainGui(plugin, viewer).open();
+            case SLOT_CLOSE -> viewer.closeInventory();
+            case SLOT_METRIC_ACTIVE -> selectMetric(METRIC_ACTIVE);
+            case SLOT_METRIC_TOTAL -> selectMetric(METRIC_TOTAL);
+            case SLOT_METRIC_AFK -> selectMetric(METRIC_AFK);
+            case SLOT_RANGE_TODAY -> selectRange(RANGE_TODAY);
+            case SLOT_RANGE_7D -> selectRange(RANGE_7D);
+            case SLOT_RANGE_30D -> selectRange(RANGE_30D);
+            case SLOT_RANGE_ALL -> selectRange(RANGE_ALL);
+            default -> {
             }
+        }
+    }
+
+    private void previousPage() {
+        if (page <= 1) {
             return;
         }
-        if (slot == SLOT_NEXT_PAGE) {
-            page++;
-            render();
-            return;
-        }
-        if (slot == SLOT_BACK) {
-            new PlaytimeMainGui(plugin, viewer).open();
-            return;
-        }
-        if (slot == SLOT_CLOSE) {
-            viewer.closeInventory();
-            return;
-        }
-        if (slot == SLOT_METRIC_ACTIVE) {
-            metric = "ACTIVE";
-            page = 1;
-            render();
-            return;
-        }
-        if (slot == SLOT_METRIC_TOTAL) {
-            metric = "TOTAL";
-            page = 1;
-            render();
-            return;
-        }
-        if (slot == SLOT_METRIC_AFK) {
-            metric = "AFK";
-            page = 1;
-            render();
-            return;
-        }
-        if (slot == SLOT_RANGE_TODAY) {
-            range = "TODAY";
-            page = 1;
-            render();
-            return;
-        }
-        if (slot == SLOT_RANGE_7D) {
-            range = "7D";
-            page = 1;
-            render();
-            return;
-        }
-        if (slot == SLOT_RANGE_30D) {
-            range = "30D";
-            page = 1;
-            render();
-            return;
-        }
-        if (slot == SLOT_RANGE_ALL) {
-            range = "ALL";
-            page = 1;
-            render();
-        }
+        page--;
+        render();
+    }
+
+    private void nextPage() {
+        page++;
+        render();
+    }
+
+    private void selectMetric(String selectedMetric) {
+        metric = selectedMetric;
+        page = 1;
+        render();
+    }
+
+    private void selectRange(String selectedRange) {
+        range = selectedRange;
+        page = 1;
+        render();
     }
 
     @Override

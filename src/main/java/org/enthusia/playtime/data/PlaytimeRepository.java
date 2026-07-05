@@ -24,16 +24,28 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
 import java.util.Locale;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.HashSet;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class PlaytimeRepository {
+    private static final String RANGE_ALL = "ALL";
+    private static final String RANGE_TODAY = "TODAY";
+    private static final String RANGE_7D = "7D";
+    private static final String RANGE_30D = "30D";
+    private static final String METRIC_ACTIVE = "ACTIVE";
+    private static final String METRIC_AFK = "AFK";
+    private static final String METRIC_TOTAL = "TOTAL";
+    private static final String COL_PLAYER_UUID = "player_uuid";
+    private static final String COL_ACTIVE = "active";
+    private static final String COL_AFK = "afk";
+    private static final String COL_TOTAL = "total";
+    private static final long NO_MINUTES = 0L;
+    private static final int MAX_ROLLING_HOURS = 24 * 90;
 
     private final JavaPlugin plugin;
     private final DatabaseProvider provider;
@@ -144,7 +156,7 @@ public final class PlaytimeRepository {
                      PreparedStatement lifetimeStatement = connection.prepareStatement(dialect.lifetimeMinutesUpsert())) {
                     for (Map.Entry<UUID, MinuteDelta> entry : deltas.entrySet()) {
                         MinuteDelta delta = entry.getValue();
-                        if (delta.totalMinutes() <= 0L) {
+                        if (delta.totalMinutes() <= NO_MINUTES) {
                             continue;
                         }
 
@@ -328,7 +340,7 @@ public final class PlaytimeRepository {
 
     public RangeTotals getRangeTotals(UUID uuid, Instant now, String rangeId) {
         String range = normalizeRange(rangeId);
-        if (range.equals("ALL")) {
+        if (range.equals(RANGE_ALL)) {
             return getLifetime(uuid)
                     .map(snapshot -> new RangeTotals(snapshot.activeMinutes, snapshot.afkMinutes, snapshot.totalMinutes))
                     .orElseGet(() -> new RangeTotals(0, 0, 0));
@@ -353,9 +365,9 @@ public final class PlaytimeRepository {
                     return new RangeTotals(0, 0, 0);
                 }
                 return new RangeTotals(
-                        resultSet.getLong("active"),
-                        resultSet.getLong("afk"),
-                        resultSet.getLong("total")
+                        resultSet.getLong(COL_ACTIVE),
+                        resultSet.getLong(COL_AFK),
+                        resultSet.getLong(COL_TOTAL)
                 );
             }
         } catch (SQLException exception) {
@@ -365,7 +377,7 @@ public final class PlaytimeRepository {
     }
 
     public RangeTotals getRollingTotals(UUID uuid, Instant now, int hours) {
-        int safeHours = Math.max(1, Math.min(hours, 24 * 90));
+        int safeHours = Math.max(1, Math.min(hours, MAX_ROLLING_HOURS));
         Instant cutoff = now.minus(safeHours, ChronoUnit.HOURS).truncatedTo(ChronoUnit.HOURS);
         String sql = """
                 SELECT COALESCE(SUM(active_minutes), 0) AS active,
@@ -383,7 +395,7 @@ public final class PlaytimeRepository {
                 if (!resultSet.next()) {
                     return new RangeTotals(0, 0, 0);
                 }
-                return new RangeTotals(resultSet.getLong("active"), resultSet.getLong("afk"), resultSet.getLong("total"));
+                return new RangeTotals(resultSet.getLong(COL_ACTIVE), resultSet.getLong(COL_AFK), resultSet.getLong(COL_TOTAL));
             }
         } catch (SQLException exception) {
             plugin.getLogger().warning("Failed to load rolling totals (" + safeHours + "h) for " + uuid + ": " + exception.getMessage());
@@ -397,12 +409,8 @@ public final class PlaytimeRepository {
         String range = normalizeRange(rangeId);
 
         String sql;
-        if (range.equals("ALL")) {
-            String orderColumn = switch (metric) {
-                case "ACTIVE" -> "active_minutes";
-                case "AFK" -> "afk_minutes";
-                default -> "total_minutes";
-            };
+        if (range.equals(RANGE_ALL)) {
+            String orderColumn = lifetimeOrderColumn(metric);
             sql = "SELECT player_uuid, active_minutes AS active, afk_minutes AS afk, total_minutes AS total "
                     + "FROM lifetime_agg ORDER BY " + orderColumn + " DESC LIMIT ? OFFSET ?";
 
@@ -418,11 +426,7 @@ public final class PlaytimeRepository {
         }
 
         DateRange dateRange = dateRangeFor(range, now);
-        String orderColumn = switch (metric) {
-            case "ACTIVE" -> "active";
-            case "AFK" -> "afk";
-            default -> "total";
-        };
+        String orderColumn = aggregateOrderColumn(metric);
         sql = """
                 SELECT player_uuid,
                        SUM(active_minutes) AS active,
@@ -455,14 +459,10 @@ public final class PlaytimeRepository {
         String range = normalizeRange(rangeId);
         int safeLimit = Math.max(1, Math.min(limit, 500));
 
-        String valueExpression = switch (metric) {
-            case "ACTIVE" -> "active";
-            case "AFK" -> "afk";
-            default -> "total";
-        };
+        String valueExpression = aggregateOrderColumn(metric);
 
         String sql;
-        if (range.equals("ALL")) {
+        if (range.equals(RANGE_ALL)) {
             sql = """
                     SELECT l.player_uuid,
                            l.active_minutes AS active,
@@ -529,7 +529,7 @@ public final class PlaytimeRepository {
 
     public RangeTotals getServerRangeTotals(String rangeId, Instant now) {
         String range = normalizeRange(rangeId);
-        if (range.equals("ALL")) {
+        if (range.equals(RANGE_ALL)) {
             return getLifetimeServerTotals();
         }
 
@@ -549,7 +549,7 @@ public final class PlaytimeRepository {
                 if (!resultSet.next()) {
                     return new RangeTotals(0, 0, 0);
                 }
-                return new RangeTotals(resultSet.getLong("active"), resultSet.getLong("afk"), resultSet.getLong("total"));
+                return rangeTotals(resultSet);
             }
         } catch (SQLException exception) {
             plugin.getLogger().warning("Failed to load server totals (" + range + "): " + exception.getMessage());
@@ -558,7 +558,7 @@ public final class PlaytimeRepository {
     }
 
     public RangeTotals getServerRollingTotals(Instant now, int hours) {
-        int safeHours = Math.max(1, Math.min(hours, 24 * 90));
+        int safeHours = Math.max(1, Math.min(hours, MAX_ROLLING_HOURS));
         Instant cutoff = now.minus(safeHours, ChronoUnit.HOURS).truncatedTo(ChronoUnit.HOURS);
         String sql = """
                 SELECT COALESCE(SUM(active_minutes), 0) AS active,
@@ -575,7 +575,7 @@ public final class PlaytimeRepository {
                 if (!resultSet.next()) {
                     return new RangeTotals(0, 0, 0);
                 }
-                return new RangeTotals(resultSet.getLong("active"), resultSet.getLong("afk"), resultSet.getLong("total"));
+                return rangeTotals(resultSet);
             }
         } catch (SQLException exception) {
             plugin.getLogger().warning("Failed to load server rolling totals (" + safeHours + "h): " + exception.getMessage());
@@ -584,7 +584,7 @@ public final class PlaytimeRepository {
     }
 
     public int getRollingUniquePlayers(Instant now, int hours) {
-        int safeHours = Math.max(1, Math.min(hours, 24 * 90));
+        int safeHours = Math.max(1, Math.min(hours, MAX_ROLLING_HOURS));
         Instant cutoff = now.minus(safeHours, ChronoUnit.HOURS).truncatedTo(ChronoUnit.HOURS);
         String sql = "SELECT COUNT(DISTINCT player_uuid) AS c FROM hourly_agg WHERE hour_start >= ?";
         try (Connection connection = provider.getConnection();
@@ -602,7 +602,7 @@ public final class PlaytimeRepository {
     public int getServerUniquePlayers(String rangeId, Instant now) {
         String range = normalizeRange(rangeId);
         String sql;
-        if (range.equals("ALL")) {
+        if (range.equals(RANGE_ALL)) {
             sql = "SELECT COUNT(*) AS c FROM lifetime_agg";
             try (Connection connection = provider.getConnection();
                  PreparedStatement statement = connection.prepareStatement(sql);
@@ -631,7 +631,7 @@ public final class PlaytimeRepository {
 
     public int getServerJoins(String rangeId, Instant now) {
         String range = normalizeRange(rangeId);
-        if (range.equals("ALL")) {
+        if (range.equals(RANGE_ALL)) {
             String sql = "SELECT COUNT(*) AS c FROM joins_log";
             try (Connection connection = provider.getConnection();
                  PreparedStatement statement = connection.prepareStatement(sql);
@@ -646,9 +646,9 @@ public final class PlaytimeRepository {
         ZonedDateTime nowZoned = now.atZone(joinZoneId);
         LocalDate end = nowZoned.toLocalDate();
         LocalDate start = switch (range) {
-            case "TODAY" -> end;
-            case "7D" -> end.minusDays(6);
-            case "30D" -> end.minusDays(29);
+            case RANGE_TODAY -> end;
+            case RANGE_7D -> end.minusDays(6);
+            case RANGE_30D -> end.minusDays(29);
             default -> end.minusDays(29);
         };
 
@@ -690,7 +690,7 @@ public final class PlaytimeRepository {
             try (ResultSet resultSet = statement.executeQuery()) {
                 while (resultSet.next()) {
                     try {
-                        UUID uuid = UUID.fromString(resultSet.getString("player_uuid"));
+                        UUID uuid = UUID.fromString(resultSet.getString(COL_PLAYER_UUID));
                         Instant joinedAt = instantOrNull(resultSet.getTimestamp("joined_at"));
                         Instant firstJoin = instantOrNull(resultSet.getTimestamp("first_join"));
                         joins.add(new RecentJoinActivity(
@@ -721,78 +721,105 @@ public final class PlaytimeRepository {
         stats.totalJoins = getServerJoins(range, now);
 
         try (Connection connection = provider.getConnection()) {
-            Map<String, Long> earliestJoinByPlayer = new HashMap<>();
-            Map<String, Integer> totalJoinsByPlayer = new HashMap<>();
-            Map<String, Integer> joinsInRangeByPlayer = new HashMap<>();
-            Map<LocalDate, Set<String>> dailyUniquePlayers = new HashMap<>();
-
             JoinWindow joinWindow = joinWindowFor(range, now);
-            String sql = "SELECT player_uuid, joined_at FROM joins_log";
-            try (PreparedStatement statement = connection.prepareStatement(sql);
-                 ResultSet resultSet = statement.executeQuery()) {
-                while (resultSet.next()) {
-                    String uuid = resultSet.getString("player_uuid");
-                    Timestamp timestamp = resultSet.getTimestamp("joined_at");
-                    if (uuid == null || timestamp == null) {
-                        continue;
-                    }
-
-                    Instant joinedAt = timestamp.toInstant();
-                    earliestJoinByPlayer.merge(uuid, joinedAt.toEpochMilli(), Math::min);
-                    totalJoinsByPlayer.merge(uuid, 1, Integer::sum);
-
-                    if (joinWindow.includes(joinedAt)) {
-                        joinsInRangeByPlayer.merge(uuid, 1, Integer::sum);
-                        LocalDate day = joinedAt.atZone(joinZoneId).toLocalDate();
-                        dailyUniquePlayers.computeIfAbsent(day, ignored -> new HashSet<>()).add(uuid);
-                    }
-                }
-            }
-
-            stats.uniquePlayersJoined = joinsInRangeByPlayer.size();
-            if (stats.playersWithPlaytime == 0 && range.equals("ALL")) {
-                stats.playersWithPlaytime = earliestJoinByPlayer.size();
-            }
-
-            if (range.equals("ALL")) {
-                stats.newPlayers = earliestJoinByPlayer.size();
-                for (Map.Entry<String, Integer> entry : totalJoinsByPlayer.entrySet()) {
-                    if (entry.getValue() > 1) {
-                        stats.returningPlayers++;
-                        stats.retainedNewPlayers++;
-                    }
-                }
-            } else {
-                for (String uuid : joinsInRangeByPlayer.keySet()) {
-                    long earliest = earliestJoinByPlayer.getOrDefault(uuid, Long.MAX_VALUE);
-                    boolean newInRange = earliest >= joinWindow.from().toEpochMilli() && earliest < joinWindow.to().toEpochMilli();
-                    if (newInRange) {
-                        stats.newPlayers++;
-                        if (totalJoinsByPlayer.getOrDefault(uuid, 0) > 1) {
-                            stats.retainedNewPlayers++;
-                        }
-                    } else {
-                        stats.returningPlayers++;
-                    }
-                }
-            }
-
-            if (!dailyUniquePlayers.isEmpty()) {
-                long max = 0L;
-                long sum = 0L;
-                for (Set<String> uniquePlayers : dailyUniquePlayers.values()) {
-                    long count = uniquePlayers.size();
-                    max = Math.max(max, count);
-                    sum += count;
-                }
-                stats.avgUniquePlayersPerDay = Math.round((double) sum / dailyUniquePlayers.size());
-                stats.maxUniquePlayersPerDay = max;
-            }
+            AdminJoinStats joinStats = loadAdminJoinStats(connection, joinWindow);
+            applyJoinStats(stats, range, joinWindow, joinStats);
         } catch (SQLException exception) {
             plugin.getLogger().warning("Failed to load admin server stats (" + range + "): " + exception.getMessage());
         }
 
         return stats;
+    }
+
+    private AdminJoinStats loadAdminJoinStats(Connection connection, JoinWindow joinWindow) throws SQLException {
+        AdminJoinStats joinStats = new AdminJoinStats(
+                new ConcurrentHashMap<>(),
+                new ConcurrentHashMap<>(),
+                new ConcurrentHashMap<>(),
+                new ConcurrentHashMap<>()
+        );
+
+        try (PreparedStatement statement = connection.prepareStatement("SELECT player_uuid, joined_at FROM joins_log");
+             ResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                recordJoinStats(resultSet, joinWindow, joinStats);
+            }
+        }
+        return joinStats;
+    }
+
+    private void recordJoinStats(ResultSet resultSet, JoinWindow joinWindow, AdminJoinStats joinStats) throws SQLException {
+        String uuid = resultSet.getString(COL_PLAYER_UUID);
+        Timestamp timestamp = resultSet.getTimestamp("joined_at");
+        if (uuid == null || timestamp == null) {
+            return;
+        }
+
+        Instant joinedAt = timestamp.toInstant();
+        joinStats.earliestJoinByPlayer().merge(uuid, joinedAt.toEpochMilli(), Math::min);
+        joinStats.totalJoinsByPlayer().merge(uuid, 1, Integer::sum);
+
+        if (joinWindow.includes(joinedAt)) {
+            joinStats.joinsInRangeByPlayer().merge(uuid, 1, Integer::sum);
+            LocalDate day = joinedAt.atZone(joinZoneId).toLocalDate();
+            joinStats.dailyUniquePlayers().computeIfAbsent(day, ignored -> ConcurrentHashMap.newKeySet()).add(uuid);
+        }
+    }
+
+    private void applyJoinStats(AdminServerStats stats, String range, JoinWindow joinWindow, AdminJoinStats joinStats) {
+        stats.uniquePlayersJoined = joinStats.joinsInRangeByPlayer().size();
+        if (stats.playersWithPlaytime == 0 && range.equals(RANGE_ALL)) {
+            stats.playersWithPlaytime = joinStats.earliestJoinByPlayer().size();
+        }
+        if (range.equals(RANGE_ALL)) {
+            applyAllTimeJoinStats(stats, joinStats);
+        } else {
+            applyRangeJoinStats(stats, joinWindow, joinStats);
+        }
+        applyDailyUniqueStats(stats, joinStats.dailyUniquePlayers());
+    }
+
+    private void applyAllTimeJoinStats(AdminServerStats stats, AdminJoinStats joinStats) {
+        stats.newPlayers = joinStats.earliestJoinByPlayer().size();
+        for (Map.Entry<String, Integer> entry : joinStats.totalJoinsByPlayer().entrySet()) {
+            if (entry.getValue() > 1) {
+                stats.returningPlayers++;
+                stats.retainedNewPlayers++;
+            }
+        }
+    }
+
+    private void applyRangeJoinStats(AdminServerStats stats, JoinWindow joinWindow, AdminJoinStats joinStats) {
+        for (String uuid : joinStats.joinsInRangeByPlayer().keySet()) {
+            if (isNewInJoinWindow(uuid, joinWindow, joinStats.earliestJoinByPlayer())) {
+                stats.newPlayers++;
+                if (joinStats.totalJoinsByPlayer().getOrDefault(uuid, 0) > 1) {
+                    stats.retainedNewPlayers++;
+                }
+            } else {
+                stats.returningPlayers++;
+            }
+        }
+    }
+
+    private boolean isNewInJoinWindow(String uuid, JoinWindow joinWindow, Map<String, Long> earliestJoinByPlayer) {
+        long earliest = earliestJoinByPlayer.getOrDefault(uuid, Long.MAX_VALUE);
+        return earliest >= joinWindow.from().toEpochMilli() && earliest < joinWindow.to().toEpochMilli();
+    }
+
+    private void applyDailyUniqueStats(AdminServerStats stats, Map<LocalDate, Set<String>> dailyUniquePlayers) {
+        if (dailyUniquePlayers.isEmpty()) {
+            return;
+        }
+        long max = 0L;
+        long sum = 0L;
+        for (Set<String> uniquePlayers : dailyUniquePlayers.values()) {
+            long count = uniquePlayers.size();
+            max = Math.max(max, count);
+            sum += count;
+        }
+        stats.avgUniquePlayersPerDay = Math.round((double) sum / dailyUniquePlayers.size());
+        stats.maxUniquePlayersPerDay = max;
     }
 
     private RangeTotals getLifetimeServerTotals() {
@@ -807,11 +834,31 @@ public final class PlaytimeRepository {
             if (!resultSet.next()) {
                 return new RangeTotals(0, 0, 0);
             }
-            return new RangeTotals(resultSet.getLong("active"), resultSet.getLong("afk"), resultSet.getLong("total"));
+            return rangeTotals(resultSet);
         } catch (SQLException exception) {
             plugin.getLogger().warning("Failed to load totals: " + exception.getMessage());
             return new RangeTotals(0, 0, 0);
         }
+    }
+
+    private RangeTotals rangeTotals(ResultSet resultSet) throws SQLException {
+        return new RangeTotals(resultSet.getLong(COL_ACTIVE), resultSet.getLong(COL_AFK), resultSet.getLong(COL_TOTAL));
+    }
+
+    private String aggregateOrderColumn(String metric) {
+        return switch (metric) {
+            case METRIC_ACTIVE -> COL_ACTIVE;
+            case METRIC_AFK -> COL_AFK;
+            default -> COL_TOTAL;
+        };
+    }
+
+    private String lifetimeOrderColumn(String metric) {
+        return switch (metric) {
+            case METRIC_ACTIVE -> "active_minutes";
+            case METRIC_AFK -> "afk_minutes";
+            default -> "total_minutes";
+        };
     }
 
     private void appendLeaderboardRows(List<LeaderboardEntry> rows, PreparedStatement statement, int offset) throws SQLException {
@@ -820,10 +867,10 @@ public final class PlaytimeRepository {
             while (resultSet.next()) {
                 try {
                     rows.add(new LeaderboardEntry(
-                            UUID.fromString(resultSet.getString("player_uuid")),
-                            resultSet.getLong("active"),
-                            resultSet.getLong("afk"),
-                            resultSet.getLong("total"),
+                            UUID.fromString(resultSet.getString(COL_PLAYER_UUID)),
+                            resultSet.getLong(COL_ACTIVE),
+                            resultSet.getLong(COL_AFK),
+                            resultSet.getLong(COL_TOTAL),
                             rank++
                     ));
                 } catch (IllegalArgumentException ignored) {
@@ -838,13 +885,13 @@ public final class PlaytimeRepository {
             int rank = 1;
             while (resultSet.next()) {
                 try {
-                    UUID uuid = UUID.fromString(resultSet.getString("player_uuid"));
-                    long active = resultSet.getLong("active");
-                    long afk = resultSet.getLong("afk");
-                    long total = resultSet.getLong("total");
+                    UUID uuid = UUID.fromString(resultSet.getString(COL_PLAYER_UUID));
+                    long active = resultSet.getLong(COL_ACTIVE);
+                    long afk = resultSet.getLong(COL_AFK);
+                    long total = resultSet.getLong(COL_TOTAL);
                     long value = switch (metric) {
-                        case "ACTIVE" -> active;
-                        case "AFK" -> afk;
+                        case METRIC_ACTIVE -> active;
+                        case METRIC_AFK -> afk;
                         default -> total;
                     };
                     rows.add(new PublicLeaderboardEntry(
@@ -927,25 +974,25 @@ public final class PlaytimeRepository {
     private DateRange dateRangeFor(String range, Instant now) {
         LocalDate today = LocalDate.ofInstant(now, ZoneOffset.UTC);
         LocalDate start = switch (range) {
-            case "TODAY" -> today;
-            case "7D" -> today.minusDays(6);
-            case "30D" -> today.minusDays(29);
+            case RANGE_TODAY -> today;
+            case RANGE_7D -> today.minusDays(6);
+            case RANGE_30D -> today.minusDays(29);
             default -> today.minusDays(29);
         };
         return new DateRange(start, today);
     }
 
     private JoinWindow joinWindowFor(String range, Instant now) {
-        if (range.equals("ALL")) {
+        if (range.equals(RANGE_ALL)) {
             return new JoinWindow(Instant.EPOCH, Instant.ofEpochMilli(Long.MAX_VALUE));
         }
 
         ZonedDateTime nowZoned = now.atZone(joinZoneId);
         LocalDate end = nowZoned.toLocalDate();
         LocalDate start = switch (range) {
-            case "TODAY" -> end;
-            case "7D" -> end.minusDays(6);
-            case "30D" -> end.minusDays(29);
+            case RANGE_TODAY -> end;
+            case RANGE_7D -> end.minusDays(6);
+            case RANGE_30D -> end.minusDays(29);
             default -> end.minusDays(29);
         };
 
@@ -954,21 +1001,21 @@ public final class PlaytimeRepository {
 
     private String normalizeRange(String rangeId) {
         if (rangeId == null) {
-            return "ALL";
+            return RANGE_ALL;
         }
         return switch (rangeId.toUpperCase(Locale.ROOT)) {
-            case "TODAY", "7D", "30D", "ALL" -> rangeId.toUpperCase(Locale.ROOT);
-            default -> "ALL";
+            case RANGE_TODAY, RANGE_7D, RANGE_30D, RANGE_ALL -> rangeId.toUpperCase(Locale.ROOT);
+            default -> RANGE_ALL;
         };
     }
 
     private String normalizeMetric(String metricId) {
         if (metricId == null) {
-            return "TOTAL";
+            return METRIC_TOTAL;
         }
         return switch (metricId.toUpperCase(Locale.ROOT)) {
-            case "ACTIVE", "AFK", "TOTAL" -> metricId.toUpperCase(Locale.ROOT);
-            default -> "TOTAL";
+            case METRIC_ACTIVE, METRIC_AFK, METRIC_TOTAL -> metricId.toUpperCase(Locale.ROOT);
+            default -> METRIC_TOTAL;
         };
     }
 
@@ -998,5 +1045,13 @@ public final class PlaytimeRepository {
         private boolean includes(Instant instant) {
             return !instant.isBefore(from) && instant.isBefore(to);
         }
+    }
+
+    private record AdminJoinStats(
+            Map<String, Long> earliestJoinByPlayer,
+            Map<String, Integer> totalJoinsByPlayer,
+            Map<String, Integer> joinsInRangeByPlayer,
+            Map<LocalDate, Set<String>> dailyUniquePlayers
+    ) {
     }
 }

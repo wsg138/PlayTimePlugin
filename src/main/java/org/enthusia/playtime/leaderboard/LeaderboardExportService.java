@@ -23,12 +23,14 @@ public final class LeaderboardExportService {
     private static final String EXPORT_METRIC = "ACTIVE";
     private static final String EXPORT_RANGE = "ALL";
     private static final int EXPORT_LIMIT = 100;
+    private static final int CONTROL_CHARACTER_LIMIT = 0x20;
+    private static final String COMMA_NEWLINE = ",\n";
 
     private final JavaPlugin plugin;
     private final PlaytimeRepository repository;
     private final PlaytimeConfig.LeaderboardExport config;
     private final PerformanceCounters counters;
-    private final Path exportDirectory;
+    private final Path outputDirectory;
     private final CloudflareR2Uploader r2Uploader;
 
     public LeaderboardExportService(JavaPlugin plugin, PlaytimeRepository repository, PlaytimeConfig.LeaderboardExport config, PerformanceCounters counters) {
@@ -36,7 +38,7 @@ public final class LeaderboardExportService {
         this.repository = repository;
         this.config = config;
         this.counters = counters;
-        this.exportDirectory = plugin.getDataFolder().toPath().resolve(config.directory()).normalize();
+        this.outputDirectory = plugin.getDataFolder().toPath().resolve(config.directory()).normalize();
         this.r2Uploader = new CloudflareR2Uploader(plugin, config.r2(), counters);
     }
 
@@ -46,33 +48,33 @@ public final class LeaderboardExportService {
         }
 
         try {
-            Files.createDirectories(exportDirectory);
+            Files.createDirectories(outputDirectory);
             Instant generatedAt = Instant.now();
-            StringBuilder index = new StringBuilder();
+            StringBuilder index = new StringBuilder(512);
             index.append("{\n");
-            appendField(index, 1, "schemaVersion", 1).append(",\n");
-            appendField(index, 1, "generatedAt", generatedAt.toString()).append(",\n");
-            appendField(index, 1, "source", plugin.getName()).append(",\n");
+            appendField(index, 1, "schemaVersion", 1).append(COMMA_NEWLINE);
+            appendField(index, 1, "generatedAt", generatedAt.toString()).append(COMMA_NEWLINE);
+            appendField(index, 1, "source", plugin.getName()).append(COMMA_NEWLINE);
             index.append(indent(1)).append("\"boards\": [\n");
 
             String fileName = boardId() + ".json";
             cleanupLegacyBoardFiles(fileName);
             List<PublicLeaderboardEntry> rows = repository.getPublicLeaderboard(EXPORT_METRIC, EXPORT_RANGE, generatedAt, EXPORT_LIMIT);
-            writeAtomic(exportDirectory.resolve(fileName), boardJson(generatedAt, rows));
+            writeAtomic(outputDirectory.resolve(fileName), boardJson(generatedAt, rows));
 
-            index.append(indent(2)).append("{");
+            index.append(indent(2)).append('{');
             appendInlineField(index, "board", boardId()).append(", ");
             appendInlineField(index, "file", fileName).append(", ");
             appendInlineField(index, "label", boardLabel()).append(", ");
             appendInlineField(index, "statLabel", statLabel()).append(", ");
             appendInlineField(index, "metric", EXPORT_METRIC.toLowerCase(Locale.ROOT)).append(", ");
             appendInlineField(index, "range", EXPORT_RANGE.toLowerCase(Locale.ROOT));
-            index.append("}");
+            index.append('}');
 
             index.append("\n").append(indent(1)).append("]\n");
             index.append("}\n");
-            writeAtomic(exportDirectory.resolve("index.json"), index.toString());
-            r2Uploader.uploadFiles(exportDirectory, List.of("index.json", fileName));
+            writeAtomic(outputDirectory.resolve("index.json"), index.toString());
+            r2Uploader.uploadFiles(outputDirectory, List.of("index.json", fileName));
             counters.leaderboardExports.increment();
         } catch (Exception exception) {
             plugin.getLogger().warning("Failed to export public playtime leaderboards: " + exception.getMessage());
@@ -80,27 +82,27 @@ public final class LeaderboardExportService {
     }
 
     public Path exportDirectory() {
-        return exportDirectory;
+        return outputDirectory;
     }
 
     private String boardJson(Instant generatedAt, List<PublicLeaderboardEntry> rows) {
-        StringBuilder json = new StringBuilder();
+        StringBuilder json = new StringBuilder(1024 + rows.size() * 256);
         json.append("{\n");
-        appendField(json, 1, "schemaVersion", 1).append(",\n");
-        appendField(json, 1, "generatedAt", generatedAt.toString()).append(",\n");
-        appendField(json, 1, "board", boardId()).append(",\n");
-        appendField(json, 1, "sourceBoard", BOARD).append(",\n");
-        appendField(json, 1, "label", boardLabel()).append(",\n");
-        appendField(json, 1, "statLabel", statLabel()).append(",\n");
-        appendField(json, 1, "metric", EXPORT_METRIC.toLowerCase(Locale.ROOT)).append(",\n");
-        appendField(json, 1, "range", EXPORT_RANGE.toLowerCase(Locale.ROOT)).append(",\n");
-        appendField(json, 1, "unit", "minutes").append(",\n");
-        appendField(json, 1, "order", "desc").append(",\n");
+        appendField(json, 1, "schemaVersion", 1).append(COMMA_NEWLINE);
+        appendField(json, 1, "generatedAt", generatedAt.toString()).append(COMMA_NEWLINE);
+        appendField(json, 1, "board", boardId()).append(COMMA_NEWLINE);
+        appendField(json, 1, "sourceBoard", BOARD).append(COMMA_NEWLINE);
+        appendField(json, 1, "label", boardLabel()).append(COMMA_NEWLINE);
+        appendField(json, 1, "statLabel", statLabel()).append(COMMA_NEWLINE);
+        appendField(json, 1, "metric", EXPORT_METRIC.toLowerCase(Locale.ROOT)).append(COMMA_NEWLINE);
+        appendField(json, 1, "range", EXPORT_RANGE.toLowerCase(Locale.ROOT)).append(COMMA_NEWLINE);
+        appendField(json, 1, "unit", "minutes").append(COMMA_NEWLINE);
+        appendField(json, 1, "order", "desc").append(COMMA_NEWLINE);
         json.append(indent(1)).append("\"players\": [\n");
         for (int i = 0; i < rows.size(); i++) {
             PublicLeaderboardEntry row = rows.get(i);
             if (i > 0) {
-                json.append(",\n");
+                json.append(COMMA_NEWLINE);
             }
             appendPlayer(json, row);
         }
@@ -111,20 +113,20 @@ public final class LeaderboardExportService {
 
     private void appendPlayer(StringBuilder json, PublicLeaderboardEntry row) {
         json.append(indent(2)).append("{\n");
-        appendField(json, 3, "rank", row.rank).append(",\n");
-        appendField(json, 3, "uuid", row.uuid.toString()).append(",\n");
-        appendField(json, 3, "username", row.username).append(",\n");
-        appendNullableField(json, 3, "displayName", row.displayName).append(",\n");
-        appendField(json, 3, "value", row.value).append(",\n");
-        appendField(json, 3, "formattedValue", TimeFormats.formatMinutes(row.value)).append(",\n");
-        appendField(json, 3, "subtext", "Active playtime").append(",\n");
+        appendField(json, 3, "rank", row.rank).append(COMMA_NEWLINE);
+        appendField(json, 3, "uuid", row.uuid.toString()).append(COMMA_NEWLINE);
+        appendField(json, 3, "username", row.username).append(COMMA_NEWLINE);
+        appendNullableField(json, 3, "displayName", row.displayName).append(COMMA_NEWLINE);
+        appendField(json, 3, "value", row.value).append(COMMA_NEWLINE);
+        appendField(json, 3, "formattedValue", TimeFormats.formatMinutes(row.value)).append(COMMA_NEWLINE);
+        appendField(json, 3, "subtext", "Active playtime").append(COMMA_NEWLINE);
         json.append(indent(3)).append("\"stats\": {\n");
         appendField(json, 4, "activeMinutes", row.activeMinutes).append("\n");
-        json.append(indent(3)).append("},\n");
-        appendNullableField(json, 3, "firstSeenAt", row.firstSeen == null ? null : row.firstSeen.toString()).append(",\n");
-        appendNullableField(json, 3, "lastSeenAt", row.lastSeen == null ? null : row.lastSeen.toString()).append(",\n");
+        json.append(indent(3)).append("},").append('\n');
+        appendNullableField(json, 3, "firstSeenAt", row.firstSeen == null ? null : row.firstSeen.toString()).append(COMMA_NEWLINE);
+        appendNullableField(json, 3, "lastSeenAt", row.lastSeen == null ? null : row.lastSeen.toString()).append(COMMA_NEWLINE);
         appendNullableField(json, 3, "updatedAt", row.updatedAt == null ? null : row.updatedAt.toString()).append("\n");
-        json.append(indent(2)).append("}");
+        json.append(indent(2)).append('}');
     }
 
     private void writeAtomic(Path file, String content) throws IOException {
@@ -138,7 +140,7 @@ public final class LeaderboardExportService {
     }
 
     private void cleanupLegacyBoardFiles(String keepFileName) throws IOException {
-        try (Stream<Path> files = Files.list(exportDirectory)) {
+        try (Stream<Path> files = Files.list(outputDirectory)) {
             files.filter(path -> {
                         String name = path.getFileName().toString();
                         return name.startsWith(BOARD + "-") && name.endsWith(".json") && !name.equals(keepFileName);
@@ -193,23 +195,29 @@ public final class LeaderboardExportService {
         StringBuilder escaped = new StringBuilder(value.length() + 16);
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i);
-            switch (c) {
-                case '"' -> escaped.append("\\\"");
-                case '\\' -> escaped.append("\\\\");
-                case '\b' -> escaped.append("\\b");
-                case '\f' -> escaped.append("\\f");
-                case '\n' -> escaped.append("\\n");
-                case '\r' -> escaped.append("\\r");
-                case '\t' -> escaped.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        escaped.append(String.format("\\u%04x", (int) c));
-                    } else {
-                        escaped.append(c);
-                    }
-                }
-            }
+            appendEscapedCharacter(escaped, c);
         }
         return escaped.toString();
+    }
+
+    private void appendEscapedCharacter(StringBuilder escaped, char value) {
+        switch (value) {
+            case '"' -> escaped.append("\\\"");
+            case '\\' -> escaped.append("\\\\");
+            case '\b' -> escaped.append("\\b");
+            case '\f' -> escaped.append("\\f");
+            case '\n' -> escaped.append("\\n");
+            case '\r' -> escaped.append("\\r");
+            case '\t' -> escaped.append("\\t");
+            default -> appendPrintableOrUnicodeEscape(escaped, value);
+        }
+    }
+
+    private void appendPrintableOrUnicodeEscape(StringBuilder escaped, char value) {
+        if (value < CONTROL_CHARACTER_LIMIT) {
+            escaped.append(String.format("\\u%04x", (int) value));
+            return;
+        }
+        escaped.append(value);
     }
 }

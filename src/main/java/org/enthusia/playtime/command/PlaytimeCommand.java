@@ -35,6 +35,10 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
     private static final int THIRD_ARG_COUNT = 3;
     private static final int FOURTH_ARG_COUNT = 4;
     private static final int CONSOLE_PAGE_SIZE = 10;
+    private static final String BASE_PERMISSION = "playtime.base";
+    private static final String ADMIN_COMMAND = "admin";
+    private static final String TOP_COMMAND = "top";
+    private static final String NUMERALS_COMMAND = "numerals";
     private static final List<String> TOP_METRICS = List.of("active", "afk", "total");
     private static final List<String> TOP_RANGES = List.of("today", "7d", "30d", "all");
     private static final List<String> ADMIN_SUBCOMMANDS = List.of("players", "activity", "reload", "debug", "performance");
@@ -58,16 +62,16 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        if (hasSubcommand(args, "admin")) {
+        if (hasSubcommand(args, ADMIN_COMMAND)) {
             return handleAdmin(sender, label, args);
         }
 
-        if (hasSubcommand(args, "top")) {
+        if (hasSubcommand(args, TOP_COMMAND)) {
             handleTop(sender, runtime, args);
             return true;
         }
 
-        if (hasSubcommand(args, "numerals")) {
+        if (hasSubcommand(args, NUMERALS_COMMAND)) {
             showNumerals(sender, runtime);
             return true;
         }
@@ -88,7 +92,7 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             send(sender, ChatColor.RED + "Usage: /" + label + " <player|top|admin|numerals>");
             return true;
         }
-        if (!sender.hasPermission("playtime.base")) {
+        if (!sender.hasPermission(BASE_PERMISSION)) {
             send(sender, ChatColor.RED + "You don't have permission.");
             return true;
         }
@@ -236,47 +240,23 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
     }
 
     private void handleTop(CommandSender sender, PlaytimeRuntime runtime, String[] args) {
-        if (!sender.hasPermission("playtime.base")) {
+        if (!sender.hasPermission(BASE_PERMISSION)) {
             send(sender, ChatColor.RED + "You don't have permission to view playtime leaderboards.");
             return;
         }
 
-        String metric = runtime.config().leaderboards().defaultMetric().toLowerCase(Locale.ROOT);
-        String range = runtime.config().leaderboards().defaultRange().toLowerCase(Locale.ROOT);
-        int page = 1;
-
-        if (args.length >= SECOND_ARG_COUNT) {
-            metric = args[1].toLowerCase(Locale.ROOT);
-            if (!TOP_METRICS.contains(metric)) {
-                send(sender, ChatColor.RED + "Unknown metric '" + metric + "'. Use active/afk/total.");
-                return;
-            }
-        }
-
-        if (args.length >= THIRD_ARG_COUNT) {
-            range = args[2].toLowerCase(Locale.ROOT);
-            if (!TOP_RANGES.contains(range)) {
-                send(sender, ChatColor.RED + "Unknown range '" + range + "'. Use today/7d/30d/all.");
-                return;
-            }
-        }
-
-        if (args.length >= FOURTH_ARG_COUNT) {
-            try {
-                page = Math.max(1, Integer.parseInt(args[3]));
-            } catch (NumberFormatException exception) {
-                send(sender, ChatColor.RED + "Page must be a number.");
-                return;
-            }
-        }
-
-        if (sender instanceof Player player) {
-            new LeaderboardGui(plugin, player, metric.toUpperCase(Locale.ROOT), range.toUpperCase(Locale.ROOT), page).open();
+        TopRequest request = parseTopRequest(sender, runtime, args);
+        if (request == null) {
             return;
         }
 
-        int offset = (page - 1) * CONSOLE_PAGE_SIZE;
-        List<LeaderboardEntry> rows = runtime.readService().getLeaderboard(metric.toUpperCase(Locale.ROOT), range.toUpperCase(Locale.ROOT), CONSOLE_PAGE_SIZE, offset);
+        if (sender instanceof Player player) {
+            new LeaderboardGui(plugin, player, request.metric().toUpperCase(Locale.ROOT), request.range().toUpperCase(Locale.ROOT), request.page()).open();
+            return;
+        }
+
+        int offset = (request.page() - 1) * CONSOLE_PAGE_SIZE;
+        List<LeaderboardEntry> rows = runtime.readService().getLeaderboard(request.metric().toUpperCase(Locale.ROOT), request.range().toUpperCase(Locale.ROOT), CONSOLE_PAGE_SIZE, offset);
         if (rows.isEmpty()) {
             send(sender, runtime.readService().isLoading()
                     ? ChatColor.YELLOW + "Leaderboard cache is refreshing. Try again in a moment."
@@ -284,16 +264,55 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        sender.sendMessage(ChatColor.GOLD + "[Playtime] " + ChatColor.YELLOW
-                + niceMetric(metric) + " leaderboard (" + niceRange(range) + "), page " + page + ":");
+        send(sender, niceMetric(request.metric()) + " leaderboard (" + niceRange(request.range()) + "), page " + request.page() + ":");
         for (LeaderboardEntry entry : rows) {
-            String name = resolveName(entry.uuid);
-            sender.sendMessage(ChatColor.GRAY + "#" + entry.rank + " "
-                    + ChatColor.AQUA + name + ChatColor.GRAY + " - "
-                    + ChatColor.YELLOW + TimeFormats.formatMinutes(entry.totalMinutes)
-                    + ChatColor.GRAY + " (A: " + ChatColor.GREEN + TimeFormats.formatMinutes(entry.activeMinutes)
-                    + ChatColor.GRAY + ", AFK: " + ChatColor.RED + TimeFormats.formatMinutes(entry.afkMinutes) + ChatColor.GRAY + ")");
+            sender.sendMessage(consoleLeaderboardLine(entry));
         }
+    }
+
+    private TopRequest parseTopRequest(CommandSender sender, PlaytimeRuntime runtime, String[] args) {
+        String metric = runtime.config().leaderboards().defaultMetric().toLowerCase(Locale.ROOT);
+        String range = runtime.config().leaderboards().defaultRange().toLowerCase(Locale.ROOT);
+        int page = 1;
+        if (args.length >= SECOND_ARG_COUNT) {
+            metric = args[1].toLowerCase(Locale.ROOT);
+            if (!TOP_METRICS.contains(metric)) {
+                send(sender, ChatColor.RED + "Unknown metric '" + metric + "'. Use active/afk/total.");
+                return null;
+            }
+        }
+        if (args.length >= THIRD_ARG_COUNT) {
+            range = args[2].toLowerCase(Locale.ROOT);
+            if (!TOP_RANGES.contains(range)) {
+                send(sender, ChatColor.RED + "Unknown range '" + range + "'. Use today/7d/30d/all.");
+                return null;
+            }
+        }
+        if (args.length >= FOURTH_ARG_COUNT) {
+            page = parseTopPage(sender, args[3]);
+            if (page < 1) {
+                return null;
+            }
+        }
+        return new TopRequest(metric, range, page);
+    }
+
+    private int parseTopPage(CommandSender sender, String rawPage) {
+        try {
+            return Math.max(1, Integer.parseInt(rawPage));
+        } catch (NumberFormatException exception) {
+            send(sender, ChatColor.RED + "Page must be a number.");
+            return 0;
+        }
+    }
+
+    private String consoleLeaderboardLine(LeaderboardEntry entry) {
+        String name = resolveName(entry.uuid);
+        return ChatColor.GRAY + "#" + entry.rank + " "
+                + ChatColor.AQUA + name + ChatColor.GRAY + " - "
+                + ChatColor.YELLOW + TimeFormats.formatMinutes(entry.totalMinutes)
+                + ChatColor.GRAY + " (A: " + ChatColor.GREEN + TimeFormats.formatMinutes(entry.activeMinutes)
+                + ChatColor.GRAY + ", AFK: " + ChatColor.RED + TimeFormats.formatMinutes(entry.afkMinutes) + ChatColor.GRAY + ")";
     }
 
     private void showPlaytime(CommandSender sender, PlaytimeRuntime runtime, UUID uuid, String name) {
@@ -306,19 +325,19 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
         }
 
         PlaytimeSnapshot snapshot = optional.get();
-        sender.sendMessage(ChatColor.GOLD + "[Playtime] " + ChatColor.YELLOW + "Playtime for " + name + ":");
+        send(sender, "Playtime for " + name + ":");
         sender.sendMessage(ChatColor.GRAY + "Total: " + ChatColor.AQUA + TimeFormats.formatMinutes(snapshot.totalMinutes)
                 + ChatColor.GRAY + " (Active: " + ChatColor.GREEN + TimeFormats.formatMinutes(snapshot.activeMinutes)
                 + ChatColor.GRAY + ", AFK: " + ChatColor.RED + TimeFormats.formatMinutes(snapshot.afkMinutes) + ChatColor.GRAY + ")");
     }
 
     private void showNumerals(CommandSender sender, PlaytimeRuntime runtime) {
-        if (!sender.hasPermission("playtime.base")) {
+        if (!sender.hasPermission(BASE_PERMISSION)) {
             send(sender, ChatColor.RED + "You don't have permission.");
             return;
         }
 
-        sender.sendMessage(ChatColor.GOLD + "[Playtime] " + ChatColor.YELLOW + "Playtime numeral tiers:");
+        send(sender, "Playtime numeral tiers:");
         if (sender instanceof Player player) {
             Optional<PlaytimeSnapshot> optional = runtime.readService().getLifetime(player.getUniqueId());
             if (optional.isPresent()) {
@@ -383,29 +402,37 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> result = new ArrayList<>();
         if (args.length == FIRST_ARG_COUNT) {
-            String prefix = args[0].toLowerCase(Locale.ROOT);
-            if ("admin".startsWith(prefix) && sender.hasPermission("playtime.admin.base")) {
-                result.add("admin");
-            }
-            if ("top".startsWith(prefix) && sender.hasPermission("playtime.base")) {
-                result.add("top");
-            }
-            if ("numerals".startsWith(prefix) && sender.hasPermission("playtime.base")) {
-                result.add("numerals");
-            }
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                if (player.getName().toLowerCase(Locale.ROOT).startsWith(prefix)) {
-                    result.add(player.getName());
-                }
-            }
-        } else if (args.length == SECOND_ARG_COUNT && args[0].equalsIgnoreCase("top")) {
+            addRootCompletions(sender, args[0], result);
+        } else if (args.length == SECOND_ARG_COUNT && args[0].equalsIgnoreCase(TOP_COMMAND)) {
             addMatches(result, args[1], TOP_METRICS);
-        } else if (args.length == THIRD_ARG_COUNT && args[0].equalsIgnoreCase("top")) {
+        } else if (args.length == THIRD_ARG_COUNT && args[0].equalsIgnoreCase(TOP_COMMAND)) {
             addMatches(result, args[2], TOP_RANGES);
-        } else if (args.length == SECOND_ARG_COUNT && args[0].equalsIgnoreCase("admin")) {
+        } else if (args.length == SECOND_ARG_COUNT && args[0].equalsIgnoreCase(ADMIN_COMMAND)) {
             addMatches(result, args[1], ADMIN_SUBCOMMANDS);
         }
         return result;
+    }
+
+    private void addRootCompletions(CommandSender sender, String rawPrefix, List<String> result) {
+        String prefix = rawPrefix.toLowerCase(Locale.ROOT);
+        addIfPermitted(result, prefix, ADMIN_COMMAND, sender.hasPermission("playtime.admin.base"));
+        addIfPermitted(result, prefix, TOP_COMMAND, sender.hasPermission(BASE_PERMISSION));
+        addIfPermitted(result, prefix, NUMERALS_COMMAND, sender.hasPermission(BASE_PERMISSION));
+        addOnlinePlayerMatches(result, prefix);
+    }
+
+    private void addIfPermitted(List<String> result, String prefix, String value, boolean permitted) {
+        if (permitted && value.startsWith(prefix)) {
+            result.add(value);
+        }
+    }
+
+    private void addOnlinePlayerMatches(List<String> result, String prefix) {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            if (player.getName().toLowerCase(Locale.ROOT).startsWith(prefix)) {
+                result.add(player.getName());
+            }
+        }
     }
 
     private void addMatches(List<String> result, String prefix, List<String> values) {
@@ -415,5 +442,8 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
                 result.add(value);
             }
         }
+    }
+
+    private record TopRequest(String metric, String range, int page) {
     }
 }
