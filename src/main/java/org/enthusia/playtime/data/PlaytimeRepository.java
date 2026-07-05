@@ -44,6 +44,7 @@ public final class PlaytimeRepository {
     private static final String COL_ACTIVE = "active";
     private static final String COL_AFK = "afk";
     private static final String COL_TOTAL = "total";
+    private static final String LOG_CONTEXT_SEPARATOR = "): ";
     private static final long NO_MINUTES = 0L;
     private static final int MAX_ROLLING_HOURS = 24 * 90;
 
@@ -420,7 +421,7 @@ public final class PlaytimeRepository {
                 statement.setInt(2, offset);
                 appendLeaderboardRows(leaderboard, statement, offset);
             } catch (SQLException exception) {
-                plugin.getLogger().warning("Failed to load leaderboard (" + metric + ", " + range + "): " + exception.getMessage());
+                plugin.getLogger().warning("Failed to load leaderboard (" + metric + ", " + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
             }
             return leaderboard;
         }
@@ -447,82 +448,84 @@ public final class PlaytimeRepository {
             statement.setInt(4, offset);
             appendLeaderboardRows(leaderboard, statement, offset);
         } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load leaderboard (" + metric + ", " + range + "): " + exception.getMessage());
+            plugin.getLogger().warning("Failed to load leaderboard (" + metric + ", " + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
         }
 
         return leaderboard;
     }
 
     public List<PublicLeaderboardEntry> getPublicLeaderboard(String metricId, String rangeId, Instant now, int limit) {
-        List<PublicLeaderboardEntry> leaderboard = new ArrayList<>();
         String metric = normalizeMetric(metricId);
         String range = normalizeRange(rangeId);
         int safeLimit = Math.max(1, Math.min(limit, 500));
-
-        String valueExpression = aggregateOrderColumn(metric);
-
-        String sql;
         if (range.equals(RANGE_ALL)) {
-            sql = """
-                    SELECT l.player_uuid,
-                           l.active_minutes AS active,
-                           l.afk_minutes AS afk,
-                           l.total_minutes AS total,
-                           l.first_join AS first_seen,
-                           COALESCE(p.last_seen, l.last_seen, l.last_join) AS last_seen,
-                           p.updated_at AS updated_at,
-                           p.username AS username,
-                           p.display_name AS display_name
-                    FROM lifetime_agg l
-                    LEFT JOIN player_profiles p ON p.player_uuid = l.player_uuid
-                    ORDER BY %s DESC
-                    LIMIT ?
-                    """.formatted(valueExpression);
-        } else {
-            DateRange dateRange = dateRangeFor(range, now);
-            sql = """
-                    SELECT d.player_uuid,
-                           d.active AS active,
-                           d.afk AS afk,
-                           d.total AS total,
-                           l.first_join AS first_seen,
-                           COALESCE(p.last_seen, l.last_seen, l.last_join) AS last_seen,
-                           p.updated_at AS updated_at,
-                           p.username AS username,
-                           p.display_name AS display_name
-                    FROM (
-                        SELECT player_uuid,
-                               SUM(active_minutes) AS active,
-                               SUM(afk_minutes) AS afk,
-                               SUM(total_minutes) AS total
-                        FROM daily_agg
-                        WHERE day >= ? AND day <= ?
-                        GROUP BY player_uuid
-                    ) d
-                    LEFT JOIN lifetime_agg l ON l.player_uuid = d.player_uuid
-                    LEFT JOIN player_profiles p ON p.player_uuid = d.player_uuid
-                    ORDER BY %s DESC
-                    LIMIT ?
-                    """.formatted(valueExpression);
-
-            try (Connection connection = provider.getConnection();
-                 PreparedStatement statement = connection.prepareStatement(sql)) {
-                statement.setString(1, dateRange.start().toString());
-                statement.setString(2, dateRange.end().toString());
-                statement.setInt(3, safeLimit);
-                appendPublicLeaderboardRows(leaderboard, statement, metric);
-            } catch (SQLException exception) {
-                plugin.getLogger().warning("Failed to load public leaderboard (" + metric + ", " + range + "): " + exception.getMessage());
-            }
-            return leaderboard;
+            return getAllTimePublicLeaderboard(metric, range, safeLimit);
         }
+        return getRangedPublicLeaderboard(metric, range, now, safeLimit);
+    }
 
+    private List<PublicLeaderboardEntry> getAllTimePublicLeaderboard(String metric, String range, int safeLimit) {
+        List<PublicLeaderboardEntry> leaderboard = new ArrayList<>();
+        String sql = """
+                SELECT l.player_uuid,
+                       l.active_minutes AS active,
+                       l.afk_minutes AS afk,
+                       l.total_minutes AS total,
+                       l.first_join AS first_seen,
+                       COALESCE(p.last_seen, l.last_seen, l.last_join) AS last_seen,
+                       p.updated_at AS updated_at,
+                       p.username AS username,
+                       p.display_name AS display_name
+                FROM lifetime_agg l
+                LEFT JOIN player_profiles p ON p.player_uuid = l.player_uuid
+                ORDER BY %s DESC
+                LIMIT ?
+                """.formatted(aggregateOrderColumn(metric));
         try (Connection connection = provider.getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setInt(1, safeLimit);
             appendPublicLeaderboardRows(leaderboard, statement, metric);
         } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load public leaderboard (" + metric + ", " + range + "): " + exception.getMessage());
+            plugin.getLogger().warning("Failed to load public leaderboard (" + metric + ", " + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
+        }
+        return leaderboard;
+    }
+
+    private List<PublicLeaderboardEntry> getRangedPublicLeaderboard(String metric, String range, Instant now, int safeLimit) {
+        List<PublicLeaderboardEntry> leaderboard = new ArrayList<>();
+        DateRange dateRange = dateRangeFor(range, now);
+        String sql = """
+                SELECT d.player_uuid,
+                       d.active AS active,
+                       d.afk AS afk,
+                       d.total AS total,
+                       l.first_join AS first_seen,
+                       COALESCE(p.last_seen, l.last_seen, l.last_join) AS last_seen,
+                       p.updated_at AS updated_at,
+                       p.username AS username,
+                       p.display_name AS display_name
+                FROM (
+                    SELECT player_uuid,
+                           SUM(active_minutes) AS active,
+                           SUM(afk_minutes) AS afk,
+                           SUM(total_minutes) AS total
+                    FROM daily_agg
+                    WHERE day >= ? AND day <= ?
+                    GROUP BY player_uuid
+                ) d
+                LEFT JOIN lifetime_agg l ON l.player_uuid = d.player_uuid
+                LEFT JOIN player_profiles p ON p.player_uuid = d.player_uuid
+                ORDER BY %s DESC
+                LIMIT ?
+                """.formatted(aggregateOrderColumn(metric));
+        try (Connection connection = provider.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, dateRange.start().toString());
+            statement.setString(2, dateRange.end().toString());
+            statement.setInt(3, safeLimit);
+            appendPublicLeaderboardRows(leaderboard, statement, metric);
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed to load public leaderboard (" + metric + ", " + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
         }
         return leaderboard;
     }
@@ -552,7 +555,7 @@ public final class PlaytimeRepository {
                 return rangeTotals(resultSet);
             }
         } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load server totals (" + range + "): " + exception.getMessage());
+            plugin.getLogger().warning("Failed to load server totals (" + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
             return new RangeTotals(0, 0, 0);
         }
     }
@@ -578,7 +581,7 @@ public final class PlaytimeRepository {
                 return rangeTotals(resultSet);
             }
         } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load server rolling totals (" + safeHours + "h): " + exception.getMessage());
+            plugin.getLogger().warning("Failed to load server rolling totals (" + safeHours + "h" + LOG_CONTEXT_SEPARATOR + exception.getMessage());
             return new RangeTotals(0, 0, 0);
         }
     }
@@ -594,7 +597,7 @@ public final class PlaytimeRepository {
                 return resultSet.next() ? resultSet.getInt("c") : 0;
             }
         } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load rolling unique players (" + safeHours + "h): " + exception.getMessage());
+            plugin.getLogger().warning("Failed to load rolling unique players (" + safeHours + "h" + LOG_CONTEXT_SEPARATOR + exception.getMessage());
             return 0;
         }
     }
@@ -609,7 +612,7 @@ public final class PlaytimeRepository {
                  ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next() ? resultSet.getInt("c") : 0;
             } catch (SQLException exception) {
-                plugin.getLogger().warning("Failed to load server unique players (ALL): " + exception.getMessage());
+                plugin.getLogger().warning("Failed to load server unique players (ALL" + LOG_CONTEXT_SEPARATOR + exception.getMessage());
                 return 0;
             }
         }
@@ -624,7 +627,7 @@ public final class PlaytimeRepository {
                 return resultSet.next() ? resultSet.getInt("c") : 0;
             }
         } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load server unique players (" + range + "): " + exception.getMessage());
+            plugin.getLogger().warning("Failed to load server unique players (" + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
             return 0;
         }
     }
@@ -638,7 +641,7 @@ public final class PlaytimeRepository {
                  ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next() ? resultSet.getInt("c") : 0;
             } catch (SQLException exception) {
-                plugin.getLogger().warning("Failed to load joins (ALL): " + exception.getMessage());
+                plugin.getLogger().warning("Failed to load joins (ALL" + LOG_CONTEXT_SEPARATOR + exception.getMessage());
                 return 0;
             }
         }
@@ -664,7 +667,7 @@ public final class PlaytimeRepository {
                 return resultSet.next() ? resultSet.getInt("c") : 0;
             }
         } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load joins (" + range + "): " + exception.getMessage());
+            plugin.getLogger().warning("Failed to load joins (" + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
             return 0;
         }
     }
@@ -725,7 +728,7 @@ public final class PlaytimeRepository {
             AdminJoinStats joinStats = loadAdminJoinStats(connection, joinWindow);
             applyJoinStats(stats, range, joinWindow, joinStats);
         } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load admin server stats (" + range + "): " + exception.getMessage());
+            plugin.getLogger().warning("Failed to load admin server stats (" + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
         }
 
         return stats;
