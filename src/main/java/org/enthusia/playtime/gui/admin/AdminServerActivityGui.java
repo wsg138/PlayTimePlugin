@@ -22,6 +22,12 @@ import java.util.List;
 import java.util.Locale;
 
 public final class AdminServerActivityGui implements PlaytimeGui {
+    private static final int SLOT_RANGE_TODAY = 10;
+    private static final int SLOT_RANGE_7D = 12;
+    private static final int SLOT_RANGE_30D = 14;
+    private static final int SLOT_RANGE_ALL = 16;
+    private static final int SLOT_BACK = 48;
+    private static final int SLOT_CLOSE = 50;
 
     private final PlayTimePlugin plugin;
     private final Player viewer;
@@ -61,10 +67,10 @@ public final class AdminServerActivityGui implements PlaytimeGui {
             runtime.counters().guiLoadingRenders.increment();
         }
 
-        inventory.setItem(10, rangeItem(Range.TODAY, Material.FILLED_MAP));
-        inventory.setItem(12, rangeItem(Range.SEVEN_DAYS, Material.NETHER_STAR));
-        inventory.setItem(14, rangeItem(Range.THIRTY_DAYS, Material.PAPER));
-        inventory.setItem(16, rangeItem(Range.ALL, Material.CLOCK));
+        inventory.setItem(SLOT_RANGE_TODAY, rangeItem(Range.TODAY, Material.FILLED_MAP));
+        inventory.setItem(SLOT_RANGE_7D, rangeItem(Range.SEVEN_DAYS, Material.NETHER_STAR));
+        inventory.setItem(SLOT_RANGE_30D, rangeItem(Range.THIRTY_DAYS, Material.PAPER));
+        inventory.setItem(SLOT_RANGE_ALL, rangeItem(Range.ALL, Material.CLOCK));
 
         double retentionPct = stats.newPlayers > 0 ? (stats.retainedNewPlayers * 100.0D / stats.newPlayers) : 0.0D;
         double avgJoinsPerPlayer = stats.uniquePlayersJoined > 0 ? (stats.totalJoins * 1.0D / stats.uniquePlayersJoined) : 0.0D;
@@ -105,8 +111,8 @@ public final class AdminServerActivityGui implements PlaytimeGui {
                 ChatColor.GRAY + "period and came back in it."
         )));
 
-        inventory.setItem(48, buildItem(Material.OAK_DOOR, ChatColor.YELLOW + "Back", List.of()));
-        inventory.setItem(50, buildItem(Material.BARRIER, ChatColor.RED + "Close", List.of()));
+        inventory.setItem(SLOT_BACK, buildItem(Material.OAK_DOOR, ChatColor.YELLOW + "Back", List.of()));
+        inventory.setItem(SLOT_CLOSE, buildItem(Material.BARRIER, ChatColor.RED + "Close", List.of()));
     }
 
     private void fillBackground() {
@@ -170,33 +176,21 @@ public final class AdminServerActivityGui implements PlaytimeGui {
     @Override
     public void handleClick(InventoryClickEvent event) {
         int slot = event.getRawSlot();
-        if (slot == 10) {
-            currentRange = Range.TODAY;
-            render();
-            return;
+        switch (slot) {
+            case SLOT_RANGE_TODAY -> selectRange(Range.TODAY);
+            case SLOT_RANGE_7D -> selectRange(Range.SEVEN_DAYS);
+            case SLOT_RANGE_30D -> selectRange(Range.THIRTY_DAYS);
+            case SLOT_RANGE_ALL -> selectRange(Range.ALL);
+            case SLOT_BACK -> new AdminMainGui(plugin, viewer).open();
+            case SLOT_CLOSE -> viewer.closeInventory();
+            default -> {
+            }
         }
-        if (slot == 12) {
-            currentRange = Range.SEVEN_DAYS;
-            render();
-            return;
-        }
-        if (slot == 14) {
-            currentRange = Range.THIRTY_DAYS;
-            render();
-            return;
-        }
-        if (slot == 16) {
-            currentRange = Range.ALL;
-            render();
-            return;
-        }
-        if (slot == 48) {
-            new AdminMainGui(plugin, viewer).open();
-            return;
-        }
-        if (slot == 50) {
-            viewer.closeInventory();
-        }
+    }
+
+    private void selectRange(Range range) {
+        currentRange = range;
+        render();
     }
 
     @Override

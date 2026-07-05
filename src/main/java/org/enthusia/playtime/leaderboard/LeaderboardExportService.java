@@ -71,7 +71,7 @@ public final class LeaderboardExportService {
             appendInlineField(index, "range", EXPORT_RANGE.toLowerCase(Locale.ROOT));
             index.append('}');
 
-            index.append("\n").append(indent(1)).append("]\n");
+            index.append('\n').append(indent(1)).append("]\n");
             index.append("}\n");
             writeAtomic(outputDirectory.resolve("index.json"), index.toString());
             r2Uploader.uploadFiles(outputDirectory, List.of("index.json", fileName));
@@ -106,7 +106,7 @@ public final class LeaderboardExportService {
             }
             appendPlayer(json, row);
         }
-        json.append("\n").append(indent(1)).append("]\n");
+        json.append('\n').append(indent(1)).append("]\n");
         json.append("}\n");
         return json.toString();
     }
@@ -122,7 +122,7 @@ public final class LeaderboardExportService {
         appendField(json, 3, "subtext", "Active playtime").append(COMMA_NEWLINE);
         json.append(indent(3)).append("\"stats\": {\n");
         appendField(json, 4, "activeMinutes", row.activeMinutes).append("\n");
-        json.append(indent(3)).append("},").append('\n');
+        json.append(indent(3)).append("},\n");
         appendNullableField(json, 3, "firstSeenAt", row.firstSeen == null ? null : row.firstSeen.toString()).append(COMMA_NEWLINE);
         appendNullableField(json, 3, "lastSeenAt", row.lastSeen == null ? null : row.lastSeen.toString()).append(COMMA_NEWLINE);
         appendNullableField(json, 3, "updatedAt", row.updatedAt == null ? null : row.updatedAt.toString()).append("\n");
