@@ -35,6 +35,12 @@ import java.util.UUID;
 public final class PlaytimePlanExtension implements DataExtension {
 
     private static final long MINUTE_MS = 60_000L;
+    private static final String PLAYER_PLAYTIME_TAB = "Player Playtime";
+    private static final String SERVER_ACTIVITY_TAB = "Server Activity";
+    private static final String ICON_ACTIVE = "person-running";
+    private static final String ICON_CALENDAR = "calendar";
+    private static final String RANGE_7D = "7D";
+    private static final String RANGE_30D = "30D";
 
     private final PlaytimeRepository repository;
     private final PlaytimeReadService readService;
@@ -51,11 +57,11 @@ public final class PlaytimePlanExtension implements DataExtension {
         return new CallEvents[]{CallEvents.PLAYER_JOIN, CallEvents.PLAYER_LEAVE};
     }
 
-    @Tab("Player Playtime")
+    @Tab(PLAYER_PLAYTIME_TAB)
     @NumberProvider(
             text = "Active Playtime",
             description = "All-time active playtime tracked by EnthusiaPlaytime.",
-            iconName = "person-running",
+            iconName = ICON_ACTIVE,
             iconColor = Color.GREEN,
             format = FormatType.TIME_MILLISECONDS,
             priority = 100,
@@ -65,7 +71,7 @@ public final class PlaytimePlanExtension implements DataExtension {
         return minutesToMillis(lifetime(playerUUID).activeMinutes);
     }
 
-    @Tab("Player Playtime")
+    @Tab(PLAYER_PLAYTIME_TAB)
     @NumberProvider(
             text = "Current Session",
             description = "Length of the player's current online session.",
@@ -79,7 +85,7 @@ public final class PlaytimePlanExtension implements DataExtension {
         return Math.max(0L, sessionManager.getSessionLengthMillis(playerUUID));
     }
 
-    @Tab("Player Playtime")
+    @Tab(PLAYER_PLAYTIME_TAB)
     @NumberProvider(
             text = "Active Last 24h",
             description = "Active playtime in the last rolling 24 hours.",
@@ -93,7 +99,7 @@ public final class PlaytimePlanExtension implements DataExtension {
         return minutesToMillis(repository.getRollingTotals(playerUUID, Instant.now(), 24).activeMinutes);
     }
 
-    @Tab("Player Playtime")
+    @Tab(PLAYER_PLAYTIME_TAB)
     @NumberProvider(
             text = "Active Last 7d",
             description = "Active playtime over the last 7 UTC calendar days.",
@@ -103,23 +109,23 @@ public final class PlaytimePlanExtension implements DataExtension {
             priority = 85
     )
     public long activeLast7Days(UUID playerUUID) {
-        return minutesToMillis(readService.getRangeTotals(playerUUID, "7D").activeMinutes);
+        return minutesToMillis(readService.getRangeTotals(playerUUID, RANGE_7D).activeMinutes);
     }
 
-    @Tab("Player Playtime")
+    @Tab(PLAYER_PLAYTIME_TAB)
     @NumberProvider(
             text = "Active Last 30d",
             description = "Active playtime over the last 30 UTC calendar days.",
-            iconName = "calendar",
+            iconName = ICON_CALENDAR,
             iconColor = Color.LIGHT_GREEN,
             format = FormatType.TIME_MILLISECONDS,
             priority = 80
     )
     public long activeLast30Days(UUID playerUUID) {
-        return minutesToMillis(readService.getRangeTotals(playerUUID, "30D").activeMinutes);
+        return minutesToMillis(readService.getRangeTotals(playerUUID, RANGE_30D).activeMinutes);
     }
 
-    @Tab("Player Playtime")
+    @Tab(PLAYER_PLAYTIME_TAB)
     @NumberProvider(
             text = "First Seen",
             description = "First join timestamp recorded by EnthusiaPlaytime.",
@@ -132,7 +138,7 @@ public final class PlaytimePlanExtension implements DataExtension {
         return epochMillis(repository.getFirstJoin(playerUUID));
     }
 
-    @Tab("Player Playtime")
+    @Tab(PLAYER_PLAYTIME_TAB)
     @NumberProvider(
             text = "Last Seen",
             description = "Last seen timestamp recorded by EnthusiaPlaytime.",
@@ -145,17 +151,17 @@ public final class PlaytimePlanExtension implements DataExtension {
         return epochMillis(repository.getLastSeen(playerUUID));
     }
 
-    @Tab("Player Playtime")
+    @Tab(PLAYER_PLAYTIME_TAB)
     @TableProvider(tableColor = Color.TEAL)
     public Table playtimeRanges(UUID playerUUID) {
         long last24h = repository.getRollingTotals(playerUUID, Instant.now(), 24).activeMinutes;
-        long last7d = readService.getRangeTotals(playerUUID, "7D").activeMinutes;
-        long last30d = readService.getRangeTotals(playerUUID, "30D").activeMinutes;
+        long last7d = readService.getRangeTotals(playerUUID, RANGE_7D).activeMinutes;
+        long last30d = readService.getRangeTotals(playerUUID, RANGE_30D).activeMinutes;
         long all = lifetime(playerUUID).activeMinutes;
 
         return Table.builder()
-                .columnOne("Range", icon("calendar", Color.TEAL))
-                .columnTwo("Active", icon("person-running", Color.GREEN))
+                .columnOne("Range", icon(ICON_CALENDAR, Color.TEAL))
+                .columnTwo("Active", icon(ICON_ACTIVE, Color.GREEN))
                 .columnTwoFormat(TableColumnFormat.NONE)
                 .addRow("Last 24h", TimeFormats.formatDurationMillis(minutesToMillis(last24h)))
                 .addRow("Last 7d", TimeFormats.formatDurationMillis(minutesToMillis(last7d)))
@@ -164,7 +170,7 @@ public final class PlaytimePlanExtension implements DataExtension {
                 .build();
     }
 
-    @Tab("Server Activity")
+    @Tab(SERVER_ACTIVITY_TAB)
     @NumberProvider(
             text = "Known Players",
             description = "Players with a playtime record in EnthusiaPlaytime storage.",
@@ -176,7 +182,7 @@ public final class PlaytimePlanExtension implements DataExtension {
         return repository.countKnownPlayers();
     }
 
-    @Tab("Server Activity")
+    @Tab(SERVER_ACTIVITY_TAB)
     @NumberProvider(
             text = "Server Active 24h",
             description = "Server-wide active playtime in the last rolling 24 hours.",
@@ -189,7 +195,7 @@ public final class PlaytimePlanExtension implements DataExtension {
         return minutesToMillis(repository.getServerRollingTotals(Instant.now(), 24).activeMinutes);
     }
 
-    @Tab("Server Activity")
+    @Tab(SERVER_ACTIVITY_TAB)
     @NumberProvider(
             text = "Server Active 7d",
             description = "Server-wide active playtime over the last 7 UTC calendar days.",
@@ -199,34 +205,34 @@ public final class PlaytimePlanExtension implements DataExtension {
             priority = 90
     )
     public long serverActiveLast7Days() {
-        return minutesToMillis(readService.getAdminServerStats("7D").activeMinutes);
+        return minutesToMillis(readService.getAdminServerStats(RANGE_7D).activeMinutes);
     }
 
-    @Tab("Server Activity")
+    @Tab(SERVER_ACTIVITY_TAB)
     @NumberProvider(
             text = "Server Active 30d",
             description = "Server-wide active playtime over the last 30 UTC calendar days.",
-            iconName = "calendar",
+            iconName = ICON_CALENDAR,
             iconColor = Color.GREEN,
             format = FormatType.TIME_MILLISECONDS,
             priority = 85
     )
     public long serverActiveLast30Days() {
-        return minutesToMillis(readService.getAdminServerStats("30D").activeMinutes);
+        return minutesToMillis(readService.getAdminServerStats(RANGE_30D).activeMinutes);
     }
 
-    @Tab("Server Activity")
+    @Tab(SERVER_ACTIVITY_TAB)
     @TableProvider(tableColor = Color.TEAL)
     public Table serverPlaytimeSummary() {
         Instant now = Instant.now();
         RangeTotals last24h = repository.getServerRollingTotals(now, 24);
-        AdminServerStats last7d = readService.getAdminServerStats("7D");
-        AdminServerStats last30d = readService.getAdminServerStats("30D");
+        AdminServerStats last7d = readService.getAdminServerStats(RANGE_7D);
+        AdminServerStats last30d = readService.getAdminServerStats(RANGE_30D);
         AdminServerStats all = readService.getAdminServerStats("ALL");
 
         return Table.builder()
-                .columnOne("Range", icon("calendar", Color.TEAL))
-                .columnTwo("Active", icon("person-running", Color.GREEN))
+                .columnOne("Range", icon(ICON_CALENDAR, Color.TEAL))
+                .columnTwo("Active", icon(ICON_ACTIVE, Color.GREEN))
                 .columnThree("Players", icon("users", Color.BLUE))
                 .columnTwoFormat(TableColumnFormat.NONE)
                 .addRow("Last 24h", TimeFormats.formatDurationMillis(minutesToMillis(last24h.activeMinutes)), repository.getRollingUniquePlayers(now, 24))
@@ -236,13 +242,13 @@ public final class PlaytimePlanExtension implements DataExtension {
                 .build();
     }
 
-    @Tab("Server Activity")
+    @Tab(SERVER_ACTIVITY_TAB)
     @TableProvider(tableColor = Color.GREEN)
     public Table topActivePlaytime() {
         Table.Factory table = Table.builder()
                 .columnOne("Rank", icon("ranking-star", Color.AMBER))
                 .columnTwo("Player", icon("user", Color.BLUE))
-                .columnThree("Active", icon("person-running", Color.GREEN))
+                .columnThree("Active", icon(ICON_ACTIVE, Color.GREEN))
                 .columnFour("Last Seen", icon("door-open", Color.BLUE))
                 .columnTwoFormat(TableColumnFormat.PLAYER_NAME)
                 .columnThreeFormat(TableColumnFormat.NONE)
@@ -260,7 +266,7 @@ public final class PlaytimePlanExtension implements DataExtension {
         return table.build();
     }
 
-    @Tab("Server Activity")
+    @Tab(SERVER_ACTIVITY_TAB)
     @TableProvider(tableColor = Color.BLUE)
     public Table recentJoinActivity() {
         Table.Factory table = Table.builder()
