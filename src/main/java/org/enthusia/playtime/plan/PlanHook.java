@@ -10,6 +10,7 @@ import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.service.PlaytimeReadService;
 
+import java.util.Optional;
 import java.util.logging.Level;
 
 public final class PlanHook implements AutoCloseable {
@@ -20,7 +21,7 @@ public final class PlanHook implements AutoCloseable {
     private final SessionManager sessionManager;
     private final PlaytimeConfig config;
 
-    private DataExtension extension;
+    private Optional<DataExtension> extension = Optional.empty();
     private boolean enableListenerRegistered;
     private volatile boolean closed;
     private volatile boolean registrationWarningLogged;
@@ -65,24 +66,26 @@ public final class PlanHook implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
-        if (extension == null) {
+        DataExtension currentExtension = extension.orElse(null);
+        if (currentExtension == null) {
             return;
         }
         try {
-            ExtensionService.getInstance().unregister(extension);
+            ExtensionService.getInstance().unregister(currentExtension);
         } catch (NoClassDefFoundError | IllegalStateException ignored) {
             // Plan is optional and may already be disabled.
         } catch (Exception exception) {
             plugin.getLogger().log(Level.FINE, "Failed to unregister Plan analytics integration.", exception);
         } finally {
-            extension = null;
+            extension = Optional.empty();
         }
     }
 
     private void registerDataExtension() {
         close();
-        extension = new PlaytimePlanExtension(repository, readService, sessionManager);
-        ExtensionService.getInstance().register(extension);
+        DataExtension newExtension = new PlaytimePlanExtension(repository, readService, sessionManager);
+        ExtensionService.getInstance().register(newExtension);
+        extension = Optional.of(newExtension);
         registrationWarningLogged = false;
         plugin.getLogger().info("Registered Plan Player Analytics data extension.");
     }

@@ -34,6 +34,7 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
     private static final int SECOND_ARG_COUNT = 2;
     private static final int THIRD_ARG_COUNT = 3;
     private static final int FOURTH_ARG_COUNT = 4;
+    private static final int FIRST_PAGE = 1;
     private static final int CONSOLE_PAGE_SIZE = 10;
     private static final String BASE_PERMISSION = "playtime.base";
     private static final String ADMIN_COMMAND = "admin";
@@ -290,7 +291,7 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length >= FOURTH_ARG_COUNT) {
             page = parseTopPage(sender, args[3]);
-            if (page < 1) {
+            if (page < FIRST_PAGE) {
                 return null;
             }
         }
@@ -299,7 +300,7 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
 
     private int parseTopPage(CommandSender sender, String rawPage) {
         try {
-            return Math.max(1, Integer.parseInt(rawPage));
+            return Math.max(FIRST_PAGE, Integer.parseInt(rawPage));
         } catch (NumberFormatException exception) {
             send(sender, ChatColor.RED + "Page must be a number.");
             return 0;

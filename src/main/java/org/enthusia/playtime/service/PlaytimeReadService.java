@@ -24,6 +24,11 @@ import java.util.function.Supplier;
 import java.util.logging.Level;
 
 public final class PlaytimeReadService {
+    private static final long MIN_PENDING_TOTAL = 1L;
+    private static final String RANGE_TODAY = "TODAY";
+    private static final String RANGE_7D = "7D";
+    private static final String RANGE_30D = "30D";
+    private static final String RANGE_ALL = "ALL";
 
     private final PlayTimePlugin plugin;
     private final PlaytimeRepository repository;
@@ -51,7 +56,7 @@ public final class PlaytimeReadService {
         Optional<PlaytimeSnapshot> base = cached.value();
         RangeTotals pending = writeQueue.getPendingTotals(uuid);
         if (base.isEmpty()) {
-            if (pending.totalMinutes <= 0L) {
+            if (pending.totalMinutes < MIN_PENDING_TOTAL) {
                 return Optional.empty();
             }
             return Optional.of(new PlaytimeSnapshot(pending.activeMinutes, pending.afkMinutes, pending.totalMinutes));
@@ -224,17 +229,17 @@ public final class PlaytimeReadService {
     }
 
     private boolean rangeIncludesPending(String range) {
-        return range.equals("TODAY") || range.equals("7D") || range.equals("30D") || range.equals("ALL");
+        return range.equals(RANGE_TODAY) || range.equals(RANGE_7D) || range.equals(RANGE_30D) || range.equals(RANGE_ALL);
     }
 
     private String normalizeRange(String rangeId) {
         if (rangeId == null) {
-            return "ALL";
+            return RANGE_ALL;
         }
         String normalized = rangeId.toUpperCase(Locale.ROOT);
         return switch (normalized) {
-            case "TODAY", "7D", "30D", "ALL" -> normalized;
-            default -> "ALL";
+            case RANGE_TODAY, RANGE_7D, RANGE_30D, RANGE_ALL -> normalized;
+            default -> RANGE_ALL;
         };
     }
 

@@ -15,6 +15,8 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public final class DatabaseProvider {
+    private static final int SQLITE_READONLY_DBMOVED = 1038;
+    private static final int SQLITE_READONLY_DIRECTORY_MOVED = 1039;
 
     private final JavaPlugin plugin;
     private final PlaytimeConfig config;
@@ -77,7 +79,6 @@ public final class DatabaseProvider {
         synchronized (lock) {
             if (dataSource != null) {
                 dataSource.close();
-                dataSource = null;
             }
         }
     }
@@ -138,28 +139,38 @@ public final class DatabaseProvider {
             if (log.isLoggable(Level.SEVERE)) {
                 log.severe("Failed to open initial database connection: " + e.getMessage());
             }
-            throw new RuntimeException(e);
+            throw new DatabaseInitializationException(e);
         }
     }
 
     private boolean isSqliteDbMoved(Throwable throwable) {
-        while (throwable != null) {
-            if (throwable instanceof SQLiteException se) {
-                String msg = se.getMessage();
-                if (msg != null) {
-                    String upper = msg.toUpperCase(Locale.ROOT);
-                    if (upper.contains("READONLY_DBMOVED") || upper.contains("DATABASE FILE HAS BEEN MOVED")) {
-                        return true;
-                    }
-                }
-                int code = se.getErrorCode();
-                // Extended error code for READONLY_DBMOVED is 1038; include nearby values just in case.
-                if (code == 1038 || code == 1039) {
-                    return true;
-                }
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof SQLiteException se && sqliteMoved(se)) {
+                return true;
             }
-            throwable = throwable.getCause();
+            current = current.getCause();
         }
         return false;
+    }
+
+    private boolean sqliteMoved(SQLiteException exception) {
+        String msg = exception.getMessage();
+        if (msg != null) {
+            String upper = msg.toUpperCase(Locale.ROOT);
+            if (upper.contains("READONLY_DBMOVED") || upper.contains("DATABASE FILE HAS BEEN MOVED")) {
+                return true;
+            }
+        }
+        int code = exception.getErrorCode();
+        return code == SQLITE_READONLY_DBMOVED || code == SQLITE_READONLY_DIRECTORY_MOVED;
+    }
+
+    private static final class DatabaseInitializationException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        private DatabaseInitializationException(Throwable cause) {
+            super(cause);
+        }
     }
 }

@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class HeadUtils {
 
+    private static final int UUID_CHUNK_LENGTH = 8;
     private static final Map<UUID, ItemStack> CACHE = new ConcurrentHashMap<>();
 
     private HeadUtils() {
@@ -70,15 +71,16 @@ public final class HeadUtils {
 
     private static boolean looksLikeUuidChunk(String s) {
         // 8 hex characters e.g. "5e91b996"
-        if (s.length() != 8) return false;
-        for (int i = 0; i < 8; i++) {
-            char c = s.charAt(i);
-            boolean hex =
-                    (c >= '0' && c <= '9') ||
-                            (c >= 'a' && c <= 'f') ||
-                            (c >= 'A' && c <= 'F');
-            if (!hex) return false;
+        if (s.length() != UUID_CHUNK_LENGTH) return false;
+        for (int i = 0; i < UUID_CHUNK_LENGTH; i++) {
+            if (!isHex(s.charAt(i))) return false;
         }
         return true;
+    }
+
+    private static boolean isHex(char value) {
+        return (value >= '0' && value <= '9')
+                || (value >= 'a' && value <= 'f')
+                || (value >= 'A' && value <= 'F');
     }
 }

@@ -4,6 +4,8 @@ public enum SqlDialect {
     SQLITE,
     MYSQL;
 
+    private static final String NOOP_QUERY = "SELECT 1;";
+
     public static SqlDialect fromStorageType(StorageType type) {
         return switch (type) {
             case SQLITE -> SQLITE;
@@ -144,7 +146,7 @@ public enum SqlDialect {
                 CREATE INDEX IF NOT EXISTS idx_daily_agg_day_metric
                 ON daily_agg (day, total_minutes, active_minutes, afk_minutes);
                 """;
-            case MYSQL -> "SELECT 1;";
+            case MYSQL -> NOOP_QUERY;
         };
     }
 
@@ -154,7 +156,7 @@ public enum SqlDialect {
                 CREATE INDEX IF NOT EXISTS idx_lifetime_agg_total
                 ON lifetime_agg (total_minutes, active_minutes, afk_minutes);
                 """;
-            case MYSQL -> "SELECT 1;";
+            case MYSQL -> NOOP_QUERY;
         };
     }
 
@@ -164,7 +166,7 @@ public enum SqlDialect {
                 CREATE INDEX IF NOT EXISTS idx_hourly_agg_hour_metric
                 ON hourly_agg (hour_start, total_minutes, active_minutes, afk_minutes);
                 """;
-            case MYSQL -> "SELECT 1;";
+            case MYSQL -> NOOP_QUERY;
         };
     }
 
@@ -174,7 +176,7 @@ public enum SqlDialect {
                 CREATE INDEX IF NOT EXISTS idx_joins_log_uuid_time
                 ON joins_log (player_uuid, joined_at);
                 """;
-            case MYSQL -> "SELECT 1;";
+            case MYSQL -> NOOP_QUERY;
         };
     }
 
@@ -184,7 +186,7 @@ public enum SqlDialect {
                 CREATE INDEX IF NOT EXISTS idx_player_profiles_username
                 ON player_profiles (username);
                 """;
-            case MYSQL -> "SELECT 1;";
+            case MYSQL -> NOOP_QUERY;
         };
     }
 
