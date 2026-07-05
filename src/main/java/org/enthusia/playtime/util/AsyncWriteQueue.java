@@ -22,6 +22,10 @@ import java.util.logging.Level;
 
 public final class AsyncWriteQueue implements AutoCloseable {
 
+    private static final long MIN_TOTAL_MINUTES = 1L;
+    private static final int SPINS_PER_SECOND = 100;
+    private static final long WAIT_SLEEP_MILLIS = 10L;
+
     private final PlayTimePlugin plugin;
     private final PlaytimeRepository repository;
     private final PerformanceCounters counters;
@@ -54,7 +58,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
             return;
         }
         MinuteDelta delta = new MinuteDelta(activeMinutes, afkMinutes);
-        if (delta.totalMinutes() <= 0L) {
+        if (delta.totalMinutes() < MIN_TOTAL_MINUTES) {
             return;
         }
         pendingMinutes.merge(uuid, delta, MinuteDelta::plus);
@@ -168,8 +172,11 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     private List<JoinRecord> drainJoinBatch() {
         List<JoinRecord> batch = new ArrayList<>();
-        JoinRecord record;
-        while ((record = pendingJoins.poll()) != null) {
+        while (true) {
+            JoinRecord record = pendingJoins.poll();
+            if (record == null) {
+                break;
+            }
             batch.add(record);
         }
         return batch;
@@ -228,7 +235,6 @@ public final class AsyncWriteQueue implements AutoCloseable {
         closed = true;
         if (flushTask != null) {
             flushTask.cancel();
-            flushTask = null;
         }
         waitForActiveFlush(timeoutSeconds);
         flushSyncInternal();
@@ -237,10 +243,11 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     private void waitForActiveFlush(int timeoutSeconds) {
         int spins = 0;
-        int maxSpins = Math.max(1, timeoutSeconds) * 100;
-        while (flushInProgress.get() && spins++ < maxSpins) {
+        int maxSpins = Math.max(1, timeoutSeconds) * SPINS_PER_SECOND;
+        while (flushInProgress.get() && spins < maxSpins) {
+            spins++;
             try {
-                Thread.sleep(10L);
+                Thread.sleep(WAIT_SLEEP_MILLIS);
             } catch (InterruptedException interruptedException) {
                 Thread.currentThread().interrupt();
                 break;

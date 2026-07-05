@@ -69,10 +69,7 @@ public final class LeaderboardExportService {
             appendInlineField(index, "statLabel", statLabel()).append(", ");
             appendInlineField(index, "metric", EXPORT_METRIC.toLowerCase(Locale.ROOT)).append(", ");
             appendInlineField(index, "range", EXPORT_RANGE.toLowerCase(Locale.ROOT));
-            index.append('}');
-
-            index.append('\n').append(indent(1)).append("]\n");
-            index.append("}\n");
+            index.append("}\n%s]\n}\n".formatted(indent(1)));
             writeAtomic(outputDirectory.resolve("index.json"), index.toString());
             r2Uploader.uploadFiles(outputDirectory, List.of("index.json", fileName));
             counters.leaderboardExports.increment();
@@ -106,8 +103,7 @@ public final class LeaderboardExportService {
             }
             appendPlayer(json, row);
         }
-        json.append('\n').append(indent(1)).append("]\n");
-        json.append("}\n");
+        json.append("\n%s]\n}\n".formatted(indent(1)));
         return json.toString();
     }
 

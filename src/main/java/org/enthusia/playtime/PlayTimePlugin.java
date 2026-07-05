@@ -16,13 +16,16 @@ import org.enthusia.playtime.placeholders.PlaytimePlaceholderExpansion;
 import org.enthusia.playtime.skin.HeadCacheListener;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 
+import java.util.Optional;
 import java.util.logging.Level;
 
 public class PlayTimePlugin extends JavaPlugin {
 
-    private volatile PlaytimeRuntime activeRuntime;
+    private final Object runtimeLock = new Object();
+    private volatile Optional<PlaytimeRuntime> activeRuntime = Optional.empty();
+    private Optional<PlaytimePlaceholderExpansion> placeholderExpansion = Optional.empty();
+
     private BedrockSupport bedrockSupport;
-    private PlaytimePlaceholderExpansion placeholderExpansion;
 
     @Override
     public void onEnable() {
@@ -45,12 +48,11 @@ public class PlayTimePlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        if (placeholderExpansion != null) {
-            placeholderExpansion.unregister();
-            placeholderExpansion = null;
-        }
-        PlaytimeRuntime existing = activeRuntime;
-        activeRuntime = null;
+        placeholderExpansion.ifPresent(PlaytimePlaceholderExpansion::unregister);
+        placeholderExpansion = Optional.empty();
+
+        PlaytimeRuntime existing = activeRuntime.orElse(null);
+        activeRuntime = Optional.empty();
         if (existing != null) {
             try {
                 existing.close(false);
@@ -61,11 +63,17 @@ public class PlayTimePlugin extends JavaPlugin {
         Bukkit.getServicesManager().unregisterAll(this);
     }
 
-    public synchronized boolean reloadPluginRuntime() {
+    public boolean reloadPluginRuntime() {
         return reloadPluginRuntime("reload");
     }
 
-    private synchronized boolean reloadPluginRuntime(String reason) {
+    private boolean reloadPluginRuntime(String reason) {
+        synchronized (runtimeLock) {
+            return reloadPluginRuntimeLocked(reason);
+        }
+    }
+
+    private boolean reloadPluginRuntimeLocked(String reason) {
         PlaytimeConfig config;
         try {
             reloadConfig();
@@ -77,14 +85,14 @@ public class PlayTimePlugin extends JavaPlugin {
         }
 
         PlaytimeRuntime.RuntimeState state = null;
-        PlaytimeRuntime oldRuntime = this.activeRuntime;
+        PlaytimeRuntime oldRuntime = this.activeRuntime.orElse(null);
         if (oldRuntime != null) {
             state = oldRuntime.snapshotState();
         }
 
         try {
             PlaytimeRuntime newRuntime = new PlaytimeRuntime(this, config, state);
-            this.activeRuntime = newRuntime;
+            this.activeRuntime = Optional.of(newRuntime);
             if (oldRuntime != null) {
                 try {
                     oldRuntime.close(true);
@@ -108,11 +116,11 @@ public class PlayTimePlugin extends JavaPlugin {
     }
 
     public PlaytimeRuntime runtime() {
-        return activeRuntime;
+        return activeRuntime.orElse(null);
     }
 
     public PlaytimeConfig getRuntimeConfig() {
-        PlaytimeRuntime current = activeRuntime;
+        PlaytimeRuntime current = activeRuntime.orElse(null);
         return current == null ? PlaytimeConfig.load(this) : current.config();
     }
 
@@ -121,7 +129,7 @@ public class PlayTimePlugin extends JavaPlugin {
     }
 
     public PlaytimeService getPlaytimeService() {
-        PlaytimeRuntime current = activeRuntime;
+        PlaytimeRuntime current = activeRuntime.orElse(null);
         return current == null ? null : current.playtimeService();
     }
 
@@ -158,16 +166,15 @@ public class PlayTimePlugin extends JavaPlugin {
         boolean enabled = papiPresent && getRuntimeConfig().isPlaceholdersEnabled();
 
         if (!enabled) {
-            if (placeholderExpansion != null) {
-                placeholderExpansion.unregister();
-                placeholderExpansion = null;
-            }
+            placeholderExpansion.ifPresent(PlaytimePlaceholderExpansion::unregister);
+            placeholderExpansion = Optional.empty();
             return;
         }
 
-        if (placeholderExpansion == null) {
-            placeholderExpansion = new PlaytimePlaceholderExpansion(this);
-            placeholderExpansion.register();
+        if (placeholderExpansion.isEmpty()) {
+            PlaytimePlaceholderExpansion expansion = new PlaytimePlaceholderExpansion(this);
+            expansion.register();
+            placeholderExpansion = Optional.of(expansion);
             getLogger().info("Registered PlaceholderAPI expansion.");
         }
     }

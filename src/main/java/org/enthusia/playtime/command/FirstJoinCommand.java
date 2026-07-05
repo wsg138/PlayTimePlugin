@@ -26,6 +26,10 @@ import java.util.UUID;
 public final class FirstJoinCommand implements CommandExecutor, TabCompleter {
 
     private static final String PREFIX = ChatColor.GOLD + "[Playtime] " + ChatColor.YELLOW;
+    private static final int TARGET_ARG_COUNT = 1;
+    private static final long SECONDS_PER_DAY = 86_400L;
+    private static final long SECONDS_PER_HOUR = 3_600L;
+    private static final long SECONDS_PER_MINUTE = 60L;
 
     private final PlayTimePlugin plugin;
 
@@ -55,11 +59,15 @@ public final class FirstJoinCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        String targetName = args[0];
+        showTargetFirstJoin(sender, runtime, args[0]);
+        return true;
+    }
+
+    private void showTargetFirstJoin(CommandSender sender, PlaytimeRuntime runtime, String targetName) {
         Player online = Bukkit.getPlayerExact(targetName);
         if (online != null) {
             showFirstJoin(sender, runtime, online.getUniqueId(), online.getName());
-            return true;
+            return;
         }
 
         OfflinePlayer offline = Bukkit.getOfflinePlayerIfCached(targetName);
@@ -67,14 +75,13 @@ public final class FirstJoinCommand implements CommandExecutor, TabCompleter {
         if (offline == null || offline.getUniqueId() == null) {
             if (cachedUuid != null) {
                 showFirstJoin(sender, runtime, cachedUuid, targetName);
-                return true;
+                return;
             }
             sender.sendMessage(PREFIX + ChatColor.RED + "Player '" + targetName + "' has never joined.");
-            return true;
+            return;
         }
 
         showFirstJoin(sender, runtime, offline.getUniqueId(), offline.getName() != null ? offline.getName() : targetName);
-        return true;
     }
 
     private void showFirstJoin(CommandSender sender, PlaytimeRuntime runtime, UUID uuid, String name) {
@@ -129,32 +136,38 @@ public final class FirstJoinCommand implements CommandExecutor, TabCompleter {
 
         Duration duration = Duration.between(then, now);
         long seconds = duration.getSeconds();
-        long days = seconds / 86_400L;
-        seconds %= 86_400L;
-        long hours = seconds / 3_600L;
-        seconds %= 3_600L;
-        long minutes = seconds / 60L;
+        long days = seconds / SECONDS_PER_DAY;
+        seconds %= SECONDS_PER_DAY;
+        long hours = seconds / SECONDS_PER_HOUR;
+        seconds %= SECONDS_PER_HOUR;
+        long minutes = seconds / SECONDS_PER_MINUTE;
 
         StringBuilder builder = new StringBuilder();
-        if (days > 0) {
-            builder.append(days).append(" day").append(days == 1 ? "" : "s");
-        }
-        if (hours > 0) {
-            if (!builder.isEmpty()) {
-                builder.append(", ");
-            }
-            builder.append(hours).append(" hour").append(hours == 1 ? "" : "s");
-        }
+        appendDurationPart(builder, days, "day");
+        appendDurationPart(builder, hours, "hour");
         if (days == 0 && hours == 0) {
-            builder.append(minutes).append(" minute").append(minutes == 1 ? "" : "s");
+            appendDurationPart(builder, minutes, "minute");
         }
         return builder.isEmpty() ? "just now" : builder.toString();
+    }
+
+    private void appendDurationPart(StringBuilder builder, long amount, String unit) {
+        if (amount <= 0L) {
+            return;
+        }
+        if (!builder.isEmpty()) {
+            builder.append(", ");
+        }
+        builder.append(amount).append(' ').append(unit);
+        if (amount != 1L) {
+            builder.append('s');
+        }
     }
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> result = new ArrayList<>();
-        if (args.length == 1) {
+        if (args.length == TARGET_ARG_COUNT) {
             String prefix = args[0].toLowerCase(Locale.ROOT);
             for (Player player : Bukkit.getOnlinePlayers()) {
                 if (player.getName().toLowerCase(Locale.ROOT).startsWith(prefix)) {

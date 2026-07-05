@@ -44,6 +44,7 @@ public final class AdminPlayersGui implements PlaytimeGui {
     private static final int SLOT_BACK = 48;
     private static final int SLOT_CLOSE = 49;
     private static final int SLOT_NEXT = 53;
+    private static final int FIRST_PAGE = 1;
 
     public AdminPlayersGui(PlayTimePlugin plugin, Player viewer) {
         this.plugin = plugin;
@@ -117,13 +118,22 @@ public final class AdminPlayersGui implements PlaytimeGui {
     }
 
     private ItemStack filterItem(Filter filter) {
-        Material material = switch (filter) {
+        boolean selected = this.filter == filter;
+        return buildItem(filterMaterial(filter), filterTitle(filter, selected),
+                List.of(selected ? ChatColor.GREEN + "Selected filter" : ChatColor.YELLOW + "Click to filter by " + niceFilter(filter) + "."));
+    }
+
+    private Material filterMaterial(Filter filter) {
+        return switch (filter) {
             case ACTIVE -> Material.LIME_DYE;
             case IDLE -> Material.YELLOW_DYE;
             case AFK -> Material.RED_DYE;
             case SUSPICIOUS -> Material.MAGENTA_DYE;
             default -> Material.BOOK;
         };
+    }
+
+    private String filterTitle(Filter filter, boolean selected) {
         ChatColor color = switch (filter) {
             case ACTIVE -> ChatColor.GREEN;
             case IDLE -> ChatColor.YELLOW;
@@ -131,10 +141,7 @@ public final class AdminPlayersGui implements PlaytimeGui {
             case SUSPICIOUS -> ChatColor.LIGHT_PURPLE;
             default -> ChatColor.AQUA;
         };
-
-        boolean selected = this.filter == filter;
-        return buildItem(material, (selected ? ChatColor.BOLD.toString() : "") + color + niceFilter(filter),
-                List.of(selected ? ChatColor.GREEN + "Selected filter" : ChatColor.YELLOW + "Click to filter by " + niceFilter(filter) + "."));
+        return (selected ? ChatColor.BOLD.toString() : "") + color + niceFilter(filter);
     }
 
     private ItemStack entryItem(Player target, long nowMillis) {
@@ -222,38 +229,15 @@ public final class AdminPlayersGui implements PlaytimeGui {
     @Override
     public void handleClick(InventoryClickEvent event) {
         int slot = event.getRawSlot();
-        if (slot == SLOT_FILTER_ALL) {
-            filter = Filter.ALL;
-            page = 1;
-            render();
-            return;
-        }
-        if (slot == SLOT_FILTER_ACTIVE) {
-            filter = Filter.ACTIVE;
-            page = 1;
-            render();
-            return;
-        }
-        if (slot == SLOT_FILTER_IDLE) {
-            filter = Filter.IDLE;
-            page = 1;
-            render();
-            return;
-        }
-        if (slot == SLOT_FILTER_AFK) {
-            filter = Filter.AFK;
-            page = 1;
-            render();
-            return;
-        }
-        if (slot == SLOT_FILTER_SUS) {
-            filter = Filter.SUSPICIOUS;
-            page = 1;
+        Filter selectedFilter = filterForSlot(slot);
+        if (selectedFilter != null) {
+            filter = selectedFilter;
+            page = FIRST_PAGE;
             render();
             return;
         }
         if (slot == SLOT_PREV) {
-            if (page > 1) {
+            if (page > FIRST_PAGE) {
                 page--;
             }
             render();
@@ -271,6 +255,17 @@ public final class AdminPlayersGui implements PlaytimeGui {
         if (slot == SLOT_CLOSE) {
             viewer.closeInventory();
         }
+    }
+
+    private Filter filterForSlot(int slot) {
+        return switch (slot) {
+            case SLOT_FILTER_ALL -> Filter.ALL;
+            case SLOT_FILTER_ACTIVE -> Filter.ACTIVE;
+            case SLOT_FILTER_IDLE -> Filter.IDLE;
+            case SLOT_FILTER_AFK -> Filter.AFK;
+            case SLOT_FILTER_SUS -> Filter.SUSPICIOUS;
+            default -> null;
+        };
     }
 
     @Override
