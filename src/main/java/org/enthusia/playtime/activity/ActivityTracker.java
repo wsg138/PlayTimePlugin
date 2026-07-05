@@ -17,7 +17,6 @@ import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
-import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.util.PerformanceCounters;
 
@@ -25,13 +24,19 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class ActivityTracker implements Listener {
+    private static final long UNINITIALIZED_ACTIVITY_TIME = 0L;
+    private static final int MIN_AUTOMATION_INTERVAL_COUNT = 2;
+    private static final int MIN_AUTOMATION_VARIANCE_SAMPLES = 1;
+    private static final int MIN_ROTATION_SAMPLES = 4;
+    private static final double MIN_AUTOMATION_MEAN_MILLIS = 80.0D;
+    private static final double MIN_POSITIVE_MEAN = 0.0D;
+    private static final String HIDDEN_ACTION_BAR_MESSAGE = "";
 
     private final PlaytimeConfig config;
     private final SessionManager sessionManager;
@@ -50,8 +55,7 @@ public final class ActivityTracker implements Listener {
     private final boolean countHeadRotation;
     private final double tinyMovementThreshold;
 
-    public ActivityTracker(PlayTimePlugin plugin,
-                           PlaytimeConfig config,
+    public ActivityTracker(PlaytimeConfig config,
                            SessionManager sessionManager,
                            Map<UUID, ActivitySnapshot> initialState,
                            PerformanceCounters counters) {
@@ -98,7 +102,7 @@ public final class ActivityTracker implements Listener {
     }
 
     public Map<UUID, ActivitySnapshot> snapshot() {
-        Map<UUID, ActivitySnapshot> snapshot = new HashMap<>();
+        Map<UUID, ActivitySnapshot> snapshot = new ConcurrentHashMap<>();
         for (Map.Entry<UUID, ActivityData> entry : data.entrySet()) {
             synchronized (entry.getValue()) {
                 snapshot.put(entry.getKey(), entry.getValue().snapshot());
@@ -111,10 +115,10 @@ public final class ActivityTracker implements Listener {
         ActivityData activityData = getOrCreate(player, nowMillis);
         synchronized (activityData) {
             updatePosition(activityData, player.getLocation());
-            if (activityData.lastGeneralActivity <= 0L) {
+            if (activityData.lastGeneralActivity <= UNINITIALIZED_ACTIVITY_TIME) {
                 activityData.lastGeneralActivity = nowMillis;
             }
-            if (activityData.lastNonClickActivity <= 0L) {
+            if (activityData.lastNonClickActivity <= UNINITIALIZED_ACTIVITY_TIME) {
                 activityData.lastNonClickActivity = nowMillis;
             }
         }
@@ -153,7 +157,7 @@ public final class ActivityTracker implements Listener {
             return true;
         }
 
-        if (count <= 2) {
+        if (count <= MIN_AUTOMATION_INTERVAL_COUNT) {
             return false;
         }
 
@@ -167,7 +171,7 @@ public final class ActivityTracker implements Listener {
             previous = value;
         }
 
-        if (index <= 1) {
+        if (index <= MIN_AUTOMATION_VARIANCE_SAMPLES) {
             return false;
         }
 
@@ -176,7 +180,7 @@ public final class ActivityTracker implements Listener {
             sum += intervals[i];
         }
         double mean = sum / index;
-        if (mean < 80.0D) {
+        if (mean < MIN_AUTOMATION_MEAN_MILLIS) {
             return false;
         }
 
@@ -199,19 +203,23 @@ public final class ActivityTracker implements Listener {
 
     public String actionBarMessage(ActivityState state) {
         if (!config.actionBar().enabled()) {
-            return null;
+            return HIDDEN_ACTION_BAR_MESSAGE;
         }
         return switch (state) {
-            case ACTIVE -> config.actionBar().showActive() ? stripColor(config.actionBar().text().active()) : null;
-            case IDLE -> config.actionBar().showIdle() ? stripColor(config.actionBar().text().idle()) : null;
-            case AFK -> config.actionBar().showAfk() ? stripColor(config.actionBar().text().afk()) : null;
-            case SUSPICIOUS -> config.actionBar().showSuspicious() ? stripColor(config.actionBar().text().suspicious()) : null;
+            case ACTIVE -> actionBarText(config.actionBar().showActive(), config.actionBar().text().active());
+            case IDLE -> actionBarText(config.actionBar().showIdle(), config.actionBar().text().idle());
+            case AFK -> actionBarText(config.actionBar().showAfk(), config.actionBar().text().afk());
+            case SUSPICIOUS -> actionBarText(config.actionBar().showSuspicious(), config.actionBar().text().suspicious());
         };
+    }
+
+    private String actionBarText(boolean visible, String text) {
+        return visible ? stripColor(text) : HIDDEN_ACTION_BAR_MESSAGE;
     }
 
     private String stripColor(String value) {
         if (value == null) {
-            return null;
+            return HIDDEN_ACTION_BAR_MESSAGE;
         }
         return ChatColor.stripColor(ChatColor.translateAlternateColorCodes('&', value));
     }
@@ -296,11 +304,7 @@ public final class ActivityTracker implements Listener {
             return;
         }
         Location from = event.getFrom();
-        if (from.getX() == to.getX()
-                && from.getY() == to.getY()
-                && from.getZ() == to.getZ()
-                && from.getYaw() == to.getYaw()
-                && from.getPitch() == to.getPitch()) {
+        if (isUnchangedMove(from, to)) {
             counters.activityEventsSkipped.increment();
             return;
         }
@@ -310,26 +314,18 @@ public final class ActivityTracker implements Listener {
         ActivityData activityData = getOrCreate(player, nowMillis);
         synchronized (activityData) {
             if (!activityData.hasPosition) {
-                updatePosition(activityData, to);
-                activityData.lastGeneralActivity = nowMillis;
-                activityData.lastNonClickActivity = nowMillis;
-                counters.activityEventsAccepted.increment();
+                recordInitialPosition(activityData, to, nowMillis);
                 return;
             }
 
-            if (movementThrottleMs > 0L && nowMillis - activityData.lastMovementMutation < movementThrottleMs) {
+            if (isMovementThrottled(activityData, nowMillis)) {
                 counters.moveEventsThrottled.increment();
                 return;
             }
 
-            double dx = to.getX() - activityData.lastX;
-            double dy = to.getY() - activityData.lastY;
-            double dz = to.getZ() - activityData.lastZ;
-            float dyaw = angleDelta(to.getYaw(), activityData.lastYaw);
-            float dpitch = Math.abs(to.getPitch() - activityData.lastPitch);
-
-            boolean moved = (dx * dx + dy * dy + dz * dz) > tinyMovementThreshold;
-            boolean rotated = countHeadRotation && (dyaw > 2.0F || dpitch > 2.0F);
+            MovementDelta delta = movementDelta(activityData, to);
+            boolean moved = delta.distanceSquared() > tinyMovementThreshold;
+            boolean rotated = countHeadRotation && delta.hasHeadRotation();
             if (!moved && !rotated) {
                 counters.activityEventsSkipped.increment();
                 return;
@@ -337,26 +333,61 @@ public final class ActivityTracker implements Listener {
 
             activityData.lastMovementMutation = nowMillis;
             if (moved) {
-                updatePosition(activityData, to);
-                activityData.lastGeneralActivity = nowMillis;
-                activityData.lastNonClickActivity = nowMillis;
-                activityData.swingTimes.clear();
-                counters.activityEventsAccepted.increment();
+                recordMovement(activityData, to, nowMillis);
             } else if (rotated) {
-                boolean wasAutoclicking = suspicionEnabled
-                        && isAutoclickerPattern(activityData, nowMillis);
-                if (suspicionEnabled) {
-                    recordRotation(activityData, nowMillis, dyaw + dpitch);
-                }
-                updatePosition(activityData, to);
-                if (!wasAutoclicking && !isSuspiciousRotationPattern(activityData, nowMillis)) {
-                    activityData.lastGeneralActivity = nowMillis;
-                    activityData.lastNonClickActivity = nowMillis;
-                    activityData.swingTimes.clear();
-                }
-                counters.activityEventsAccepted.increment();
+                recordRotationMovement(activityData, to, nowMillis, delta.rotationAmount());
             }
         }
+    }
+
+    private boolean isUnchangedMove(Location from, Location to) {
+        return from.getX() == to.getX()
+                && from.getY() == to.getY()
+                && from.getZ() == to.getZ()
+                && from.getYaw() == to.getYaw()
+                && from.getPitch() == to.getPitch();
+    }
+
+    private void recordInitialPosition(ActivityData activityData, Location to, long nowMillis) {
+        updatePosition(activityData, to);
+        activityData.lastGeneralActivity = nowMillis;
+        activityData.lastNonClickActivity = nowMillis;
+        counters.activityEventsAccepted.increment();
+    }
+
+    private boolean isMovementThrottled(ActivityData activityData, long nowMillis) {
+        return movementThrottleMs > 0L && nowMillis - activityData.lastMovementMutation < movementThrottleMs;
+    }
+
+    private MovementDelta movementDelta(ActivityData activityData, Location to) {
+        double dx = to.getX() - activityData.lastX;
+        double dy = to.getY() - activityData.lastY;
+        double dz = to.getZ() - activityData.lastZ;
+        float dyaw = angleDelta(to.getYaw(), activityData.lastYaw);
+        float dpitch = Math.abs(to.getPitch() - activityData.lastPitch);
+        return new MovementDelta(dx * dx + dy * dy + dz * dz, dyaw, dpitch);
+    }
+
+    private void recordMovement(ActivityData activityData, Location to, long nowMillis) {
+        updatePosition(activityData, to);
+        activityData.lastGeneralActivity = nowMillis;
+        activityData.lastNonClickActivity = nowMillis;
+        activityData.swingTimes.clear();
+        counters.activityEventsAccepted.increment();
+    }
+
+    private void recordRotationMovement(ActivityData activityData, Location to, long nowMillis, float rotationAmount) {
+        boolean wasAutoclicking = suspicionEnabled && isAutoclickerPattern(activityData, nowMillis);
+        if (suspicionEnabled) {
+            recordRotation(activityData, nowMillis, rotationAmount);
+        }
+        updatePosition(activityData, to);
+        if (!wasAutoclicking && !isSuspiciousRotationPattern(activityData, nowMillis)) {
+            activityData.lastGeneralActivity = nowMillis;
+            activityData.lastNonClickActivity = nowMillis;
+            activityData.swingTimes.clear();
+        }
+        counters.activityEventsAccepted.increment();
     }
 
     private static float angleDelta(float current, float previous) {
@@ -389,7 +420,7 @@ public final class ActivityTracker implements Listener {
         }
 
         int count = data.rotationTimes.size();
-        if (count < 4) {
+        if (count < MIN_ROTATION_SAMPLES) {
             return false;
         }
 
@@ -400,7 +431,7 @@ public final class ActivityTracker implements Listener {
     }
 
     private static double coefficientOfVariationForTimes(Deque<Long> times) {
-        if (times.size() <= 2) {
+        if (times.size() <= MIN_AUTOMATION_INTERVAL_COUNT) {
             return Double.MAX_VALUE;
         }
 
@@ -416,7 +447,7 @@ public final class ActivityTracker implements Listener {
     }
 
     private static double coefficientOfVariationForAmounts(Deque<Float> amounts) {
-        if (amounts.size() <= 1) {
+        if (amounts.size() <= MIN_AUTOMATION_VARIANCE_SAMPLES) {
             return Double.MAX_VALUE;
         }
 
@@ -437,7 +468,7 @@ public final class ActivityTracker implements Listener {
             sum += value;
         }
         double mean = sum / values.size();
-        if (mean <= 0.0D) {
+        if (mean <= MIN_POSITIVE_MEAN) {
             return Double.MAX_VALUE;
         }
 
@@ -499,6 +530,18 @@ public final class ActivityTracker implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onWorldChange(PlayerChangedWorldEvent event) {
         recordNonClickActivity(event.getPlayer(), System.currentTimeMillis());
+    }
+
+    private record MovementDelta(double distanceSquared, float yawDelta, float pitchDelta) {
+        private static final float HEAD_ROTATION_THRESHOLD = 2.0F;
+
+        private boolean hasHeadRotation() {
+            return yawDelta > HEAD_ROTATION_THRESHOLD || pitchDelta > HEAD_ROTATION_THRESHOLD;
+        }
+
+        private float rotationAmount() {
+            return yawDelta + pitchDelta;
+        }
     }
 
     private static final class ActivityData {

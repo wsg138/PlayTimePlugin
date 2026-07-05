@@ -29,6 +29,15 @@ import java.util.UUID;
 public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
 
     private static final String PREFIX = ChatColor.GOLD + "[Playtime] " + ChatColor.YELLOW;
+    private static final int NO_ARGS = 0;
+    private static final int FIRST_ARG_COUNT = 1;
+    private static final int SECOND_ARG_COUNT = 2;
+    private static final int THIRD_ARG_COUNT = 3;
+    private static final int FOURTH_ARG_COUNT = 4;
+    private static final int CONSOLE_PAGE_SIZE = 10;
+    private static final List<String> TOP_METRICS = List.of("active", "afk", "total");
+    private static final List<String> TOP_RANGES = List.of("today", "7d", "30d", "all");
+    private static final List<String> ADMIN_SUBCOMMANDS = List.of("players", "activity", "reload", "debug", "performance");
 
     private final PlayTimePlugin plugin;
 
@@ -49,48 +58,52 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        if (args.length >= 1 && args[0].equalsIgnoreCase("admin")) {
+        if (hasSubcommand(args, "admin")) {
             return handleAdmin(sender, label, args);
         }
 
-        if (args.length >= 1 && args[0].equalsIgnoreCase("top")) {
+        if (hasSubcommand(args, "top")) {
             handleTop(sender, runtime, args);
             return true;
         }
 
-        if (args.length >= 1 && args[0].equalsIgnoreCase("numerals")) {
+        if (hasSubcommand(args, "numerals")) {
             showNumerals(sender, runtime);
             return true;
         }
 
-        if (args.length == 0) {
-            if (!(sender instanceof Player player)) {
-                send(sender, ChatColor.RED + "Usage: /" + label + " <player|top|admin|numerals>");
-                return true;
-            }
-            if (!sender.hasPermission("playtime.base")) {
-                send(sender, ChatColor.RED + "You don't have permission.");
-                return true;
-            }
-            if (runtime.config().isGuiEnabled()) {
-                new PlaytimeMainGui(plugin, player).open();
-            } else {
-                showPlaytime(sender, runtime, player.getUniqueId(), player.getName());
-            }
-            return true;
+        if (args.length == NO_ARGS) {
+            return handleOwnPlaytime(sender, label, runtime);
         }
 
-        String targetName = args[0];
+        return handleTargetPlaytime(sender, runtime, args[0]);
+    }
+
+    private boolean hasSubcommand(String[] args, String subcommand) {
+        return args.length >= FIRST_ARG_COUNT && args[0].equalsIgnoreCase(subcommand);
+    }
+
+    private boolean handleOwnPlaytime(CommandSender sender, String label, PlaytimeRuntime runtime) {
+        if (!(sender instanceof Player player)) {
+            send(sender, ChatColor.RED + "Usage: /" + label + " <player|top|admin|numerals>");
+            return true;
+        }
+        if (!sender.hasPermission("playtime.base")) {
+            send(sender, ChatColor.RED + "You don't have permission.");
+            return true;
+        }
+        if (runtime.config().isGuiEnabled()) {
+            new PlaytimeMainGui(plugin, player).open();
+        } else {
+            showPlaytime(sender, runtime, player.getUniqueId(), player.getName());
+        }
+        return true;
+    }
+
+    private boolean handleTargetPlaytime(CommandSender sender, PlaytimeRuntime runtime, String targetName) {
         Player online = Bukkit.getPlayerExact(targetName);
         if (online != null) {
-            if (sender instanceof Player player && player.getUniqueId().equals(online.getUniqueId())) {
-                showPlaytime(sender, runtime, online.getUniqueId(), online.getName());
-                return true;
-            }
-            if (!sender.hasPermission("playtime.others")) {
-                send(sender, ChatColor.RED + "You don't have permission to view others' playtime.");
-                return true;
-            }
+            if (!canViewTarget(sender, online.getUniqueId())) return true;
             showPlaytime(sender, runtime, online.getUniqueId(), online.getName());
             return true;
         }
@@ -100,10 +113,7 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
 
         if (offline == null || offline.getUniqueId() == null) {
             if (cachedUuid != null) {
-                if (!sender.hasPermission("playtime.others")) {
-                    send(sender, ChatColor.RED + "You don't have permission to view others' playtime.");
-                    return true;
-                }
+                if (!canViewTarget(sender, cachedUuid)) return true;
                 showPlaytime(sender, runtime, cachedUuid, targetName);
                 return true;
             }
@@ -111,17 +121,24 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        if (sender instanceof Player player && player.getUniqueId().equals(offline.getUniqueId())) {
-            showPlaytime(sender, runtime, offline.getUniqueId(), offline.getName() != null ? offline.getName() : targetName);
-            return true;
-        }
-        if (!sender.hasPermission("playtime.others")) {
-            send(sender, ChatColor.RED + "You don't have permission to view others' playtime.");
-            return true;
-        }
-
-        showPlaytime(sender, runtime, offline.getUniqueId(), offline.getName() != null ? offline.getName() : targetName);
+        if (!canViewTarget(sender, offline.getUniqueId())) return true;
+        showPlaytime(sender, runtime, offline.getUniqueId(), displayName(offline, targetName));
         return true;
+    }
+
+    private boolean canViewTarget(CommandSender sender, UUID targetId) {
+        if (sender instanceof Player player && player.getUniqueId().equals(targetId)) {
+            return true;
+        }
+        if (sender.hasPermission("playtime.others")) {
+            return true;
+        }
+        send(sender, ChatColor.RED + "You don't have permission to view others' playtime.");
+        return false;
+    }
+
+    private String displayName(OfflinePlayer offline, String fallback) {
+        return offline.getName() != null ? offline.getName() : fallback;
     }
 
     private boolean handleAdmin(CommandSender sender, String label, String[] args) {
@@ -130,79 +147,91 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        if (args.length == 1) {
-            if (!(sender instanceof Player player)) {
-                send(sender, "Usage: /" + label + " admin <players|activity|reload|debug|performance>");
-                return true;
-            }
-            new AdminMainGui(plugin, player).open();
-            return true;
+        if (args.length == FIRST_ARG_COUNT) {
+            return openAdminMain(sender, label);
         }
 
-        String subcommand = args[1].toLowerCase(Locale.ROOT);
-        if (subcommand.equals("players")) {
-            if (!(sender instanceof Player player)) {
-                send(sender, "This admin GUI is in-game only.");
-                return true;
+        return switch (args[1].toLowerCase(Locale.ROOT)) {
+            case "players" -> openAdminPlayers(sender);
+            case "activity" -> openAdminActivity(sender);
+            case "reload" -> reloadRuntime(sender);
+            case "debug" -> showDebug(sender);
+            case "performance" -> showPerformance(sender);
+            default -> {
+                send(sender, "Usage: /" + label + " admin [players|activity|reload|debug|performance]");
+                yield true;
             }
-            new AdminPlayersGui(plugin, player).open();
+        };
+    }
+
+    private boolean openAdminMain(CommandSender sender, String label) {
+        if (!(sender instanceof Player player)) {
+            send(sender, "Usage: /" + label + " admin <players|activity|reload|debug|performance>");
             return true;
         }
+        new AdminMainGui(plugin, player).open();
+        return true;
+    }
 
-        if (subcommand.equals("activity")) {
-            if (!(sender instanceof Player player)) {
-                send(sender, "This admin GUI is in-game only.");
-                return true;
-            }
-            new AdminServerActivityGui(plugin, player).open();
+    private boolean openAdminPlayers(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            send(sender, "This admin GUI is in-game only.");
             return true;
         }
+        new AdminPlayersGui(plugin, player).open();
+        return true;
+    }
 
-        if (subcommand.equals("reload")) {
-            if (!sender.hasPermission("playtime.admin.reload")) {
-                send(sender, ChatColor.RED + "You don't have permission to reload.");
-                return true;
-            }
-            if (plugin.reloadPluginRuntime()) {
-                send(sender, ChatColor.GREEN + "Playtime plugin reloaded safely.");
-            } else {
-                send(sender, ChatColor.RED + "Reload failed. Check console; a server restart may be needed if runtime startup failed.");
-            }
+    private boolean openAdminActivity(CommandSender sender) {
+        if (!(sender instanceof Player player)) {
+            send(sender, "This admin GUI is in-game only.");
             return true;
         }
+        new AdminServerActivityGui(plugin, player).open();
+        return true;
+    }
 
-        if (subcommand.equals("debug")) {
-            if (!sender.hasPermission("playtime.admin.debug")) {
-                send(sender, ChatColor.RED + "You don't have permission to debug.");
-                return true;
-            }
-            PlaytimeRuntime runtime = plugin.runtime();
-            if (runtime == null) {
-                send(sender, ChatColor.RED + "Playtime runtime is not available.");
-                return true;
-            }
-            send(sender, ChatColor.YELLOW + "Storage: " + ChatColor.AQUA + runtime.config().getStorageType().name().toLowerCase(Locale.ROOT));
-            send(sender, ChatColor.YELLOW + "Flush interval: " + ChatColor.AQUA + runtime.config().getFlushIntervalTicks() + " ticks");
-            send(sender, ChatColor.YELLOW + "Suspicious threshold: " + ChatColor.AQUA
-                    + runtime.config().sampling().suspicion().maxCountedConsecutiveMinutes() + " counted minutes");
+    private boolean reloadRuntime(CommandSender sender) {
+        if (!sender.hasPermission("playtime.admin.reload")) {
+            send(sender, ChatColor.RED + "You don't have permission to reload.");
             return true;
         }
+        if (plugin.reloadPluginRuntime()) {
+            send(sender, ChatColor.GREEN + "Playtime plugin reloaded safely.");
+        } else {
+            send(sender, ChatColor.RED + "Reload failed. Check console; a server restart may be needed if runtime startup failed.");
+        }
+        return true;
+    }
 
-        if (subcommand.equals("performance")) {
-            if (!sender.hasPermission("playtime.admin.debug")) {
-                send(sender, ChatColor.RED + "You don't have permission to view performance counters.");
-                return true;
-            }
-            PlaytimeRuntime runtime = plugin.runtime();
-            if (runtime == null) {
-                send(sender, ChatColor.RED + "Playtime runtime is not available.");
-                return true;
-            }
-            send(sender, ChatColor.YELLOW + runtime.performanceSummary());
+    private boolean showDebug(CommandSender sender) {
+        if (!sender.hasPermission("playtime.admin.debug")) {
+            send(sender, ChatColor.RED + "You don't have permission to debug.");
             return true;
         }
+        PlaytimeRuntime runtime = plugin.runtime();
+        if (runtime == null) {
+            send(sender, ChatColor.RED + "Playtime runtime is not available.");
+            return true;
+        }
+        send(sender, ChatColor.YELLOW + "Storage: " + ChatColor.AQUA + runtime.config().getStorageType().name().toLowerCase(Locale.ROOT));
+        send(sender, ChatColor.YELLOW + "Flush interval: " + ChatColor.AQUA + runtime.config().getFlushIntervalTicks() + " ticks");
+        send(sender, ChatColor.YELLOW + "Suspicious threshold: " + ChatColor.AQUA
+                + runtime.config().sampling().suspicion().maxCountedConsecutiveMinutes() + " counted minutes");
+        return true;
+    }
 
-        send(sender, "Usage: /" + label + " admin [players|activity|reload|debug|performance]");
+    private boolean showPerformance(CommandSender sender) {
+        if (!sender.hasPermission("playtime.admin.debug")) {
+            send(sender, ChatColor.RED + "You don't have permission to view performance counters.");
+            return true;
+        }
+        PlaytimeRuntime runtime = plugin.runtime();
+        if (runtime == null) {
+            send(sender, ChatColor.RED + "Playtime runtime is not available.");
+            return true;
+        }
+        send(sender, ChatColor.YELLOW + runtime.performanceSummary());
         return true;
     }
 
@@ -216,23 +245,23 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
         String range = runtime.config().leaderboards().defaultRange().toLowerCase(Locale.ROOT);
         int page = 1;
 
-        if (args.length >= 2) {
+        if (args.length >= SECOND_ARG_COUNT) {
             metric = args[1].toLowerCase(Locale.ROOT);
-            if (!metric.equals("active") && !metric.equals("afk") && !metric.equals("total")) {
+            if (!TOP_METRICS.contains(metric)) {
                 send(sender, ChatColor.RED + "Unknown metric '" + metric + "'. Use active/afk/total.");
                 return;
             }
         }
 
-        if (args.length >= 3) {
+        if (args.length >= THIRD_ARG_COUNT) {
             range = args[2].toLowerCase(Locale.ROOT);
-            if (!range.equals("today") && !range.equals("7d") && !range.equals("30d") && !range.equals("all")) {
+            if (!TOP_RANGES.contains(range)) {
                 send(sender, ChatColor.RED + "Unknown range '" + range + "'. Use today/7d/30d/all.");
                 return;
             }
         }
 
-        if (args.length >= 4) {
+        if (args.length >= FOURTH_ARG_COUNT) {
             try {
                 page = Math.max(1, Integer.parseInt(args[3]));
             } catch (NumberFormatException exception) {
@@ -246,9 +275,8 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        int pageSize = 10;
-        int offset = (page - 1) * pageSize;
-        List<LeaderboardEntry> rows = runtime.readService().getLeaderboard(metric.toUpperCase(Locale.ROOT), range.toUpperCase(Locale.ROOT), pageSize, offset);
+        int offset = (page - 1) * CONSOLE_PAGE_SIZE;
+        List<LeaderboardEntry> rows = runtime.readService().getLeaderboard(metric.toUpperCase(Locale.ROOT), range.toUpperCase(Locale.ROOT), CONSOLE_PAGE_SIZE, offset);
         if (rows.isEmpty()) {
             send(sender, runtime.readService().isLoading()
                     ? ChatColor.YELLOW + "Leaderboard cache is refreshing. Try again in a moment."
@@ -309,8 +337,8 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             if (builder.length() > 0) {
                 builder.append(ChatColor.DARK_GRAY).append(" | ");
             }
-            builder.append(ChatColor.GRAY).append(tier.label()).append(ChatColor.DARK_GRAY).append(":")
-                    .append(ChatColor.AQUA).append(tier.requiredHours()).append("h");
+            builder.append(ChatColor.GRAY).append(tier.label()).append(ChatColor.DARK_GRAY).append(':')
+                    .append(ChatColor.AQUA).append(tier.requiredHours()).append('h');
         }
         sender.sendMessage(builder.toString());
     }
@@ -354,7 +382,7 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> result = new ArrayList<>();
-        if (args.length == 1) {
+        if (args.length == FIRST_ARG_COUNT) {
             String prefix = args[0].toLowerCase(Locale.ROOT);
             if ("admin".startsWith(prefix) && sender.hasPermission("playtime.admin.base")) {
                 result.add("admin");
@@ -370,17 +398,17 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
                     result.add(player.getName());
                 }
             }
-        } else if (args.length == 2 && args[0].equalsIgnoreCase("top")) {
-            addMatches(result, args[1], "active", "afk", "total");
-        } else if (args.length == 3 && args[0].equalsIgnoreCase("top")) {
-            addMatches(result, args[2], "today", "7d", "30d", "all");
-        } else if (args.length == 2 && args[0].equalsIgnoreCase("admin")) {
-            addMatches(result, args[1], "players", "activity", "reload", "debug", "performance");
+        } else if (args.length == SECOND_ARG_COUNT && args[0].equalsIgnoreCase("top")) {
+            addMatches(result, args[1], TOP_METRICS);
+        } else if (args.length == THIRD_ARG_COUNT && args[0].equalsIgnoreCase("top")) {
+            addMatches(result, args[2], TOP_RANGES);
+        } else if (args.length == SECOND_ARG_COUNT && args[0].equalsIgnoreCase("admin")) {
+            addMatches(result, args[1], ADMIN_SUBCOMMANDS);
         }
         return result;
     }
 
-    private void addMatches(List<String> result, String prefix, String... values) {
+    private void addMatches(List<String> result, String prefix, List<String> values) {
         String lowerPrefix = prefix.toLowerCase(Locale.ROOT);
         for (String value : values) {
             if (value.startsWith(lowerPrefix)) {

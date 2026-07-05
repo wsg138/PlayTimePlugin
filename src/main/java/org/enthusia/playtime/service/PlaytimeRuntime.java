@@ -69,7 +69,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         this.repository = new PlaytimeRepository(plugin, databaseProvider, config);
         this.repository.initSchema();
         this.sessionManager = new SessionManager(previousState == null ? Map.of() : previousState.sessionStarts());
-        this.activityTracker = new ActivityTracker(plugin, config, sessionManager, previousState == null ? Map.of() : previousState.activitySnapshots(), counters);
+        this.activityTracker = new ActivityTracker(config, sessionManager, previousState == null ? Map.of() : previousState.activitySnapshots(), counters);
 
         this.headCache = new HeadCache(plugin, counters);
         this.writeQueue = new AsyncWriteQueue(plugin, repository, counters, config.getFlushIntervalTicks());
@@ -298,7 +298,6 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     private void runMinuteTick() {
-        Instant now = Instant.now();
         long nowMillis = System.currentTimeMillis();
 
         for (Player player : Bukkit.getOnlinePlayers()) {
@@ -312,6 +311,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
                 case ACTIVE -> activeMinutes = 1;
                 case IDLE, AFK -> afkMinutes = 1;
                 case SUSPICIOUS -> afkMinutes = 1;
+                default -> {
+                }
             }
 
             PlayerPlaytimeTickEvent event = new PlayerPlaytimeTickEvent(player, state, activeMinutes, afkMinutes);
@@ -366,31 +367,24 @@ public final class PlaytimeRuntime implements AutoCloseable {
         }
         if (minuteTickTask != null) {
             minuteTickTask.cancel();
-            minuteTickTask = null;
         }
         if (joinPurgeTask != null) {
             joinPurgeTask.cancel();
-            joinPurgeTask = null;
         }
         if (actionBarTask != null) {
             actionBarTask.cancel();
-            actionBarTask = null;
         }
         if (auditTask != null) {
             auditTask.cancel();
-            auditTask = null;
         }
         if (performanceLogTask != null) {
             performanceLogTask.cancel();
-            performanceLogTask = null;
         }
         if (initialLeaderboardExportTask != null) {
             initialLeaderboardExportTask.cancel();
-            initialLeaderboardExportTask = null;
         }
         if (leaderboardExportTask != null) {
             leaderboardExportTask.cancel();
-            leaderboardExportTask = null;
         }
 
         Bukkit.getServicesManager().unregister(playtimeService);
@@ -461,10 +455,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
 
     private PlayerProfile profileFor(Player player, Instant seenAt) {
         String displayName = PlainTextComponentSerializer.plainText().serialize(player.displayName());
-        if (displayName.equals(player.getName())) {
-            displayName = null;
-        }
-        return new PlayerProfile(player.getUniqueId(), player.getName(), displayName, seenAt);
+        String storedDisplayName = displayName.equals(player.getName()) ? null : displayName;
+        return new PlayerProfile(player.getUniqueId(), player.getName(), storedDisplayName, seenAt);
     }
 
     public record RuntimeState(Map<UUID, Long> sessionStarts,
