@@ -31,7 +31,6 @@ public class PlayTimePlugin extends JavaPlugin {
     public void onEnable() {
         ConfigMigrator migrator = new ConfigMigrator(this);
         migrator.migrateConfig();
-        migrator.backupSkinsIfNeeded();
 
         this.bedrockSupport = new BedrockSupport(this);
         registerAdapters();

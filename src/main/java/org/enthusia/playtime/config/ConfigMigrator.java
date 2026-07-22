@@ -81,25 +81,6 @@ public final class ConfigMigrator {
         return new MigrationResult(existingVersion, CURRENT_CONFIG_VERSION, List.copyOf(added), backedUp);
     }
 
-    public void backupSkinsIfNeeded() {
-        File skins = new File(plugin.getDataFolder(), "skins.yml");
-        if (!skins.exists()) {
-            return;
-        }
-        YamlConfiguration config = YamlConfiguration.loadConfiguration(skins);
-        int version = config.getInt("meta.version", 1);
-        if (version >= 1) {
-            return;
-        }
-        try {
-            backup("skins.yml");
-            config.set("meta.version", 1);
-            config.save(skins);
-        } catch (Exception exception) {
-            plugin.getLogger().log(Level.WARNING, "Failed to add skins.yml metadata; existing skin cache remains usable.", exception);
-        }
-    }
-
     private void backup(String fileName) throws Exception {
         File source = new File(plugin.getDataFolder(), fileName);
         if (!source.exists()) {

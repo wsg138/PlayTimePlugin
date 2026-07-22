@@ -140,6 +140,31 @@ public enum SqlDialect {
         };
     }
 
+    public String playerSkinProfilesCreateTable() {
+        return switch (this) {
+            case SQLITE -> """
+                CREATE TABLE IF NOT EXISTS player_skin_profiles (
+                  player_uuid TEXT PRIMARY KEY,
+                  texture_value TEXT,
+                  texture_signature TEXT,
+                  last_known_name TEXT,
+                  updated_at TIMESTAMP NOT NULL
+                );
+                """;
+            case MYSQL -> """
+                CREATE TABLE IF NOT EXISTS player_skin_profiles (
+                  player_uuid CHAR(36) NOT NULL,
+                  texture_value TEXT NULL,
+                  texture_signature TEXT NULL,
+                  last_known_name VARCHAR(16) NULL,
+                  updated_at TIMESTAMP NOT NULL,
+                  PRIMARY KEY (player_uuid),
+                  INDEX idx_player_skin_profiles_name (last_known_name)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """;
+        };
+    }
+
     public String dailyAggIndexes() {
         return switch (this) {
             case SQLITE -> """
@@ -296,6 +321,30 @@ public enum SqlDialect {
                   username = VALUES(username),
                   display_name = VALUES(display_name),
                   last_seen = VALUES(last_seen),
+                  updated_at = VALUES(updated_at);
+                """;
+        };
+    }
+
+    public String playerSkinProfileUpsert() {
+        // params: player_uuid, texture_value, texture_signature, last_known_name, updated_at
+        return switch (this) {
+            case SQLITE -> """
+                INSERT INTO player_skin_profiles (player_uuid, texture_value, texture_signature, last_known_name, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(player_uuid) DO UPDATE SET
+                  texture_value = excluded.texture_value,
+                  texture_signature = excluded.texture_signature,
+                  last_known_name = excluded.last_known_name,
+                  updated_at = excluded.updated_at;
+                """;
+            case MYSQL -> """
+                INSERT INTO player_skin_profiles (player_uuid, texture_value, texture_signature, last_known_name, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                  texture_value = VALUES(texture_value),
+                  texture_signature = VALUES(texture_signature),
+                  last_known_name = VALUES(last_known_name),
                   updated_at = VALUES(updated_at);
                 """;
         };

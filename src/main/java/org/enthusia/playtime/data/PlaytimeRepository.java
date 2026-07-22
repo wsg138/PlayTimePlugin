@@ -10,6 +10,7 @@ import org.enthusia.playtime.data.model.PlaytimeSnapshot;
 import org.enthusia.playtime.data.model.PublicLeaderboardEntry;
 import org.enthusia.playtime.data.model.RangeTotals;
 import org.enthusia.playtime.data.model.RecentJoinActivity;
+import org.enthusia.playtime.skin.SkinProfile;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -69,6 +70,7 @@ public final class PlaytimeRepository {
                 statement.execute(dialect.lifetimeAggCreateTable());
                 statement.execute(dialect.joinsLogCreateTable());
                 statement.execute(dialect.playerProfilesCreateTable());
+                statement.execute(dialect.playerSkinProfilesCreateTable());
                 statement.execute(dialect.dailyAggIndexes());
                 statement.execute(dialect.hourlyAggIndexes());
                 statement.execute(dialect.lifetimeAggIndexes());
@@ -214,6 +216,63 @@ public final class PlaytimeRepository {
                     statement.addBatch();
                 }
                 statement.executeBatch();
+            }
+            return null;
+        });
+    }
+
+    public Map<UUID, SkinProfile> loadSkinProfiles() throws SQLException {
+        return withSqliteRetry(() -> {
+            Map<UUID, SkinProfile> profiles = new ConcurrentHashMap<>();
+            try (Connection connection = provider.getConnection();
+                 PreparedStatement statement = connection.prepareStatement("""
+                         SELECT player_uuid, texture_value, texture_signature, last_known_name, updated_at
+                         FROM player_skin_profiles
+                         """);
+                 ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    try {
+                        UUID uuid = UUID.fromString(resultSet.getString("player_uuid"));
+                        Timestamp updatedAt = resultSet.getTimestamp("updated_at");
+                        profiles.put(uuid, new SkinProfile(
+                                uuid,
+                                resultSet.getString("texture_value"),
+                                resultSet.getString("texture_signature"),
+                                resultSet.getString("last_known_name"),
+                                updatedAt == null ? Instant.EPOCH : updatedAt.toInstant()
+                        ));
+                    } catch (IllegalArgumentException ignored) {
+                        // Ignore malformed UUID rows rather than failing the entire skin cache.
+                    }
+                }
+            }
+            return profiles;
+        });
+    }
+
+    public void batchUpsertSkinProfiles(List<SkinProfile> profiles) throws SQLException {
+        if (profiles == null || profiles.isEmpty()) {
+            return;
+        }
+
+        withSqliteRetry(() -> {
+            try (Connection connection = provider.getConnection()) {
+                connection.setAutoCommit(false);
+                try (PreparedStatement statement = connection.prepareStatement(dialect.playerSkinProfileUpsert())) {
+                    for (SkinProfile profile : profiles) {
+                        if (profile.uuid() == null) {
+                            continue;
+                        }
+                        statement.setString(1, profile.uuid().toString());
+                        statement.setString(2, blankToNull(profile.textureValue()));
+                        statement.setString(3, blankToNull(profile.textureSignature()));
+                        statement.setString(4, blankToNull(profile.lastKnownName()));
+                        statement.setTimestamp(5, Timestamp.from(profile.updatedAt()));
+                        statement.addBatch();
+                    }
+                    statement.executeBatch();
+                }
+                connection.commit();
             }
             return null;
         });

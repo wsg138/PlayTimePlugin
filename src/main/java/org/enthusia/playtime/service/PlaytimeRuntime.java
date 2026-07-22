@@ -71,7 +71,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         this.sessions = new SessionManager(previousState == null ? Map.of() : previousState.sessionStarts());
         this.activities = new ActivityTracker(config, sessions, previousState == null ? Map.of() : previousState.activitySnapshots(), performanceCounters);
 
-        this.playerHeadCache = new HeadCache(plugin, performanceCounters);
+        this.playerHeadCache = new HeadCache(plugin, performanceCounters, playtimeRepository);
         this.storageQueue = new AsyncWriteQueue(plugin, playtimeRepository, performanceCounters, config.getFlushIntervalTicks());
         this.storageQueue.start();
         this.reads = new PlaytimeReadService(plugin, playtimeRepository, storageQueue, performanceCounters, config.leaderboards().cacheTtlSeconds());
@@ -381,8 +381,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
         cancelRuntimeTasks();
         unregisterRuntimeServices();
         persistOnlinePlayersForShutdown();
+        playerHeadCache.close();
         closeStorageAndExport(reloadClose);
-        playerHeadCache.save();
         databaseProvider.shutdown();
     }
 

@@ -26,7 +26,6 @@ public final class PerformanceCounters {
     public final LongAdder reloadTaskRestarts = new LongAdder();
     public final LongAdder headCacheHits = new LongAdder();
     public final LongAdder headCacheMisses = new LongAdder();
-    public final LongAdder headCacheSaves = new LongAdder();
 
     public String summary() {
         return "activity accepted=" + activityEventsAccepted.sum()
@@ -47,7 +46,6 @@ public final class PerformanceCounters {
                 + ", placeholders cached/stale=" + placeholderCachedReturns.sum() + "/"
                 + placeholderStaleRefreshes.sum()
                 + ", reload tasks=" + reloadTaskRestarts.sum()
-                + ", head hit/miss/save=" + headCacheHits.sum() + "/"
-                + headCacheMisses.sum() + "/" + headCacheSaves.sum();
+                + ", head hit/miss=" + headCacheHits.sum() + "/" + headCacheMisses.sum();
     }
 }
