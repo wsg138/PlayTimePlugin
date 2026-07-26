@@ -25,6 +25,7 @@ import org.enthusia.playtime.util.AsyncWriteQueue;
 import org.enthusia.playtime.util.PerformanceCounters;
 import org.enthusia.playtime.util.NumeralTierCatalog;
 import org.enthusia.playtime.util.TierProgressTracker;
+import org.enthusia.playtime.util.ShutdownRecoveryJournal;
 import org.bukkit.ChatColor;
 
 import java.time.Instant;
@@ -71,6 +72,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private final PlaytimeServiceImpl serviceApi;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicBoolean databaseCloseDeferred = new AtomicBoolean(false);
+    private final ShutdownRecoveryJournal recoveryJournal;
     private final AtomicBoolean tierProgressHandedOff = new AtomicBoolean(false);
     private final AtomicBoolean handoffPrepared = new AtomicBoolean(false);
     private final Map<UUID, Integer> suspiciousStreakMinutes = new ConcurrentHashMap<>();
@@ -115,6 +117,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
             AsyncWriteQueue allocatedQueue = new AsyncWriteQueue(
                     plugin, allocatedRepository, performanceCounters, config.getFlushIntervalTicks());
             probe(CreationStage.WRITE_QUEUE_CREATED);
+            ShutdownRecoveryJournal allocatedRecoveryJournal = new ShutdownRecoveryJournal(plugin);
+            allocatedRecoveryJournal.restoreInto(allocatedQueue);
             PlaytimeReadService allocatedReads = new PlaytimeReadService(plugin, allocatedRepository,
                     allocatedQueue, performanceCounters, config.leaderboards().cacheTtlSeconds());
             probe(CreationStage.READ_SERVICE_CREATED);
@@ -131,6 +135,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
             this.tierProgress = allocatedTierProgress;
             this.playerHeadCache = allocatedHeadCache;
             this.storageQueue = allocatedQueue;
+            this.recoveryJournal = allocatedRecoveryJournal;
             this.reads = allocatedReads;
             this.exportService = allocatedExport;
             this.serviceApi = allocatedService;
@@ -781,7 +786,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
             if (result == AsyncWriteQueue.TransitionResult.TIMED_OUT && storageQueue.isFlushInProgressForShutdown()) {
                 databaseCloseDeferred.set(true);
                 storageQueue.closeDatabaseAfterFlush(databaseProvider::shutdown,
-                        Math.max(1, runtimeConfig.leaderboards().export().shutdownTimeoutSeconds()));
+                        Math.max(1, runtimeConfig.leaderboards().export().shutdownTimeoutSeconds()),
+                        recoveryJournal::write);
             }
         }
         boolean exportOnClose = reloadClose

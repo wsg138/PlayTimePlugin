@@ -22,6 +22,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.logging.Level;
 import java.util.function.LongSupplier;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 public final class AsyncWriteQueue implements AutoCloseable {
 
@@ -50,6 +51,8 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private final AtomicBoolean immediateFlushScheduled = new AtomicBoolean(false);
     private final AtomicBoolean minuteCommitInProgress = new AtomicBoolean(false);
     private final AtomicLong minuteCommitGeneration = new AtomicLong();
+    private final AtomicBoolean recoverySettlementPending = new AtomicBoolean();
+    private volatile Runnable recoverySettlement = () -> { };
 
     private volatile BukkitTask flushTask;
     private QueueState state = QueueState.RUNNING;
@@ -273,6 +276,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
             if (!joinBatch.isEmpty() || !profileBatch.isEmpty() || !minuteBatch.isEmpty()) {
                 counters.flushBatches.increment();
             }
+            settleRecoveryJournalIfDrained();
         } catch (Exception exception) {
             if (!joinsCommitted) {
                 requeueJoinBatch(joinBatch);
@@ -437,7 +441,27 @@ public final class AsyncWriteQueue implements AutoCloseable {
         return flushInProgress.get();
     }
 
-    public void closeDatabaseAfterFlush(Runnable closeDatabase, int maxWaitSeconds) {
+    public void restoreRecoverySnapshot(RecoverySnapshot snapshot, Runnable onDurablySettled) {
+        if (snapshot == null || snapshot.isEmpty()) return;
+        synchronized (lifecycleLock) {
+            if (state != QueueState.RUNNING) return;
+            snapshot.minutes().forEach((uuid, delta) -> {
+                pendingMinutes.merge(uuid, delta, MinuteDelta::plus);
+                acceptedUncommittedMinutes.merge(uuid, delta, MinuteDelta::plus);
+                if (delta.activeMinutes() > 0L) {
+                    acceptedActiveSequences.computeIfAbsent(uuid, ignored -> new AtomicLong()).addAndGet(delta.activeMinutes());
+                }
+            });
+            snapshot.profiles().forEach((uuid, profile) -> pendingProfiles.merge(uuid, profile, this::newerProfile));
+            pendingJoins.addAll(snapshot.joins());
+            if (!snapshot.minutes().isEmpty()) minuteCommitGeneration.incrementAndGet();
+            recoverySettlement = onDurablySettled == null ? () -> { } : onDurablySettled;
+            recoverySettlementPending.set(true);
+        }
+    }
+
+    public void closeDatabaseAfterFlush(Runnable closeDatabase, int maxWaitSeconds,
+                                        Consumer<RecoverySnapshot> persistRecovery) {
         CompletableFuture.runAsync(() -> {
             long deadline = System.nanoTime() + Math.max(1, maxWaitSeconds) * 1_000_000_000L;
             while (flushInProgress.get() && System.nanoTime() < deadline) {
@@ -448,9 +472,52 @@ public final class AsyncWriteQueue implements AutoCloseable {
                     return;
                 }
             }
-            if (!flushInProgress.get()) closeDatabase.run();
-            else plugin.getLogger().severe("Playtime database left open because an in-flight queue flush did not settle.");
+            if (flushInProgress.get()) {
+                plugin.getLogger().severe("Playtime database left open because an in-flight queue flush did not settle.");
+                return;
+            }
+            if (hasOutstandingWork()) {
+                try {
+                    persistRecovery.accept(recoverySnapshot());
+                } catch (RuntimeException failure) {
+                    plugin.getLogger().log(Level.SEVERE, "Could not write the playtime shutdown recovery journal; database remains open.", failure);
+                    return;
+                }
+            }
+            closeDatabase.run();
         });
+    }
+
+    public void closeDatabaseAfterFlush(Runnable closeDatabase, int maxWaitSeconds) {
+        closeDatabaseAfterFlush(closeDatabase, maxWaitSeconds, ignored -> {
+            throw new IllegalStateException("Shutdown recovery journal is unavailable");
+        });
+    }
+
+    private void settleRecoveryJournalIfDrained() {
+        if (recoverySettlementPending.get() && !hasOutstandingWork()
+                && recoverySettlementPending.compareAndSet(true, false)) {
+            recoverySettlement.run();
+        }
+    }
+
+    public RecoverySnapshot recoverySnapshot() {
+        Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>();
+        pendingMinutes.forEach((uuid, delta) -> minutes.merge(uuid, delta, MinuteDelta::plus));
+        inFlightMinutes.forEach((uuid, delta) -> minutes.merge(uuid, delta, MinuteDelta::plus));
+        Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>();
+        inFlightProfiles.forEach((uuid, profile) -> profiles.merge(uuid, profile, this::newerProfile));
+        pendingProfiles.forEach((uuid, profile) -> profiles.merge(uuid, profile, this::newerProfile));
+        List<JoinRecord> joins = new ArrayList<>(inFlightJoins);
+        joins.addAll(pendingJoins);
+        return new RecoverySnapshot(Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
+    }
+
+    public record RecoverySnapshot(Map<UUID, MinuteDelta> minutes, Map<UUID, PlayerProfile> profiles,
+                                   List<JoinRecord> joins) {
+        public boolean isEmpty() {
+            return minutes.isEmpty() && profiles.isEmpty() && joins.isEmpty();
+        }
     }
 
     private boolean hasOutstandingWork() {
