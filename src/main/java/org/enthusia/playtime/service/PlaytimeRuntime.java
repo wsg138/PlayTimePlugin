@@ -22,15 +22,14 @@ import org.enthusia.playtime.skin.HeadCache;
 import org.enthusia.playtime.util.AsyncWriteQueue;
 import org.enthusia.playtime.util.PerformanceCounters;
 import org.enthusia.playtime.util.NumeralTierCatalog;
-import org.enthusia.playtime.util.TierAdvancement;
-import org.enthusia.playtime.data.model.PlaytimeSnapshot;
+import org.enthusia.playtime.util.TierProgressTracker;
 import org.bukkit.ChatColor;
 
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -51,9 +50,11 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private final AutoCloseable planHook;
     private final PlaytimeServiceImpl serviceApi;
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final AtomicBoolean tierProgressHandedOff = new AtomicBoolean(false);
     private final Map<UUID, Integer> suspiciousStreakMinutes = new ConcurrentHashMap<>();
     private final Map<UUID, Long> processedSuspicionResetMarkers = new ConcurrentHashMap<>();
     private final Map<UUID, JoinDecision> recentJoinDecisions = new ConcurrentHashMap<>();
+    private final TierProgressTracker tierProgress;
 
     private BukkitTask minuteTickTask;
     private BukkitTask joinPurgeTask;
@@ -75,6 +76,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         this.playtimeRepository.initSchema();
         this.sessions = new SessionManager(previousState == null ? Map.of() : previousState.sessionStarts());
         this.activities = new ActivityTracker(config, sessions, previousState == null ? Map.of() : previousState.activitySnapshots(), performanceCounters);
+        this.tierProgress = new TierProgressTracker(config.numerals().catalog(), previousState == null ? Map.of() : previousState.tierProgress());
 
         this.playerHeadCache = new HeadCache(plugin, performanceCounters, playtimeRepository);
         this.storageQueue = new AsyncWriteQueue(plugin, playtimeRepository, performanceCounters, config.getFlushIntervalTicks());
@@ -92,6 +94,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
             activities.bootstrapPlayer(player, nowMillis);
             playerHeadCache.updateHead(player);
             storageQueue.enqueuePlayerProfile(profileFor(player, Instant.now()));
+            initializeTierProgress(player.getUniqueId());
         }
 
         startMinuteTickTask();
@@ -166,6 +169,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         storageQueue.enqueuePlayerProfile(profileFor(player, joinedAt));
         storageQueue.enqueueJoin(uuid, joinedAt);
         reads.invalidateAll();
+        initializeTierProgress(uuid);
         return firstKnownJoin;
     }
 
@@ -180,6 +184,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
     public void handleQuitRecorded(UUID uuid, Instant quitAt) {
         resetSuspiciousTracking(uuid);
         recentJoinDecisions.remove(uuid);
+        tierProgress.disconnect(uuid);
         playtimeRepository.recordLastSeenAsync(plugin, uuid, quitAt);
     }
 
@@ -188,9 +193,11 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     public RuntimeState snapshotState() {
+        tierProgressHandedOff.set(true);
         return new RuntimeState(
                 new HashMap<>(sessions.snapshot()),
-                new HashMap<>(activities.snapshot())
+                new HashMap<>(activities.snapshot()),
+                tierProgress.snapshot()
         );
     }
 
@@ -330,23 +337,58 @@ public final class PlaytimeRuntime implements AutoCloseable {
                 continue;
             }
 
-            announceTierAdvance(player, Math.max(0, event.getActiveMinutes()));
-            storageQueue.enqueueMinute(player.getUniqueId(), event.getActiveMinutes(), event.getAfkMinutes());
+            int acceptedActiveMinutes = Math.max(0, event.getActiveMinutes());
+            TierProgressTracker.ActiveUpdate update = tierProgress.acceptActiveMinutes(player.getUniqueId(), acceptedActiveMinutes);
+            announceTierAdvance(player, update.reachedTier());
+            if (update.initialized()) {
+                storageQueue.enqueueMinute(player.getUniqueId(), event.getActiveMinutes(), event.getAfkMinutes());
+            } else if (event.getAfkMinutes() > 0) {
+                storageQueue.enqueueMinute(player.getUniqueId(), 0, event.getAfkMinutes());
+            }
             reads.invalidatePlayer(player.getUniqueId());
         }
     }
 
-    private void announceTierAdvance(Player player, int acceptedActiveMinutes) {
-        if (acceptedActiveMinutes <= 0 || !runtimeConfig.numerals().enabled() || !runtimeConfig.numerals().announcement().enabled()) {
+    private void initializeTierProgress(UUID uuid) {
+        if (!tierProgress.needsInitialization(uuid)) {
             return;
         }
-        Optional<PlaytimeSnapshot> current = reads.getLifetime(player.getUniqueId());
-        if (current.isEmpty()) {
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            long durableActiveMinutes = playtimeRepository.getLifetime(uuid).map(snapshot -> snapshot.activeMinutes).orElse(0L);
+            if (closed.get() || tierProgressHandedOff.get()) {
+                return;
+            }
+            Bukkit.getScheduler().runTask(plugin, () -> finishTierProgressInitialization(uuid, durableActiveMinutes));
+        });
+    }
+
+    private void finishTierProgressInitialization(UUID uuid, long durableActiveMinutes) {
+        if (closed.get() || tierProgressHandedOff.get()) {
             return;
         }
-        long before = current.get().activeMinutes;
-        NumeralTierCatalog.Tier newTier = TierAdvancement.reachedTier(runtimeConfig.numerals().catalog(), before, acceptedActiveMinutes)
-                .orElse(null);
+        TierProgressTracker.InitializationResult result = tierProgress.finishInitialization(uuid, durableActiveMinutes);
+        enqueueWithheldActiveMinutes(uuid, result.withheldActiveMinutes());
+        Player player = Bukkit.getPlayer(uuid);
+        if (player != null && result.connected()) {
+            announceTierAdvance(player, result.reachedTier());
+        }
+        tierProgress.removeIfDisconnected(uuid);
+    }
+
+    private void enqueueWithheldActiveMinutes(UUID uuid, long activeMinutes) {
+        long remaining = activeMinutes;
+        while (remaining > 0L) {
+            int batch = (int) Math.min(Integer.MAX_VALUE, remaining);
+            storageQueue.enqueueMinute(uuid, batch, 0);
+            remaining -= batch;
+        }
+    }
+
+    private void announceTierAdvance(Player player, Optional<NumeralTierCatalog.Tier> reachedTier) {
+        if (!runtimeConfig.numerals().enabled() || !runtimeConfig.numerals().announcement().enabled()) {
+            return;
+        }
+        NumeralTierCatalog.Tier newTier = reachedTier.orElse(null);
         if (newTier == null) {
             return;
         }
@@ -408,6 +450,9 @@ public final class PlaytimeRuntime implements AutoCloseable {
         }
         cancelRuntimeTasks();
         unregisterRuntimeServices();
+        if (!reloadClose) {
+            tierProgress.drainPendingActiveMinutes().forEach(this::enqueueWithheldActiveMinutes);
+        }
         persistOnlinePlayersForShutdown();
         playerHeadCache.close();
         closeStorageAndExport(reloadClose);
@@ -514,7 +559,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     public record RuntimeState(Map<UUID, Long> sessionStarts,
-                               Map<UUID, ActivityTracker.ActivitySnapshot> activitySnapshots) {
+                               Map<UUID, ActivityTracker.ActivitySnapshot> activitySnapshots,
+                               Map<UUID, TierProgressTracker.ProgressState> tierProgress) {
     }
 
     public record JoinDecision(boolean firstKnownJoin, int uniqueNumber, long createdAtMillis) {

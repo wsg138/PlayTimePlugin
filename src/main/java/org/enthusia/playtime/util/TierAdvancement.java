@@ -8,7 +8,7 @@ public final class TierAdvancement {
     }
 
     public static Optional<NumeralTierCatalog.Tier> reachedTier(NumeralTierCatalog catalog, long beforeActiveMinutes,
-                                                                 int acceptedActiveMinutes) {
+                                                                 long acceptedActiveMinutes) {
         if (acceptedActiveMinutes <= 0) {
             return Optional.empty();
         }
