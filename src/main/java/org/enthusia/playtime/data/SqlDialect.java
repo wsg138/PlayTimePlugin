@@ -165,6 +165,20 @@ public enum SqlDialect {
         };
     }
 
+    public String appliedBatchesCreateTable() {
+        return switch (this) {
+            case SQLITE -> "CREATE TABLE IF NOT EXISTS playtime_applied_batches (batch_id TEXT PRIMARY KEY, applied_at TIMESTAMP NOT NULL);";
+            case MYSQL -> "CREATE TABLE IF NOT EXISTS playtime_applied_batches (batch_id VARCHAR(36) NOT NULL, applied_at TIMESTAMP NOT NULL, PRIMARY KEY (batch_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+        };
+    }
+
+    public String recoveryBatchInsert() {
+        return switch (this) {
+            case SQLITE -> "INSERT OR IGNORE INTO playtime_applied_batches (batch_id, applied_at) VALUES (?, ?)";
+            case MYSQL -> "INSERT IGNORE INTO playtime_applied_batches (batch_id, applied_at) VALUES (?, ?)";
+        };
+    }
+
     public String dailyAggIndexes() {
         return switch (this) {
             case SQLITE -> """

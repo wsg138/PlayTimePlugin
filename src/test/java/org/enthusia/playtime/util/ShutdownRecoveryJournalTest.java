@@ -42,7 +42,7 @@ class ShutdownRecoveryJournalTest {
         AsyncWriteQueue restored = new AsyncWriteQueue(plugin, restoredRepository, new PerformanceCounters(), 20L);
         journal.restoreInto(restored);
         assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, restored.flushNow());
-        verify(restoredRepository).batchRecordMinutes(anyMap(), any());
+        verify(restoredRepository).applyRecoveryBatch(any());
         assertFalse(temp.resolve("shutdown-recovery.yml").toFile().exists());
     }
 }

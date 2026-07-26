@@ -2,6 +2,8 @@ package org.enthusia.playtime.service;
 
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.model.MinuteDelta;
+import org.enthusia.playtime.data.RecoveryApplyResult;
+import org.enthusia.playtime.util.AsyncWriteQueue;
 import org.enthusia.playtime.util.TierProgressTracker;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -103,6 +105,19 @@ class PlaytimeRuntimeTierInitializationIntegrationTest {
         assertEquals(60, progress.activeMinutes());
         assertEquals(1, runtime.writeQueue().getAcceptedUncommittedTotals(uuid).activeMinutes);
         assertEquals(1, announcements.get());
+    }
+
+    @Test
+    void recoveryBatchIdMakesJournalReplayExactlyOnce() throws Exception {
+        PlaytimeRuntime runtime = plugin.runtime();
+        UUID player = UUID.randomUUID();
+        UUID batchId = UUID.randomUUID();
+        AsyncWriteQueue.RecoverySnapshot snapshot = new AsyncWriteQueue.RecoverySnapshot(batchId,
+                Map.of(player, new MinuteDelta(2, 0)), Map.of(), java.util.List.of());
+
+        assertEquals(RecoveryApplyResult.APPLIED, runtime.repository().applyRecoveryBatch(snapshot));
+        assertEquals(RecoveryApplyResult.ALREADY_APPLIED, runtime.repository().applyRecoveryBatch(snapshot));
+        assertEquals(2L, runtime.repository().getLifetime(player).orElseThrow().activeMinutes);
     }
 
     @Test

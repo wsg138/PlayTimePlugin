@@ -10,6 +10,7 @@ import org.enthusia.playtime.data.model.PlaytimeSnapshot;
 import org.enthusia.playtime.data.model.PublicLeaderboardEntry;
 import org.enthusia.playtime.data.model.RangeTotals;
 import org.enthusia.playtime.data.model.RecentJoinActivity;
+import org.enthusia.playtime.util.AsyncWriteQueue;
 import org.enthusia.playtime.skin.SkinProfile;
 
 import java.sql.Connection;
@@ -71,6 +72,7 @@ public final class PlaytimeRepository {
                 statement.execute(dialect.joinsLogCreateTable());
                 statement.execute(dialect.playerProfilesCreateTable());
                 statement.execute(dialect.playerSkinProfilesCreateTable());
+                statement.execute(dialect.appliedBatchesCreateTable());
                 statement.execute(dialect.dailyAggIndexes());
                 statement.execute(dialect.hourlyAggIndexes());
                 statement.execute(dialect.lifetimeAggIndexes());
@@ -219,6 +221,81 @@ public final class PlaytimeRepository {
             }
             return null;
         });
+    }
+
+    /** Applies a retained shutdown journal exactly once with its durable batch marker. */
+    public RecoveryApplyResult applyRecoveryBatch(AsyncWriteQueue.RecoverySnapshot snapshot) throws SQLException {
+        if (snapshot == null || snapshot.isEmpty() || snapshot.batchId() == null) {
+            return RecoveryApplyResult.ALREADY_APPLIED;
+        }
+        return withSqliteRetry(() -> {
+            try (Connection connection = provider.getConnection()) {
+                connection.setAutoCommit(false);
+                try {
+                    try (PreparedStatement marker = connection.prepareStatement(dialect.recoveryBatchInsert())) {
+                        marker.setString(1, snapshot.batchId().toString());
+                        marker.setTimestamp(2, Timestamp.from(Instant.now()));
+                        if (marker.executeUpdate() == 0) {
+                            connection.commit();
+                            return RecoveryApplyResult.ALREADY_APPLIED;
+                        }
+                    }
+                    applyRecoveryJoins(connection, snapshot.joins());
+                    applyRecoveryProfiles(connection, snapshot.profiles().values());
+                    applyRecoveryMinutes(connection, snapshot.minutes(), Instant.now());
+                    connection.commit();
+                    return RecoveryApplyResult.APPLIED;
+                } catch (SQLException failure) {
+                    connection.rollback();
+                    throw failure;
+                }
+            }
+        });
+    }
+
+    private void applyRecoveryJoins(Connection connection, List<JoinRecord> records) throws SQLException {
+        if (records.isEmpty()) return;
+        try (PreparedStatement joins = connection.prepareStatement("INSERT INTO joins_log (player_uuid, joined_at) VALUES (?, ?)");
+             PreparedStatement lifetime = connection.prepareStatement(dialect.lifetimeJoinUpsert())) {
+            for (JoinRecord record : records) {
+                Timestamp timestamp = Timestamp.from(record.joinedAt());
+                joins.setString(1, record.uuid().toString()); joins.setTimestamp(2, timestamp); joins.addBatch();
+                lifetime.setString(1, record.uuid().toString()); lifetime.setTimestamp(2, timestamp);
+                lifetime.setTimestamp(3, timestamp); lifetime.setTimestamp(4, timestamp); lifetime.addBatch();
+            }
+            joins.executeBatch(); lifetime.executeBatch();
+        }
+    }
+
+    private void applyRecoveryProfiles(Connection connection, java.util.Collection<PlayerProfile> profiles) throws SQLException {
+        if (profiles.isEmpty()) return;
+        try (PreparedStatement statement = connection.prepareStatement(dialect.playerProfileUpsert())) {
+            for (PlayerProfile profile : profiles) {
+                if (profile.uuid() == null || profile.username() == null || profile.username().isBlank()) continue;
+                Timestamp seenAt = Timestamp.from(profile.seenAt());
+                statement.setString(1, profile.uuid().toString()); statement.setString(2, profile.username());
+                statement.setString(3, blankToNull(profile.displayName())); statement.setTimestamp(4, seenAt);
+                statement.setTimestamp(5, seenAt); statement.setTimestamp(6, Timestamp.from(Instant.now())); statement.addBatch();
+            }
+            statement.executeBatch();
+        }
+    }
+
+    private void applyRecoveryMinutes(Connection connection, Map<UUID, MinuteDelta> deltas, Instant instant) throws SQLException {
+        if (deltas.isEmpty()) return;
+        String day = LocalDate.ofInstant(instant, ZoneOffset.UTC).toString();
+        Timestamp hour = Timestamp.from(instant.truncatedTo(ChronoUnit.HOURS));
+        try (PreparedStatement daily = connection.prepareStatement(dialect.dailyAggUpsert());
+             PreparedStatement hourly = connection.prepareStatement(dialect.hourlyAggUpsert());
+             PreparedStatement lifetime = connection.prepareStatement(dialect.lifetimeMinutesUpsert())) {
+            for (Map.Entry<UUID, MinuteDelta> entry : deltas.entrySet()) {
+                MinuteDelta delta = entry.getValue(); if (delta.totalMinutes() <= NO_MINUTES) continue;
+                daily.setString(1, entry.getKey().toString()); daily.setString(2, day); daily.setLong(3, delta.activeMinutes()); daily.setLong(4, delta.afkMinutes()); daily.setLong(5, delta.totalMinutes()); daily.addBatch();
+                hourly.setString(1, entry.getKey().toString()); hourly.setTimestamp(2, hour); hourly.setLong(3, delta.activeMinutes()); hourly.setLong(4, delta.afkMinutes()); hourly.setLong(5, delta.totalMinutes()); hourly.addBatch();
+                lifetime.setString(1, entry.getKey().toString()); lifetime.setLong(2, delta.activeMinutes()); lifetime.setLong(3, delta.afkMinutes()); lifetime.setLong(4, delta.totalMinutes()); lifetime.addBatch();
+            }
+            daily.executeBatch(); hourly.executeBatch(); lifetime.executeBatch();
+        }
     }
 
     public Map<UUID, SkinProfile> loadSkinProfiles() throws SQLException {

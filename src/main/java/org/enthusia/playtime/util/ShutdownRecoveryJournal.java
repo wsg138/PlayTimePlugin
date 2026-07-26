@@ -19,7 +19,7 @@ import java.util.UUID;
 
 /** Compact crash-recovery ownership record used only when shutdown cannot settle a closed queue. */
 public final class ShutdownRecoveryJournal {
-    private static final int FORMAT_VERSION = 1;
+    private static final int FORMAT_VERSION = 2;
     private final File file;
 
     public ShutdownRecoveryJournal(PlayTimePlugin plugin) {
@@ -37,6 +37,7 @@ public final class ShutdownRecoveryJournal {
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.set("format", FORMAT_VERSION);
         yaml.set("createdAt", Instant.now().toEpochMilli());
+        yaml.set("batchId", snapshot.batchId().toString());
         snapshot.minutes().forEach((uuid, delta) -> {
             String path = "minutes." + uuid;
             yaml.set(path + ".active", delta.activeMinutes());
@@ -93,7 +94,9 @@ public final class ShutdownRecoveryJournal {
             Object millis = join.get("joinedAt");
             if (uuid != null && millis instanceof Number number) joins.add(new JoinRecord(uuid, Instant.ofEpochMilli(number.longValue())));
         }
-        return new AsyncWriteQueue.RecoverySnapshot(minutes, profiles, joins);
+        UUID batchId = parse(yaml.getString("batchId"));
+        return new AsyncWriteQueue.RecoverySnapshot(batchId == null ? UUID.randomUUID() : batchId,
+                minutes, profiles, joins);
     }
 
     private UUID parse(String value) {
