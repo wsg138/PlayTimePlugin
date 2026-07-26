@@ -96,6 +96,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
             storageQueue.enqueuePlayerProfile(profileFor(player, Instant.now()));
             initializeTierProgress(player.getUniqueId());
         }
+        tierProgress.uninitializedPlayers().forEach((uuid, connected) -> initializeTierProgress(uuid, connected));
 
         startMinuteTickTask();
         startJoinPurgeTask();
@@ -169,6 +170,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         storageQueue.enqueuePlayerProfile(profileFor(player, joinedAt));
         storageQueue.enqueueJoin(uuid, joinedAt);
         reads.invalidateAll();
+        tierProgress.reconnect(uuid);
         initializeTierProgress(uuid);
         return firstKnownJoin;
     }
@@ -192,13 +194,20 @@ public final class PlaytimeRuntime implements AutoCloseable {
         playerHeadCache.updateHead(player);
     }
 
-    public RuntimeState snapshotState() {
-        tierProgressHandedOff.set(true);
+    public RuntimeState prepareRuntimeStateSnapshot() {
         return new RuntimeState(
                 new HashMap<>(sessions.snapshot()),
                 new HashMap<>(activities.snapshot()),
                 tierProgress.snapshot()
         );
+    }
+
+    public void commitRuntimeHandoff() {
+        tierProgressHandedOff.set(true);
+    }
+
+    public void abortRuntimeHandoff() {
+        tierProgressHandedOff.set(false);
     }
 
     private void startMinuteTickTask() {
@@ -319,6 +328,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
 
     private void runMinuteTick() {
         long nowMillis = System.currentTimeMillis();
+        cleanupDisconnectedTierProgress();
 
         for (Player player : Bukkit.getOnlinePlayers()) {
             ActivityState state = activities.getState(player.getUniqueId(), nowMillis);
@@ -349,30 +359,48 @@ public final class PlaytimeRuntime implements AutoCloseable {
         }
     }
 
-    private void initializeTierProgress(UUID uuid) {
-        if (!tierProgress.needsInitialization(uuid)) {
-            return;
-        }
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            long durableActiveMinutes = playtimeRepository.getLifetime(uuid).map(snapshot -> snapshot.activeMinutes).orElse(0L);
-            if (closed.get() || tierProgressHandedOff.get()) {
-                return;
+    private void cleanupDisconnectedTierProgress() {
+        tierProgress.disconnectedInitializedPlayers().forEach((uuid, ignored) -> {
+            if (storageQueue.getAcceptedUncommittedTotals(uuid).activeMinutes <= 0L) {
+                tierProgress.removeDisconnectedInitialized(uuid);
             }
-            Bukkit.getScheduler().runTask(plugin, () -> finishTierProgressInitialization(uuid, durableActiveMinutes));
         });
     }
 
-    private void finishTierProgressInitialization(UUID uuid, long durableActiveMinutes) {
+    private void initializeTierProgress(UUID uuid) {
+        initializeTierProgress(uuid, true);
+    }
+
+    private void initializeTierProgress(UUID uuid, boolean connected) {
+        Optional<TierProgressTracker.InitializationRequest> request = tierProgress.requestInitialization(uuid, connected);
+        if (request.isEmpty()) {
+            return;
+        }
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            long effectiveActiveMinutes = storageQueue.getEffectiveActiveMinutes(uuid,
+                    () -> playtimeRepository.getLifetime(uuid).map(snapshot -> snapshot.activeMinutes).orElse(0L));
+            if (closed.get() || tierProgressHandedOff.get()) {
+                return;
+            }
+            Bukkit.getScheduler().runTask(plugin, () -> finishTierProgressInitialization(request.get(), effectiveActiveMinutes));
+        });
+    }
+
+    private void finishTierProgressInitialization(TierProgressTracker.InitializationRequest request, long effectiveActiveMinutes) {
         if (closed.get() || tierProgressHandedOff.get()) {
             return;
         }
-        TierProgressTracker.InitializationResult result = tierProgress.finishInitialization(uuid, durableActiveMinutes);
+        Optional<TierProgressTracker.InitializationResult> completed = tierProgress.finishInitialization(request, effectiveActiveMinutes);
+        if (completed.isEmpty()) {
+            return;
+        }
+        TierProgressTracker.InitializationResult result = completed.get();
+        UUID uuid = request.uuid();
         enqueueWithheldActiveMinutes(uuid, result.withheldActiveMinutes());
         Player player = Bukkit.getPlayer(uuid);
         if (player != null && result.connected()) {
             announceTierAdvance(player, result.reachedTier());
         }
-        tierProgress.removeIfDisconnected(uuid);
     }
 
     private void enqueueWithheldActiveMinutes(UUID uuid, long activeMinutes) {
@@ -451,7 +479,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         cancelRuntimeTasks();
         unregisterRuntimeServices();
         if (!reloadClose) {
-            tierProgress.drainPendingActiveMinutes().forEach(this::enqueueWithheldActiveMinutes);
+            tierProgress.drainWithheldActiveMinutes().forEach(this::enqueueWithheldActiveMinutes);
         }
         persistOnlinePlayersForShutdown();
         playerHeadCache.close();

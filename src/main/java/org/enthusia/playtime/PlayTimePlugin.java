@@ -86,13 +86,14 @@ public class PlayTimePlugin extends JavaPlugin {
         PlaytimeRuntime.RuntimeState state = null;
         PlaytimeRuntime oldRuntime = this.activeRuntime.orElse(null);
         if (oldRuntime != null) {
-            state = oldRuntime.snapshotState();
+            state = oldRuntime.prepareRuntimeStateSnapshot();
         }
 
         try {
             PlaytimeRuntime newRuntime = new PlaytimeRuntime(this, config, state);
             this.activeRuntime = Optional.of(newRuntime);
             if (oldRuntime != null) {
+                oldRuntime.commitRuntimeHandoff();
                 try {
                     oldRuntime.close(true);
                 } catch (Exception closeException) {
@@ -108,6 +109,9 @@ public class PlayTimePlugin extends JavaPlugin {
             }
             return true;
         } catch (Exception exception) {
+            if (oldRuntime != null) {
+                oldRuntime.abortRuntimeHandoff();
+            }
             getLogger().log(Level.SEVERE, "Failed to " + (reason == null ? "initialize" : "reload")
                     + " playtime runtime. Existing runtime was left running when available.", exception);
             return false;

@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.logging.Level;
+import java.util.function.LongSupplier;
 
 public final class AsyncWriteQueue implements AutoCloseable {
 
@@ -30,6 +31,8 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private final PlaytimeRepository repository;
     private final PerformanceCounters counters;
     private final ConcurrentHashMap<UUID, MinuteDelta> pendingMinutes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<UUID, MinuteDelta> acceptedUncommittedMinutes = new ConcurrentHashMap<>();
+    private final Object minuteLedgerLock = new Object();
     private final ConcurrentHashMap<UUID, PlayerProfile> pendingProfiles = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<JoinRecord> pendingJoins = new ConcurrentLinkedQueue<>();
     private final long flushIntervalTicks;
@@ -61,7 +64,10 @@ public final class AsyncWriteQueue implements AutoCloseable {
         if (delta.totalMinutes() < MIN_TOTAL_MINUTES) {
             return;
         }
-        pendingMinutes.merge(uuid, delta, MinuteDelta::plus);
+        synchronized (minuteLedgerLock) {
+            pendingMinutes.merge(uuid, delta, MinuteDelta::plus);
+            acceptedUncommittedMinutes.merge(uuid, delta, MinuteDelta::plus);
+        }
         counters.minuteDeltasQueued.increment();
     }
 
@@ -91,6 +97,24 @@ public final class AsyncWriteQueue implements AutoCloseable {
     public RangeTotals getPendingTotals(UUID uuid) {
         MinuteDelta delta = pendingMinutes.get(uuid);
         return delta == null ? new RangeTotals(0, 0, 0) : delta.toRangeTotals();
+    }
+
+    /**
+     * Returns a stable durable-plus-uncommitted active total. The supplier and transaction confirmation
+     * share one lock so a successfully committed batch cannot be counted in both places.
+     */
+    public long getEffectiveActiveMinutes(UUID uuid, LongSupplier durableActiveMinutes) {
+        synchronized (minuteLedgerLock) {
+            MinuteDelta uncommitted = acceptedUncommittedMinutes.get(uuid);
+            return Math.max(0L, durableActiveMinutes.getAsLong()) + (uncommitted == null ? 0L : uncommitted.activeMinutes());
+        }
+    }
+
+    public RangeTotals getAcceptedUncommittedTotals(UUID uuid) {
+        synchronized (minuteLedgerLock) {
+            MinuteDelta delta = acceptedUncommittedMinutes.get(uuid);
+            return delta == null ? new RangeTotals(0, 0, 0) : delta.toRangeTotals();
+        }
     }
 
     public RangeTotals getPendingTotalsForServer() {
@@ -147,7 +171,10 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 repository.batchUpsertPlayerProfiles(new ArrayList<>(profileBatch.values()));
             }
             if (!minuteBatch.isEmpty()) {
-                repository.batchRecordMinutes(minuteBatch, Instant.now());
+                synchronized (minuteLedgerLock) {
+                    repository.batchRecordMinutes(minuteBatch, Instant.now());
+                    confirmMinuteBatch(minuteBatch);
+                }
             }
             if (!joinBatch.isEmpty() || !profileBatch.isEmpty() || !minuteBatch.isEmpty()) {
                 counters.flushBatches.increment();
@@ -195,6 +222,17 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private void requeueMinuteBatch(Map<UUID, MinuteDelta> batch) {
         for (Map.Entry<UUID, MinuteDelta> entry : batch.entrySet()) {
             pendingMinutes.merge(entry.getKey(), entry.getValue(), MinuteDelta::plus);
+        }
+    }
+
+    private void confirmMinuteBatch(Map<UUID, MinuteDelta> batch) {
+        for (Map.Entry<UUID, MinuteDelta> entry : batch.entrySet()) {
+            acceptedUncommittedMinutes.computeIfPresent(entry.getKey(), (ignored, current) -> {
+                MinuteDelta confirmed = entry.getValue();
+                long active = Math.max(0L, current.activeMinutes() - confirmed.activeMinutes());
+                long afk = Math.max(0L, current.afkMinutes() - confirmed.afkMinutes());
+                return active + afk == 0L ? null : new MinuteDelta(active, afk);
+            });
         }
     }
 
