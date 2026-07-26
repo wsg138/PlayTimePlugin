@@ -164,6 +164,29 @@ class AsyncWriteQueueOwnershipRaceTest {
         verify(f.repository, times(1)).batchRecordMinutes(anyMap(), any());
     }
 
+    @Test
+    void failedOlderProfileBatchCannotOverwriteNewerPendingProfile() throws Exception {
+        Fixture f = new Fixture();
+        UUID player = UUID.randomUUID();
+        PlayerProfile older = new PlayerProfile(player, "Old", "Old", Instant.ofEpochSecond(1));
+        PlayerProfile newer = new PlayerProfile(player, "New", "New", Instant.ofEpochSecond(2));
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch fail = new CountDownLatch(1);
+        doAnswer(call -> { started.countDown(); fail.await(); throw new java.sql.SQLException("profile failure"); })
+                .doNothing().when(f.repository).batchUpsertPlayerProfiles(anyList());
+        f.queue.enqueuePlayerProfile(older);
+        Thread flush = new Thread(f.queue::flushNow, "older-profile-flush");
+        flush.start();
+        assertTrue(started.await(1, java.util.concurrent.TimeUnit.SECONDS));
+        f.queue.enqueuePlayerProfile(newer);
+        fail.countDown();
+        flush.join();
+        assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, f.queue.flushNow());
+        org.mockito.ArgumentCaptor<List<PlayerProfile>> profiles = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(f.repository, times(2)).batchUpsertPlayerProfiles(profiles.capture());
+        assertEquals(newer, profiles.getAllValues().get(1).getFirst());
+    }
+
     private static PlayerProfile profile(UUID uuid) {
         return new PlayerProfile(uuid, "Player", null, Instant.EPOCH);
     }

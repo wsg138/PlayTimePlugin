@@ -70,6 +70,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private AutoCloseable planHook = () -> { };
     private final PlaytimeServiceImpl serviceApi;
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final AtomicBoolean databaseCloseDeferred = new AtomicBoolean(false);
     private final AtomicBoolean tierProgressHandedOff = new AtomicBoolean(false);
     private final AtomicBoolean handoffPrepared = new AtomicBoolean(false);
     private final Map<UUID, Integer> suspiciousStreakMinutes = new ConcurrentHashMap<>();
@@ -691,7 +692,9 @@ public final class PlaytimeRuntime implements AutoCloseable {
             persistOnlinePlayersForShutdown();
             closeStorageAndExport(reloadClose);
         });
-        cleanup(CloseStage.DATABASE, databaseProvider::shutdown);
+        if (!databaseCloseDeferred.get()) {
+            cleanup(CloseStage.DATABASE, databaseProvider::shutdown);
+        }
     }
 
     private void cleanup(CloseStage stage, Runnable action) {
@@ -775,6 +778,11 @@ public final class PlaytimeRuntime implements AutoCloseable {
         AsyncWriteQueue.TransitionResult result = storageQueue.shutdown(runtimeConfig.leaderboards().export().shutdownTimeoutSeconds());
         if (result != AsyncWriteQueue.TransitionResult.SUCCESS) {
             plugin.getLogger().severe("Playtime write queue shutdown did not durably flush all work: " + result);
+            if (result == AsyncWriteQueue.TransitionResult.TIMED_OUT && storageQueue.isFlushInProgressForShutdown()) {
+                databaseCloseDeferred.set(true);
+                storageQueue.closeDatabaseAfterFlush(databaseProvider::shutdown,
+                        Math.max(1, runtimeConfig.leaderboards().export().shutdownTimeoutSeconds()));
+            }
         }
         boolean exportOnClose = reloadClose
                 ? runtimeConfig.leaderboards().export().runOnReloadClose()

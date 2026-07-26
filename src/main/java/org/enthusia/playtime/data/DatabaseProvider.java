@@ -94,14 +94,21 @@ public final class DatabaseProvider {
     }
 
     private void rebuildDataSource() {
-        HikariDataSource newDs = createDataSource();
-        validateConnection(newDs);
-
-        if (this.dataSource != null) {
-            this.dataSource.close();
+        HikariDataSource candidate = null;
+        try {
+            candidate = createDataSource();
+            validateConnection(candidate);
+            HikariDataSource previous = this.dataSource;
+            this.dataSource = candidate;
+            candidate = null;
+            if (previous != null) {
+                previous.close();
+            }
+        } finally {
+            if (candidate != null) {
+                candidate.close();
+            }
         }
-
-        this.dataSource = newDs;
     }
 
     private HikariDataSource createDataSource() {

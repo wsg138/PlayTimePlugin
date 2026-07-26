@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.logging.Level;
@@ -254,7 +255,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
             if (!profileBatch.isEmpty()) {
                 repository.batchUpsertPlayerProfiles(new ArrayList<>(profileBatch.values()));
                 profilesCommitted = true;
-                inFlightProfiles.clear();
+                profileBatch.forEach((uuid, profile) -> inFlightProfiles.remove(uuid, profile));
             }
             if (!minuteBatch.isEmpty()) {
                 minuteCommitInProgress.set(true);
@@ -346,9 +347,14 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     private void requeueProfileBatch(Map<UUID, PlayerProfile> batch) {
         for (Map.Entry<UUID, PlayerProfile> entry : batch.entrySet()) {
-            pendingProfiles.put(entry.getKey(), entry.getValue());
+            pendingProfiles.merge(entry.getKey(), entry.getValue(), this::newerProfile);
         }
-        inFlightProfiles.clear();
+        batch.forEach((uuid, profile) -> inFlightProfiles.remove(uuid, profile));
+    }
+
+    private PlayerProfile newerProfile(PlayerProfile pending, PlayerProfile candidate) {
+        // Equal timestamps retain pending data because it was accepted later.
+        return pending.seenAt().compareTo(candidate.seenAt()) >= 0 ? pending : candidate;
     }
 
     private void scheduleImmediateFlush() {
@@ -425,6 +431,26 @@ public final class AsyncWriteQueue implements AutoCloseable {
         }
         TransitionResult result = flushSyncInternal();
         return result == TransitionResult.SUCCESS && hasOutstandingWork() ? TransitionResult.WRITE_FAILED : result;
+    }
+
+    public boolean isFlushInProgressForShutdown() {
+        return flushInProgress.get();
+    }
+
+    public void closeDatabaseAfterFlush(Runnable closeDatabase, int maxWaitSeconds) {
+        CompletableFuture.runAsync(() -> {
+            long deadline = System.nanoTime() + Math.max(1, maxWaitSeconds) * 1_000_000_000L;
+            while (flushInProgress.get() && System.nanoTime() < deadline) {
+                try {
+                    Thread.sleep(WAIT_SLEEP_MILLIS);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            if (!flushInProgress.get()) closeDatabase.run();
+            else plugin.getLogger().severe("Playtime database left open because an in-flight queue flush did not settle.");
+        });
     }
 
     private boolean hasOutstandingWork() {
