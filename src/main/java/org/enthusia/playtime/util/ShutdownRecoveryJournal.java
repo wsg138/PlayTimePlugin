@@ -26,6 +26,10 @@ public final class ShutdownRecoveryJournal {
         this.file = new File(plugin.getDataFolder(), "shutdown-recovery.yml");
     }
 
+    public File fileForLogging() {
+        return file;
+    }
+
     public void restoreInto(AsyncWriteQueue queue) {
         if (!file.isFile()) return;
         AsyncWriteQueue.RecoverySnapshot snapshot = read();

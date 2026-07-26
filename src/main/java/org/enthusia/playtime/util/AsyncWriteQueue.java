@@ -41,6 +41,8 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private final ConcurrentHashMap<UUID, MinuteDelta> inFlightMinutes = new ConcurrentHashMap<>();
     private final Object minuteLedgerLock = new Object();
     private final Object lifecycleLock = new Object();
+    /** Lock order is lifecycleLock, writeOwnershipLock, then minuteLedgerLock. Never hold this during I/O. */
+    private final Object writeOwnershipLock = new Object();
     private final ConcurrentHashMap<UUID, PlayerProfile> pendingProfiles = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, PlayerProfile> inFlightProfiles = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<JoinRecord> pendingJoins = new ConcurrentLinkedQueue<>();
@@ -53,7 +55,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private final AtomicLong minuteCommitGeneration = new AtomicLong();
     private final AtomicBoolean recoverySettlementPending = new AtomicBoolean();
     private volatile Runnable recoverySettlement = () -> { };
-    private volatile RecoverySnapshot restoredRecovery;
+    private volatile RecoverySnapshot pendingRecovery;
     private UUID shutdownRecoveryBatchId;
 
     private volatile BukkitTask flushTask;
@@ -107,13 +109,15 @@ public final class AsyncWriteQueue implements AutoCloseable {
             if (result != EnqueueResult.ACCEPTED) {
                 return result;
             }
-            synchronized (minuteLedgerLock) {
-                pendingMinutes.merge(uuid, delta, MinuteDelta::plus);
-                acceptedUncommittedMinutes.merge(uuid, delta, MinuteDelta::plus);
-                if (delta.activeMinutes() > 0L) {
-                    acceptedActiveSequences.computeIfAbsent(uuid, ignored -> new AtomicLong()).addAndGet(delta.activeMinutes());
+            synchronized (writeOwnershipLock) {
+                synchronized (minuteLedgerLock) {
+                    pendingMinutes.merge(uuid, delta, MinuteDelta::plus);
+                    acceptedUncommittedMinutes.merge(uuid, delta, MinuteDelta::plus);
+                    if (delta.activeMinutes() > 0L) {
+                        acceptedActiveSequences.computeIfAbsent(uuid, ignored -> new AtomicLong()).addAndGet(delta.activeMinutes());
+                    }
+                    minuteCommitGeneration.incrementAndGet();
                 }
-                minuteCommitGeneration.incrementAndGet();
             }
         }
         counters.minuteDeltasQueued.increment();
@@ -124,7 +128,9 @@ public final class AsyncWriteQueue implements AutoCloseable {
         synchronized (lifecycleLock) {
             EnqueueResult result = enqueueResult();
             if (result != EnqueueResult.ACCEPTED) return result;
-            pendingJoins.add(new JoinRecord(uuid, joinedAt));
+            synchronized (writeOwnershipLock) {
+                pendingJoins.add(new JoinRecord(uuid, joinedAt));
+            }
         }
         scheduleImmediateFlush();
         return EnqueueResult.ACCEPTED;
@@ -135,8 +141,10 @@ public final class AsyncWriteQueue implements AutoCloseable {
         synchronized (lifecycleLock) {
             EnqueueResult result = enqueueResult();
             if (result != EnqueueResult.ACCEPTED) return result;
-            pendingProfiles.put(uuid, profile);
-            pendingJoins.add(new JoinRecord(uuid, joinedAt));
+            synchronized (writeOwnershipLock) {
+                pendingProfiles.put(uuid, profile);
+                pendingJoins.add(new JoinRecord(uuid, joinedAt));
+            }
         }
         scheduleImmediateFlush();
         return EnqueueResult.ACCEPTED;
@@ -149,7 +157,9 @@ public final class AsyncWriteQueue implements AutoCloseable {
         synchronized (lifecycleLock) {
             EnqueueResult result = enqueueResult();
             if (result != EnqueueResult.ACCEPTED) return result;
-            pendingProfiles.put(profile.uuid(), profile);
+            synchronized (writeOwnershipLock) {
+                pendingProfiles.put(profile.uuid(), profile);
+            }
         }
         scheduleImmediateFlush();
         return EnqueueResult.ACCEPTED;
@@ -161,7 +171,9 @@ public final class AsyncWriteQueue implements AutoCloseable {
         }
         synchronized (lifecycleLock) {
             if (state == QueueState.CLOSED) return;
-            pendingProfiles.put(profile.uuid(), profile);
+            synchronized (writeOwnershipLock) {
+                pendingProfiles.put(profile.uuid(), profile);
+            }
         }
     }
 
@@ -245,53 +257,49 @@ public final class AsyncWriteQueue implements AutoCloseable {
     }
 
     private void flushInternal() throws Exception {
+        RecoverySnapshot recovery = pendingRecovery;
+        if (recovery != null) {
+            repository.applyRecoveryBatch(recovery);
+            synchronized (lifecycleLock) {
+                if (pendingRecovery == recovery) {
+                    pendingRecovery = null;
+                }
+            }
+            settleRecoveryJournal();
+            return;
+        }
         Map<UUID, MinuteDelta> minuteBatch = drainMinuteBatch();
         Map<UUID, PlayerProfile> profileBatch = drainProfileBatch();
         List<JoinRecord> joinBatch = drainJoinBatch();
         boolean joinsCommitted = false;
         boolean profilesCommitted = false;
         boolean minutesCommitted = false;
-        RecoverySnapshot recovery = restoredRecovery;
 
         try {
-            if (recovery != null) {
-                repository.applyRecoveryBatch(new RecoverySnapshot(recovery.batchId(),
-                        minuteBatch, profileBatch, joinBatch));
+            if (!joinBatch.isEmpty()) {
+                repository.batchRecordJoins(joinBatch);
                 joinsCommitted = true;
+                removeCommittedJoins(joinBatch);
+            }
+            if (!profileBatch.isEmpty()) {
+                repository.batchUpsertPlayerProfiles(new ArrayList<>(profileBatch.values()));
                 profilesCommitted = true;
-                minutesCommitted = true;
-                restoredRecovery = null;
-                inFlightJoins.clear();
-                profileBatch.forEach((uuid, profile) -> inFlightProfiles.remove(uuid, profile));
-                synchronized (minuteLedgerLock) {
-                    confirmMinuteBatch(minuteBatch);
-                }
-                inFlightMinutes.clear();
-                minuteCommitGeneration.incrementAndGet();
-            } else {
-                if (!joinBatch.isEmpty()) {
-                    repository.batchRecordJoins(joinBatch);
-                    joinsCommitted = true;
-                    inFlightJoins.clear();
-                }
-                if (!profileBatch.isEmpty()) {
-                    repository.batchUpsertPlayerProfiles(new ArrayList<>(profileBatch.values()));
-                    profilesCommitted = true;
-                    profileBatch.forEach((uuid, profile) -> inFlightProfiles.remove(uuid, profile));
-                }
-                if (!minuteBatch.isEmpty()) {
-                    minuteCommitInProgress.set(true);
-                    try {
-                        repository.batchRecordMinutes(minuteBatch, Instant.now());
+                removeCommittedProfiles(profileBatch);
+            }
+            if (!minuteBatch.isEmpty()) {
+                minuteCommitInProgress.set(true);
+                try {
+                    repository.batchRecordMinutes(minuteBatch, Instant.now());
+                    synchronized (writeOwnershipLock) {
                         synchronized (minuteLedgerLock) {
                             confirmMinuteBatch(minuteBatch);
                         }
-                        inFlightMinutes.clear();
+                        minuteBatch.forEach((uuid, delta) -> inFlightMinutes.remove(uuid, delta));
                         minuteCommitGeneration.incrementAndGet();
-                        minutesCommitted = true;
-                    } finally {
-                        minuteCommitInProgress.set(false);
                     }
+                    minutesCommitted = true;
+                } finally {
+                    minuteCommitInProgress.set(false);
                 }
             }
             if (!joinBatch.isEmpty() || !profileBatch.isEmpty() || !minuteBatch.isEmpty()) {
@@ -310,7 +318,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
             throw exception;
         }
         try {
-            settleRecoveryJournalIfDrained();
+            settleRecoveryJournal();
         } catch (RuntimeException cleanupFailure) {
             plugin.getLogger().log(Level.WARNING,
                     "Playtime recovery journal cleanup failed after SQL was committed; it will be retried safely.", cleanupFailure);
@@ -319,44 +327,50 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     private Map<UUID, MinuteDelta> drainMinuteBatch() {
         Map<UUID, MinuteDelta> batch = new ConcurrentHashMap<>();
-        for (Map.Entry<UUID, MinuteDelta> entry : pendingMinutes.entrySet()) {
-            if (pendingMinutes.remove(entry.getKey(), entry.getValue())) {
-                batch.put(entry.getKey(), entry.getValue());
+        synchronized (writeOwnershipLock) {
+            for (Map.Entry<UUID, MinuteDelta> entry : pendingMinutes.entrySet()) {
+                if (pendingMinutes.remove(entry.getKey(), entry.getValue())) {
+                    batch.put(entry.getKey(), entry.getValue());
+                }
             }
+            inFlightMinutes.putAll(batch);
         }
-        inFlightMinutes.putAll(batch);
         return batch;
     }
 
     private List<JoinRecord> drainJoinBatch() {
         List<JoinRecord> batch = new ArrayList<>();
-        while (true) {
-            JoinRecord record = pendingJoins.poll();
-            if (record == null) {
-                break;
+        synchronized (writeOwnershipLock) {
+            while (true) {
+                JoinRecord record = pendingJoins.poll();
+                if (record == null) break;
+                batch.add(record);
+                inFlightJoins.add(record);
             }
-            batch.add(record);
-            inFlightJoins.add(record);
         }
         return batch;
     }
 
     private Map<UUID, PlayerProfile> drainProfileBatch() {
         Map<UUID, PlayerProfile> batch = new ConcurrentHashMap<>();
-        for (Map.Entry<UUID, PlayerProfile> entry : pendingProfiles.entrySet()) {
-            if (pendingProfiles.remove(entry.getKey(), entry.getValue())) {
-                batch.put(entry.getKey(), entry.getValue());
+        synchronized (writeOwnershipLock) {
+            for (Map.Entry<UUID, PlayerProfile> entry : pendingProfiles.entrySet()) {
+                if (pendingProfiles.remove(entry.getKey(), entry.getValue())) {
+                    batch.put(entry.getKey(), entry.getValue());
+                }
             }
+            inFlightProfiles.putAll(batch);
         }
-        inFlightProfiles.putAll(batch);
         return batch;
     }
 
     private void requeueMinuteBatch(Map<UUID, MinuteDelta> batch) {
-        for (Map.Entry<UUID, MinuteDelta> entry : batch.entrySet()) {
-            pendingMinutes.merge(entry.getKey(), entry.getValue(), MinuteDelta::plus);
+        synchronized (writeOwnershipLock) {
+            for (Map.Entry<UUID, MinuteDelta> entry : batch.entrySet()) {
+                pendingMinutes.merge(entry.getKey(), entry.getValue(), MinuteDelta::plus);
+                inFlightMinutes.remove(entry.getKey(), entry.getValue());
+            }
         }
-        inFlightMinutes.clear();
     }
 
     private void confirmMinuteBatch(Map<UUID, MinuteDelta> batch) {
@@ -371,17 +385,33 @@ public final class AsyncWriteQueue implements AutoCloseable {
     }
 
     private void requeueJoinBatch(List<JoinRecord> batch) {
-        for (JoinRecord record : batch) {
-            pendingJoins.add(record);
+        synchronized (writeOwnershipLock) {
+            for (JoinRecord record : batch) {
+                pendingJoins.add(record);
+                inFlightJoins.remove(record);
+            }
         }
-        inFlightJoins.clear();
     }
 
     private void requeueProfileBatch(Map<UUID, PlayerProfile> batch) {
-        for (Map.Entry<UUID, PlayerProfile> entry : batch.entrySet()) {
-            pendingProfiles.merge(entry.getKey(), entry.getValue(), this::newerProfile);
+        synchronized (writeOwnershipLock) {
+            for (Map.Entry<UUID, PlayerProfile> entry : batch.entrySet()) {
+                pendingProfiles.merge(entry.getKey(), entry.getValue(), this::newerProfile);
+                inFlightProfiles.remove(entry.getKey(), entry.getValue());
+            }
         }
-        batch.forEach((uuid, profile) -> inFlightProfiles.remove(uuid, profile));
+    }
+
+    private void removeCommittedJoins(List<JoinRecord> batch) {
+        synchronized (writeOwnershipLock) {
+            batch.forEach(inFlightJoins::remove);
+        }
+    }
+
+    private void removeCommittedProfiles(Map<UUID, PlayerProfile> batch) {
+        synchronized (writeOwnershipLock) {
+            batch.forEach((uuid, profile) -> inFlightProfiles.remove(uuid, profile));
+        }
     }
 
     private PlayerProfile newerProfile(PlayerProfile pending, PlayerProfile candidate) {
@@ -477,19 +507,9 @@ public final class AsyncWriteQueue implements AutoCloseable {
         if (snapshot == null || snapshot.isEmpty()) return;
         synchronized (lifecycleLock) {
             if (state != QueueState.RUNNING) return;
-            snapshot.minutes().forEach((uuid, delta) -> {
-                pendingMinutes.merge(uuid, delta, MinuteDelta::plus);
-                acceptedUncommittedMinutes.merge(uuid, delta, MinuteDelta::plus);
-                if (delta.activeMinutes() > 0L) {
-                    acceptedActiveSequences.computeIfAbsent(uuid, ignored -> new AtomicLong()).addAndGet(delta.activeMinutes());
-                }
-            });
-            snapshot.profiles().forEach((uuid, profile) -> pendingProfiles.merge(uuid, profile, this::newerProfile));
-            pendingJoins.addAll(snapshot.joins());
-            if (!snapshot.minutes().isEmpty()) minuteCommitGeneration.incrementAndGet();
             recoverySettlement = onDurablySettled == null ? () -> { } : onDurablySettled;
             recoverySettlementPending.set(true);
-            restoredRecovery = snapshot;
+            pendingRecovery = snapshot;
             shutdownRecoveryBatchId = snapshot.batchId();
         }
     }
@@ -534,27 +554,34 @@ public final class AsyncWriteQueue implements AutoCloseable {
         });
     }
 
-    private void settleRecoveryJournalIfDrained() {
-        if (recoverySettlementPending.get() && !hasOutstandingWork()
+    private void settleRecoveryJournal() {
+        if (pendingRecovery == null && recoverySettlementPending.get()
                 && recoverySettlementPending.compareAndSet(true, false)) {
             recoverySettlement.run();
+            synchronized (lifecycleLock) {
+                if (pendingRecovery == null) {
+                    shutdownRecoveryBatchId = null;
+                }
+            }
         }
     }
 
     public RecoverySnapshot recoverySnapshot() {
-        Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>();
-        pendingMinutes.forEach((uuid, delta) -> minutes.merge(uuid, delta, MinuteDelta::plus));
-        inFlightMinutes.forEach((uuid, delta) -> minutes.merge(uuid, delta, MinuteDelta::plus));
-        Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>();
-        inFlightProfiles.forEach((uuid, profile) -> profiles.merge(uuid, profile, this::newerProfile));
-        pendingProfiles.forEach((uuid, profile) -> profiles.merge(uuid, profile, this::newerProfile));
-        List<JoinRecord> joins = new ArrayList<>(inFlightJoins);
-        joins.addAll(pendingJoins);
         synchronized (lifecycleLock) {
-            if (shutdownRecoveryBatchId == null) {
-                shutdownRecoveryBatchId = UUID.randomUUID();
+            synchronized (writeOwnershipLock) {
+                Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>();
+                pendingMinutes.forEach((uuid, delta) -> minutes.merge(uuid, delta, MinuteDelta::plus));
+                inFlightMinutes.forEach((uuid, delta) -> minutes.merge(uuid, delta, MinuteDelta::plus));
+                Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>();
+                inFlightProfiles.forEach((uuid, profile) -> profiles.merge(uuid, profile, this::newerProfile));
+                pendingProfiles.forEach((uuid, profile) -> profiles.merge(uuid, profile, this::newerProfile));
+                List<JoinRecord> joins = new ArrayList<>(inFlightJoins);
+                joins.addAll(pendingJoins);
+                if (shutdownRecoveryBatchId == null) {
+                    shutdownRecoveryBatchId = UUID.randomUUID();
+                }
+                return new RecoverySnapshot(shutdownRecoveryBatchId, Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
             }
-            return new RecoverySnapshot(shutdownRecoveryBatchId, Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
         }
     }
 
@@ -570,8 +597,10 @@ public final class AsyncWriteQueue implements AutoCloseable {
     }
 
     private boolean hasOutstandingWork() {
-        return !pendingMinutes.isEmpty() || !inFlightMinutes.isEmpty() || !pendingProfiles.isEmpty() || !inFlightProfiles.isEmpty()
-                || !pendingJoins.isEmpty() || !inFlightJoins.isEmpty();
+        synchronized (writeOwnershipLock) {
+            return !pendingMinutes.isEmpty() || !inFlightMinutes.isEmpty() || !pendingProfiles.isEmpty() || !inFlightProfiles.isEmpty()
+                    || !pendingJoins.isEmpty() || !inFlightJoins.isEmpty();
+        }
     }
 
     private EnqueueResult enqueueResult() {
@@ -589,9 +618,11 @@ public final class AsyncWriteQueue implements AutoCloseable {
     }
 
     OutstandingWork outstandingWorkForTesting() {
-        return new OutstandingWork(pendingMinutes.size() + inFlightMinutes.size(),
-                pendingJoins.size() + inFlightJoins.size(),
-                pendingProfiles.size() + inFlightProfiles.size());
+        synchronized (writeOwnershipLock) {
+            return new OutstandingWork(pendingMinutes.size() + inFlightMinutes.size(),
+                    pendingJoins.size() + inFlightJoins.size(),
+                    pendingProfiles.size() + inFlightProfiles.size());
+        }
     }
 
     record OutstandingWork(int minutePlayers, int joins, int profiles) {}

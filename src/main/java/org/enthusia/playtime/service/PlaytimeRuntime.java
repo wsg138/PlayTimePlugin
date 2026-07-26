@@ -783,13 +783,16 @@ public final class PlaytimeRuntime implements AutoCloseable {
         AsyncWriteQueue.TransitionResult result = storageQueue.shutdown(runtimeConfig.leaderboards().export().shutdownTimeoutSeconds());
         if (result != AsyncWriteQueue.TransitionResult.SUCCESS) {
             plugin.getLogger().severe("Playtime write queue shutdown did not durably flush all work: " + result);
-            if (storageQueue.hasOutstandingWorkForShutdown() && storageQueue.isFlushInProgressForShutdown()) {
+            if (storageQueue.hasOutstandingWorkForShutdown()) {
                 databaseCloseDeferred.set(true);
-                storageQueue.closeDatabaseAfterFlush(databaseProvider::shutdown,
-                        Math.max(1, runtimeConfig.leaderboards().export().shutdownTimeoutSeconds()),
-                        recoveryJournal::write);
-            } else if (storageQueue.hasOutstandingWorkForShutdown()) {
-                recoveryJournal.write(storageQueue.recoverySnapshot());
+                if (persistRecoveryJournalBeforeRelease(storageQueue.recoverySnapshot())
+                        && storageQueue.isFlushInProgressForShutdown()) {
+                    storageQueue.closeDatabaseAfterFlush(databaseProvider::shutdown,
+                            Math.max(1, runtimeConfig.leaderboards().export().shutdownTimeoutSeconds()),
+                            recoveryJournal::write);
+                } else if (!storageQueue.isFlushInProgressForShutdown()) {
+                    databaseCloseDeferred.set(false);
+                }
             }
         }
         boolean exportOnClose = reloadClose
@@ -799,6 +802,23 @@ public final class PlaytimeRuntime implements AutoCloseable {
             exportService.exportAll();
         }
         return result;
+    }
+
+    private boolean persistRecoveryJournalBeforeRelease(AsyncWriteQueue.RecoverySnapshot snapshot) {
+        RuntimeException lastFailure = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                recoveryJournal.write(snapshot);
+                return true;
+            } catch (RuntimeException failure) {
+                lastFailure = failure;
+                plugin.getLogger().log(Level.WARNING, "Failed to write playtime shutdown recovery journal attempt "
+                        + attempt + "/3 at " + recoveryJournal.fileForLogging(), failure);
+            }
+        }
+        plugin.getLogger().log(Level.SEVERE, "Playtime shutdown durability failure: retained queue and database ownership because "
+                + "the recovery journal could not be written at " + recoveryJournal.fileForLogging(), lastFailure);
+        return false;
     }
 
     private AutoCloseable createPlanHook() {
