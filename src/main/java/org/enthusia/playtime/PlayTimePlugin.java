@@ -96,13 +96,15 @@ public class PlayTimePlugin extends JavaPlugin {
         }
 
         PlaytimeRuntime newRuntime = null;
+        boolean oldCommitted = false;
         try {
-            newRuntime = new PlaytimeRuntime(this, config, state);
+            newRuntime = PlaytimeRuntime.create(this, config, state);
             if (oldRuntime != null) {
                 AsyncWriteQueue.TransitionResult result = oldRuntime.commitRuntimeHandoff();
                 if (result != AsyncWriteQueue.TransitionResult.SUCCESS) {
                     throw new IllegalStateException("Old runtime handoff did not complete: " + result);
                 }
+                oldCommitted = true;
             }
             this.activeRuntime = Optional.of(newRuntime);
             if (oldRuntime != null) {
@@ -112,7 +114,12 @@ public class PlayTimePlugin extends JavaPlugin {
                     getLogger().log(Level.WARNING, "New playtime runtime is active, but the old runtime did not close cleanly.", closeException);
                 }
             }
-            refreshPlaceholderExpansion();
+            try {
+                refreshPlaceholderExpansion();
+            } catch (RuntimeException integrationFailure) {
+                getLogger().log(Level.WARNING,
+                        "New playtime runtime is active, but PlaceholderAPI refresh failed.", integrationFailure);
+            }
             if (reason != null) {
                 getLogger().info("Playtime runtime reloaded successfully. Flush interval="
                         + config.getFlushIntervalTicks() + " ticks, leaderboard export="
@@ -121,6 +128,13 @@ public class PlayTimePlugin extends JavaPlugin {
             }
             return true;
         } catch (Exception exception) {
+            if (oldCommitted) {
+                this.activeRuntime = Optional.of(newRuntime);
+                getLogger().log(Level.SEVERE,
+                        "Playtime runtime committed; a post-commit step failed and the new runtime remains active.",
+                        exception);
+                return true;
+            }
             if (newRuntime != null) {
                 try {
                     newRuntime.close(false);

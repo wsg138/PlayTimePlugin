@@ -62,10 +62,12 @@ public final class AsyncWriteQueue implements AutoCloseable {
     }
 
     public void start() {
-        if (flushTask != null) {
-            return;
+        synchronized (lifecycleLock) {
+            if (state != QueueState.RUNNING || flushTask != null) return;
+            if (plugin == null) return;
+            flushTask = Bukkit.getScheduler().runTaskTimerAsynchronously(
+                    plugin, this::flushAsyncSafely, flushIntervalTicks, flushIntervalTicks);
         }
-        flushTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, this::flushAsyncSafely, flushIntervalTicks, flushIntervalTicks);
     }
 
     public EnqueueResult enqueueMinute(UUID uuid, int activeMinutes, int afkMinutes) {
@@ -95,6 +97,18 @@ public final class AsyncWriteQueue implements AutoCloseable {
         synchronized (lifecycleLock) {
             EnqueueResult result = enqueueResult();
             if (result != EnqueueResult.ACCEPTED) return result;
+            pendingJoins.add(new JoinRecord(uuid, joinedAt));
+        }
+        scheduleImmediateFlush();
+        return EnqueueResult.ACCEPTED;
+    }
+
+    public EnqueueResult enqueueJoinWithProfile(UUID uuid, Instant joinedAt, PlayerProfile profile) {
+        if (profile == null || profile.uuid() == null || !uuid.equals(profile.uuid())) return EnqueueResult.CLOSED;
+        synchronized (lifecycleLock) {
+            EnqueueResult result = enqueueResult();
+            if (result != EnqueueResult.ACCEPTED) return result;
+            pendingProfiles.put(uuid, profile);
             pendingJoins.add(new JoinRecord(uuid, joinedAt));
         }
         scheduleImmediateFlush();
@@ -173,6 +187,9 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     private void flushAsyncSafely() {
         immediateFlushScheduled.set(false);
+        synchronized (lifecycleLock) {
+            if (state == QueueState.CLOSED) return;
+        }
         if (!flushInProgress.compareAndSet(false, true)) {
             return;
         }
@@ -318,14 +335,12 @@ public final class AsyncWriteQueue implements AutoCloseable {
             if (state != QueueState.RUNNING || !plugin.isEnabled()) {
                 return;
             }
-        }
-        if (immediateFlushScheduled.compareAndSet(false, true)) {
-            try {
-                Bukkit.getScheduler().runTaskAsynchronously(plugin, this::flushAsyncSafely);
-            } catch (IllegalPluginAccessException exception) {
-                immediateFlushScheduled.set(false);
-                if (plugin.isEnabled()) {
-                    throw exception;
+            if (immediateFlushScheduled.compareAndSet(false, true)) {
+                try {
+                    Bukkit.getScheduler().runTaskAsynchronously(plugin, this::flushAsyncSafely);
+                } catch (IllegalPluginAccessException exception) {
+                    immediateFlushScheduled.set(false);
+                    if (plugin.isEnabled()) throw exception;
                 }
             }
         }
@@ -337,9 +352,11 @@ public final class AsyncWriteQueue implements AutoCloseable {
             state = QueueState.HANDOFF_PAUSED;
             minuteCommitGeneration.incrementAndGet();
         }
-        if (flushTask != null) {
-            flushTask.cancel();
-            flushTask = null;
+        synchronized (lifecycleLock) {
+            if (flushTask != null) {
+                flushTask.cancel();
+                flushTask = null;
+            }
         }
         if (!waitForActiveFlush(timeoutSeconds)) {
             return TransitionResult.TIMED_OUT;
@@ -370,11 +387,15 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     public TransitionResult shutdown(int timeoutSeconds) {
         synchronized (lifecycleLock) {
+            if (state == QueueState.CLOSED) {
+                return hasOutstandingWork() ? TransitionResult.WRITE_FAILED : TransitionResult.SUCCESS;
+            }
             state = QueueState.CLOSED;
             minuteCommitGeneration.incrementAndGet();
-        }
-        if (flushTask != null) {
-            flushTask.cancel();
+            if (flushTask != null) {
+                flushTask.cancel();
+                flushTask = null;
+            }
         }
         if (!waitForActiveFlush(timeoutSeconds)) {
             return TransitionResult.TIMED_OUT;
@@ -394,6 +415,12 @@ public final class AsyncWriteQueue implements AutoCloseable {
             case HANDOFF_PAUSED -> EnqueueResult.HANDOFF_PAUSED;
             case CLOSED -> EnqueueResult.CLOSED;
         };
+    }
+
+    QueueState stateForTesting() {
+        synchronized (lifecycleLock) {
+            return state;
+        }
     }
 
     private LedgerCutoff ledgerCutoff(UUID uuid) {

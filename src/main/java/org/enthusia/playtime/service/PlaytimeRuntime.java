@@ -49,10 +49,11 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private final HeadCache playerHeadCache;
     private final LeaderboardExportService exportService;
     private final PerformanceCounters performanceCounters = new PerformanceCounters();
-    private final AutoCloseable planHook;
+    private AutoCloseable planHook = () -> { };
     private final PlaytimeServiceImpl serviceApi;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicBoolean tierProgressHandedOff = new AtomicBoolean(false);
+    private final AtomicBoolean handoffPrepared = new AtomicBoolean(false);
     private final Map<UUID, Integer> suspiciousStreakMinutes = new ConcurrentHashMap<>();
     private final Map<UUID, Long> processedSuspicionResetMarkers = new ConcurrentHashMap<>();
     private final Map<UUID, JoinDecision> recentJoinDecisions = new ConcurrentHashMap<>();
@@ -70,33 +71,72 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private volatile int auditRemaining;
     private volatile long nextAuditAtMillis;
 
-    public PlaytimeRuntime(PlayTimePlugin plugin, PlaytimeConfig config, RuntimeState previousState) throws Exception {
+    private PlaytimeRuntime(PlayTimePlugin plugin, PlaytimeConfig config, RuntimeState previousState) throws Exception {
         this.plugin = plugin;
         this.runtimeConfig = config;
-        this.databaseProvider = new DatabaseProvider(plugin, config);
-        this.databaseProvider.init(config.getStorageType());
-        this.playtimeRepository = new PlaytimeRepository(plugin, databaseProvider, config);
-        this.playtimeRepository.initSchema();
-        this.sessions = new SessionManager(previousState == null ? Map.of() : previousState.sessionStarts());
-        this.activities = new ActivityTracker(config, sessions, previousState == null ? Map.of() : previousState.activitySnapshots(), performanceCounters);
-        this.tierProgress = new TierProgressTracker(config.numerals().catalog(), previousState == null ? Map.of() : previousState.tierProgress());
+        DatabaseProvider allocatedDatabase = null;
+        HeadCache allocatedHeadCache = null;
+        try {
+            allocatedDatabase = new DatabaseProvider(plugin, config);
+            allocatedDatabase.init(config.getStorageType());
+            PlaytimeRepository allocatedRepository = new PlaytimeRepository(plugin, allocatedDatabase, config);
+            allocatedRepository.initSchema();
+            SessionManager allocatedSessions = new SessionManager(
+                    previousState == null ? Map.of() : previousState.sessionStarts());
+            ActivityTracker allocatedActivities = new ActivityTracker(config, allocatedSessions,
+                    previousState == null ? Map.of() : previousState.activitySnapshots(), performanceCounters);
+            TierProgressTracker allocatedTierProgress = new TierProgressTracker(config.numerals().catalog(),
+                    previousState == null ? Map.of() : previousState.tierProgress());
+            allocatedHeadCache = new HeadCache(plugin, performanceCounters, allocatedRepository);
+            AsyncWriteQueue allocatedQueue = new AsyncWriteQueue(
+                    plugin, allocatedRepository, performanceCounters, config.getFlushIntervalTicks());
+            PlaytimeReadService allocatedReads = new PlaytimeReadService(plugin, allocatedRepository,
+                    allocatedQueue, performanceCounters, config.leaderboards().cacheTtlSeconds());
+            LeaderboardExportService allocatedExport = new LeaderboardExportService(
+                    plugin, allocatedRepository, config.leaderboards().export(), performanceCounters);
+            PlaytimeServiceImpl allocatedService = new PlaytimeServiceImpl(
+                    allocatedReads, allocatedRepository, allocatedActivities, allocatedSessions);
 
-        this.playerHeadCache = new HeadCache(plugin, performanceCounters, playtimeRepository);
-        this.storageQueue = new AsyncWriteQueue(plugin, playtimeRepository, performanceCounters, config.getFlushIntervalTicks());
-        this.storageQueue.start();
-        this.reads = new PlaytimeReadService(plugin, playtimeRepository, storageQueue, performanceCounters, config.leaderboards().cacheTtlSeconds());
-        this.exportService = new LeaderboardExportService(plugin, playtimeRepository, config.leaderboards().export(), performanceCounters);
-        this.planHook = createPlanHook();
-        this.serviceApi = new PlaytimeServiceImpl(reads, playtimeRepository, activities, sessions);
+            this.databaseProvider = allocatedDatabase;
+            this.playtimeRepository = allocatedRepository;
+            this.sessions = allocatedSessions;
+            this.activities = allocatedActivities;
+            this.tierProgress = allocatedTierProgress;
+            this.playerHeadCache = allocatedHeadCache;
+            this.storageQueue = allocatedQueue;
+            this.reads = allocatedReads;
+            this.exportService = allocatedExport;
+            this.serviceApi = allocatedService;
+        } catch (Exception | Error failure) {
+            if (allocatedHeadCache != null) allocatedHeadCache.close();
+            if (allocatedDatabase != null) allocatedDatabase.shutdown();
+            throw failure;
+        }
+    }
 
-        Bukkit.getPluginManager().registerEvents(activities, plugin);
-        Bukkit.getServicesManager().register(PlaytimeService.class, serviceApi, plugin, org.bukkit.plugin.ServicePriority.Normal);
+    public static PlaytimeRuntime create(PlayTimePlugin plugin, PlaytimeConfig config,
+                                         RuntimeState previousState) throws Exception {
+        PlaytimeRuntime candidate = new PlaytimeRuntime(plugin, config, previousState);
+        try {
+            candidate.activate();
+            return candidate;
+        } catch (Exception | Error failure) {
+            candidate.close(false);
+            throw failure;
+        }
+    }
+
+    private void activate() {
+        storageQueue.start();
+        planHook = createPlanHook();
+        registerRuntimeBindings();
 
         long nowMillis = System.currentTimeMillis();
         for (Player player : Bukkit.getOnlinePlayers()) {
             activities.bootstrapPlayer(player, nowMillis);
             playerHeadCache.updateHead(player);
-            storageQueue.enqueuePlayerProfile(profileFor(player, Instant.now()));
+            logRejectedWrite("bootstrap profile", player.getUniqueId(),
+                    storageQueue.enqueuePlayerProfile(profileFor(player, Instant.now())));
             initializeTierProgress(player.getUniqueId());
         }
         tierProgress.uninitializedPlayers().forEach((uuid, connected) -> initializeTierProgress(uuid, connected));
@@ -169,9 +209,13 @@ public final class PlaytimeRuntime implements AutoCloseable {
         UUID uuid = player.getUniqueId();
         boolean firstKnownJoin = !playtimeRepository.hasLifetimeRecord(uuid);
         int uniqueNumber = firstKnownJoin ? playtimeRepository.countKnownPlayers() + 1 : 0;
+        AsyncWriteQueue.EnqueueResult ownership = storageQueue.enqueueJoinWithProfile(
+                uuid, joinedAt, profileFor(player, joinedAt));
+        if (!owns(ownership)) {
+            logRejectedWrite("join/profile", uuid, ownership);
+            return false;
+        }
         recentJoinDecisions.put(uuid, new JoinDecision(firstKnownJoin, uniqueNumber, System.currentTimeMillis()));
-        storageQueue.enqueuePlayerProfile(profileFor(player, joinedAt));
-        storageQueue.enqueueJoin(uuid, joinedAt);
         reads.invalidateAll();
         tierProgress.reconnect(uuid);
         initializeTierProgress(uuid);
@@ -203,6 +247,9 @@ public final class PlaytimeRuntime implements AutoCloseable {
             storageQueue.abortHandoff();
             return new HandoffPreparation(result, null);
         }
+        handoffPrepared.set(true);
+        cancelRuntimeTasks();
+        unregisterRuntimeServices();
         return new HandoffPreparation(result, new RuntimeState(
                 new HashMap<>(sessions.snapshot()),
                 new HashMap<>(activities.snapshot()),
@@ -222,6 +269,22 @@ public final class PlaytimeRuntime implements AutoCloseable {
     public void abortRuntimeHandoff() {
         tierProgressHandedOff.set(false);
         storageQueue.abortHandoff();
+        if (handoffPrepared.compareAndSet(true, false) && !closed.get()) {
+            planHook = createPlanHook();
+            registerRuntimeBindings();
+            startMinuteTickTask();
+            startJoinPurgeTask();
+            startActionBarTask();
+            startAuditTask();
+            startPerformanceLogTask();
+            startLeaderboardExportTask();
+        }
+    }
+
+    private void registerRuntimeBindings() {
+        Bukkit.getPluginManager().registerEvents(activities, plugin);
+        Bukkit.getServicesManager().register(PlaytimeService.class, serviceApi, plugin,
+                org.bukkit.plugin.ServicePriority.Normal);
     }
 
     private void startMinuteTickTask() {
@@ -306,7 +369,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
             repaired = true;
         }
         if (repairMode) {
-            storageQueue.enqueuePlayerProfile(profileFor(player, Instant.now()));
+            logRejectedWrite("audit profile", player.getUniqueId(),
+                    storageQueue.enqueuePlayerProfile(profileFor(player, Instant.now())));
             playerHeadCache.updateHeadDebounced(player);
         }
         if (reads.isLoading()) {
@@ -361,11 +425,27 @@ public final class PlaytimeRuntime implements AutoCloseable {
                 continue;
             }
 
+            AsyncWriteQueue.EnqueueResult ownership = storageQueue.enqueueMinute(
+                    player.getUniqueId(), event.getActiveMinutes(), event.getAfkMinutes());
+            if (!owns(ownership)) {
+                logRejectedWrite("minute", player.getUniqueId(), ownership);
+                continue;
+            }
             int acceptedActiveMinutes = Math.max(0, event.getActiveMinutes());
             TierProgressTracker.ActiveUpdate update = tierProgress.acceptActiveMinutes(player.getUniqueId(), acceptedActiveMinutes);
             announceTierAdvance(player, update.reachedTier());
-            storageQueue.enqueueMinute(player.getUniqueId(), event.getActiveMinutes(), event.getAfkMinutes());
             reads.invalidatePlayer(player.getUniqueId());
+        }
+    }
+
+    private boolean owns(AsyncWriteQueue.EnqueueResult result) {
+        return result == AsyncWriteQueue.EnqueueResult.ACCEPTED;
+    }
+
+    private void logRejectedWrite(String type, UUID uuid, AsyncWriteQueue.EnqueueResult result) {
+        if (!owns(result)) {
+            plugin.getLogger().severe("Rejected " + type + " write for " + uuid
+                    + " because queue state was " + result + "; runtime state was not advanced.");
         }
     }
 
@@ -538,6 +618,13 @@ public final class PlaytimeRuntime implements AutoCloseable {
         if (leaderboardExportTask != null) {
             leaderboardExportTask.cancel();
         }
+        minuteTickTask = null;
+        joinPurgeTask = null;
+        actionBarTask = null;
+        auditTask = null;
+        performanceLogTask = null;
+        initialLeaderboardExportTask = null;
+        leaderboardExportTask = null;
     }
 
     private void unregisterRuntimeServices() {
@@ -546,6 +633,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
             planHook.close();
         } catch (Exception exception) {
             plugin.getLogger().log(Level.FINE, "Failed to close Plan analytics integration.", exception);
+        } finally {
+            planHook = () -> { };
         }
         HandlerList.unregisterAll(activities);
     }

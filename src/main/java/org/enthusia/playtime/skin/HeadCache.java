@@ -56,7 +56,13 @@ public final class HeadCache implements AutoCloseable {
         this.plugin = plugin;
         this.counters = counters;
         this.repository = repository;
-        load();
+        try {
+            load();
+        } catch (Exception | Error failure) {
+            closed = true;
+            writerExecutor.shutdownNow();
+            throw failure;
+        }
     }
 
     public void updateHead(Player player) {
