@@ -382,20 +382,26 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     private void initializeTierProgress(UUID uuid, boolean connected) {
-        Optional<TierProgressTracker.InitializationRequest> request = tierProgress.requestInitialization(uuid, connected);
+        Optional<TierProgressTracker.InitializationRequest> request = tierProgress.requestInitialization(uuid, connected,
+                storageQueue.acceptedActiveSequence(uuid));
         if (request.isEmpty()) {
             return;
         }
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            long effectiveActiveMinutes;
+            AsyncWriteQueue.EffectiveActiveSnapshot effectiveSnapshot;
             try {
-                effectiveActiveMinutes = storageQueue.getEffectiveActiveMinutes(uuid, () -> {
+                Optional<AsyncWriteQueue.EffectiveActiveSnapshot> snapshot = storageQueue.readEffectiveActiveSnapshot(uuid, () -> {
                     LifetimeRead read = playtimeRepository.readLifetimeStrict(uuid);
                     if (read.status() == LifetimeReadStatus.FAILED) {
                         throw new TierInitializationReadException();
                     }
                     return read.status() == LifetimeReadStatus.FOUND ? read.snapshot().activeMinutes : 0L;
                 });
+                if (snapshot.isEmpty()) {
+                    scheduleTierInitializationRetry(request.get());
+                    return;
+                }
+                effectiveSnapshot = snapshot.get();
             } catch (TierInitializationReadException exception) {
                 scheduleTierInitializationRetry(request.get());
                 return;
@@ -403,7 +409,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
             if (closed.get() || tierProgressHandedOff.get()) {
                 return;
             }
-            Bukkit.getScheduler().runTask(plugin, () -> finishTierProgressInitialization(request.get(), effectiveActiveMinutes));
+            Bukkit.getScheduler().runTask(plugin, () -> finishTierProgressInitialization(request.get(), effectiveSnapshot));
         });
     }
 
@@ -416,11 +422,16 @@ public final class PlaytimeRuntime implements AutoCloseable {
         Bukkit.getScheduler().runTaskLater(plugin, () -> initializeTierProgress(request.uuid(), Bukkit.getPlayer(request.uuid()) != null), delayTicks);
     }
 
-    private void finishTierProgressInitialization(TierProgressTracker.InitializationRequest request, long effectiveActiveMinutes) {
+    private void finishTierProgressInitialization(TierProgressTracker.InitializationRequest request,
+                                                  AsyncWriteQueue.EffectiveActiveSnapshot effectiveSnapshot) {
         if (closed.get() || tierProgressHandedOff.get()) {
             return;
         }
-        Optional<TierProgressTracker.InitializationResult> completed = tierProgress.finishInitialization(request, effectiveActiveMinutes);
+        if (storageQueue.acceptedActiveSequence(request.uuid()) != effectiveSnapshot.acceptedActiveSequence()) {
+            scheduleTierInitializationRetry(request);
+            return;
+        }
+        Optional<TierProgressTracker.InitializationResult> completed = tierProgress.finishInitialization(request, effectiveSnapshot.activeMinutes());
         if (completed.isEmpty()) {
             return;
         }

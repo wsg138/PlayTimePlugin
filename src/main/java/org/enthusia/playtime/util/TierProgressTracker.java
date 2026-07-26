@@ -15,7 +15,7 @@ public final class TierProgressTracker {
         restored.forEach((uuid, state) -> progressByPlayer.put(uuid, Progress.from(state, catalog)));
     }
 
-    public synchronized Optional<InitializationRequest> requestInitialization(UUID uuid, boolean connected) {
+    public synchronized Optional<InitializationRequest> requestInitialization(UUID uuid, boolean connected, long acceptedActiveSequence) {
         Progress progress = progressByPlayer.computeIfAbsent(uuid, ignored -> Progress.uninitialized(connected));
         progress.connected = connected;
         if (progress.initialized || progress.initializing) {
@@ -23,7 +23,7 @@ public final class TierProgressTracker {
         }
         progress.initializing = true;
         progress.generation++;
-        return Optional.of(new InitializationRequest(uuid, progress.generation));
+        return Optional.of(new InitializationRequest(uuid, progress.generation, acceptedActiveSequence));
     }
 
     public synchronized ActiveUpdate acceptActiveMinutes(UUID uuid, int activeMinutes) {
@@ -133,7 +133,7 @@ public final class TierProgressTracker {
                                 long generation, boolean initializing) {
     }
 
-    public record InitializationRequest(UUID uuid, long generation) {
+    public record InitializationRequest(UUID uuid, long generation, long acceptedActiveSequence) {
     }
 
     public record InitializationResult(long withheldActiveMinutes, Optional<NumeralTierCatalog.Tier> reachedTier, boolean connected) {

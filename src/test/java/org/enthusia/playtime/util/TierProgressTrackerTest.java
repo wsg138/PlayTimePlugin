@@ -50,7 +50,7 @@ class TierProgressTrackerTest {
         first.finishInitialization(request(first, player), 59);
 
         TierProgressTracker reloaded = new TierProgressTracker(catalog, first.snapshot());
-        assertTrue(reloaded.requestInitialization(player, true).isEmpty());
+        assertTrue(reloaded.requestInitialization(player, true, 0L).isEmpty());
         assertEquals("I", reloaded.acceptActiveMinutes(player, 1).reachedTier().orElseThrow().label());
         assertTrue(reloaded.acceptActiveMinutes(player, 1).reachedTier().isEmpty());
     }
@@ -88,7 +88,7 @@ class TierProgressTrackerTest {
         tracker.disconnect(player);
 
         TierProgressTracker reloaded = new TierProgressTracker(catalog, tracker.snapshot());
-        TierProgressTracker.InitializationRequest request = reloaded.requestInitialization(player, false).orElseThrow();
+        TierProgressTracker.InitializationRequest request = reloaded.requestInitialization(player, false, 0L).orElseThrow();
         TierProgressTracker.InitializationResult result = reloaded.finishInitialization(request, 60).orElseThrow();
         assertEquals(1, result.withheldActiveMinutes());
         assertFalse(result.connected());
@@ -96,6 +96,6 @@ class TierProgressTrackerTest {
     }
 
     private TierProgressTracker.InitializationRequest request(TierProgressTracker tracker, UUID player) {
-        return tracker.requestInitialization(player, true).orElseThrow();
+        return tracker.requestInitialization(player, true, 0L).orElseThrow();
     }
 }
