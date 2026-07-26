@@ -3,6 +3,8 @@ package org.enthusia.playtime.util;
 import org.bukkit.scheduler.BukkitTask;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.PlaytimeRepository;
+import org.enthusia.playtime.data.WriteBatch;
+import org.enthusia.playtime.data.RecoveryApplyResult;
 import org.enthusia.playtime.data.model.PlayerProfile;
 import org.junit.jupiter.api.Test;
 
@@ -185,8 +187,8 @@ class AsyncWriteQueueOwnershipRaceTest {
         flush.join();
         assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, f.queue.flushNow());
         org.mockito.ArgumentCaptor<List<PlayerProfile>> profiles = org.mockito.ArgumentCaptor.forClass(List.class);
-        verify(f.repository, times(2)).batchUpsertPlayerProfiles(profiles.capture());
-        assertEquals(newer, profiles.getAllValues().get(1).getFirst());
+        verify(f.repository, times(3)).batchUpsertPlayerProfiles(profiles.capture());
+        assertEquals(newer, profiles.getAllValues().get(2).getFirst());
     }
 
     @Test
@@ -252,6 +254,17 @@ class AsyncWriteQueueOwnershipRaceTest {
         Fixture() {
             when(plugin.isEnabled()).thenReturn(true);
             when(plugin.getLogger()).thenReturn(java.util.logging.Logger.getAnonymousLogger());
+            try {
+                doAnswer(call -> {
+                    WriteBatch batch = call.getArgument(0);
+                    if (!batch.joins().isEmpty()) repository.batchRecordJoins(batch.joins());
+                    if (!batch.profiles().isEmpty()) repository.batchUpsertPlayerProfiles(new ArrayList<>(batch.profiles().values()));
+                    if (!batch.minutes().isEmpty()) repository.batchRecordMinutes(batch.minutes(), Instant.now());
+                    return RecoveryApplyResult.APPLIED;
+                }).when(repository).applyWriteBatch(any());
+            } catch (java.sql.SQLException exception) {
+                throw new AssertionError(exception);
+            }
             queue = new AsyncWriteQueue(plugin, repository, new PerformanceCounters(), 20L, scheduler);
         }
     }

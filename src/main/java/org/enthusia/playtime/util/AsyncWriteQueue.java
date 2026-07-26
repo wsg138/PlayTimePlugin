@@ -5,6 +5,7 @@ import org.bukkit.plugin.IllegalPluginAccessException;
 import org.bukkit.scheduler.BukkitTask;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.PlaytimeRepository;
+import org.enthusia.playtime.data.WriteBatch;
 import org.enthusia.playtime.data.PlaytimeRepository.JoinRecord;
 import org.enthusia.playtime.data.model.MinuteDelta;
 import org.enthusia.playtime.data.model.PlayerProfile;
@@ -56,6 +57,8 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private final AtomicBoolean recoverySettlementPending = new AtomicBoolean();
     private volatile Runnable recoverySettlement = () -> { };
     private volatile RecoverySnapshot pendingRecovery;
+    private WriteBatch activeWriteBatch;
+    private final AtomicBoolean recoveryApplyInProgress = new AtomicBoolean(false);
     private UUID shutdownRecoveryBatchId;
 
     private volatile BukkitTask flushTask;
@@ -179,6 +182,12 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     public RangeTotals getPendingTotals(UUID uuid) {
         MinuteDelta delta = pendingMinutes.get(uuid);
+        synchronized (writeOwnershipLock) {
+            if (activeWriteBatch != null) {
+                MinuteDelta active = activeWriteBatch.minutes().get(uuid);
+                if (active != null) delta = delta == null ? active : delta.plus(active);
+            }
+        }
         return delta == null ? new RangeTotals(0, 0, 0) : delta.toRangeTotals();
     }
 
@@ -259,7 +268,12 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private void flushInternal() throws Exception {
         RecoverySnapshot recovery = pendingRecovery;
         if (recovery != null) {
-            repository.applyRecoveryBatch(recovery);
+            recoveryApplyInProgress.set(true);
+            try {
+                repository.applyWriteBatch(new WriteBatch(recovery.batchId(), recovery.minutes(), recovery.profiles(), recovery.joins()));
+            } finally {
+                recoveryApplyInProgress.set(false);
+            }
             synchronized (lifecycleLock) {
                 if (pendingRecovery == recovery) {
                     pendingRecovery = null;
@@ -268,60 +282,41 @@ public final class AsyncWriteQueue implements AutoCloseable {
             settleRecoveryJournal();
             return;
         }
-        Map<UUID, MinuteDelta> minuteBatch = drainMinuteBatch();
-        Map<UUID, PlayerProfile> profileBatch = drainProfileBatch();
-        List<JoinRecord> joinBatch = drainJoinBatch();
-        boolean joinsCommitted = false;
-        boolean profilesCommitted = false;
-        boolean minutesCommitted = false;
-
+        WriteBatch batch = obtainActiveWriteBatch();
+        if (batch == null || batch.isEmpty()) return;
+        minuteCommitInProgress.set(true);
         try {
-            if (!joinBatch.isEmpty()) {
-                repository.batchRecordJoins(joinBatch);
-                joinsCommitted = true;
-                removeCommittedJoins(joinBatch);
-            }
-            if (!profileBatch.isEmpty()) {
-                repository.batchUpsertPlayerProfiles(new ArrayList<>(profileBatch.values()));
-                profilesCommitted = true;
-                removeCommittedProfiles(profileBatch);
-            }
-            if (!minuteBatch.isEmpty()) {
-                minuteCommitInProgress.set(true);
-                try {
-                    repository.batchRecordMinutes(minuteBatch, Instant.now());
-                    synchronized (writeOwnershipLock) {
-                        synchronized (minuteLedgerLock) {
-                            confirmMinuteBatch(minuteBatch);
-                        }
-                        minuteBatch.forEach((uuid, delta) -> inFlightMinutes.remove(uuid, delta));
-                        minuteCommitGeneration.incrementAndGet();
-                    }
-                    minutesCommitted = true;
-                } finally {
-                    minuteCommitInProgress.set(false);
-                }
-            }
-            if (!joinBatch.isEmpty() || !profileBatch.isEmpty() || !minuteBatch.isEmpty()) {
-                counters.flushBatches.increment();
-            }
-        } catch (Exception exception) {
-            if (!joinsCommitted) {
-                requeueJoinBatch(joinBatch);
-            }
-            if (!profilesCommitted) {
-                requeueProfileBatch(profileBatch);
-            }
-            if (!minutesCommitted) {
-                requeueMinuteBatch(minuteBatch);
-            }
-            throw exception;
+            repository.applyWriteBatch(batch);
+        } finally {
+            minuteCommitInProgress.set(false);
         }
-        try {
-            settleRecoveryJournal();
-        } catch (RuntimeException cleanupFailure) {
-            plugin.getLogger().log(Level.WARNING,
-                    "Playtime recovery journal cleanup failed after SQL was committed; it will be retried safely.", cleanupFailure);
+        synchronized (writeOwnershipLock) {
+            if (activeWriteBatch == batch) {
+                synchronized (minuteLedgerLock) {
+                    confirmMinuteBatch(batch.minutes());
+                }
+                activeWriteBatch = null;
+                minuteCommitGeneration.incrementAndGet();
+            }
+        }
+        counters.flushBatches.increment();
+        if (hasOutstandingWork()) {
+            flushInternal();
+        }
+    }
+
+    private WriteBatch obtainActiveWriteBatch() {
+        synchronized (writeOwnershipLock) {
+            if (activeWriteBatch != null) return activeWriteBatch;
+            if (pendingMinutes.isEmpty() && pendingProfiles.isEmpty() && pendingJoins.isEmpty()) return null;
+            Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>(pendingMinutes);
+            Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>(pendingProfiles);
+            List<JoinRecord> joins = new ArrayList<>(pendingJoins);
+            pendingMinutes.keySet().removeAll(minutes.keySet());
+            pendingProfiles.keySet().removeAll(profiles.keySet());
+            pendingJoins.removeAll(joins);
+            activeWriteBatch = new WriteBatch(UUID.randomUUID(), Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
+            return activeWriteBatch;
         }
     }
 
@@ -569,18 +564,9 @@ public final class AsyncWriteQueue implements AutoCloseable {
     public RecoverySnapshot recoverySnapshot() {
         synchronized (lifecycleLock) {
             synchronized (writeOwnershipLock) {
-                Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>();
-                pendingMinutes.forEach((uuid, delta) -> minutes.merge(uuid, delta, MinuteDelta::plus));
-                inFlightMinutes.forEach((uuid, delta) -> minutes.merge(uuid, delta, MinuteDelta::plus));
-                Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>();
-                inFlightProfiles.forEach((uuid, profile) -> profiles.merge(uuid, profile, this::newerProfile));
-                pendingProfiles.forEach((uuid, profile) -> profiles.merge(uuid, profile, this::newerProfile));
-                List<JoinRecord> joins = new ArrayList<>(inFlightJoins);
-                joins.addAll(pendingJoins);
-                if (shutdownRecoveryBatchId == null) {
-                    shutdownRecoveryBatchId = UUID.randomUUID();
-                }
-                return new RecoverySnapshot(shutdownRecoveryBatchId, Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
+                WriteBatch batch = activeWriteBatch == null ? obtainActiveWriteBatch() : activeWriteBatch;
+                if (batch == null) return new RecoverySnapshot(UUID.randomUUID(), Map.of(), Map.of(), List.of());
+                return new RecoverySnapshot(batch.batchId(), batch.minutes(), batch.profiles(), batch.joins());
             }
         }
     }
@@ -598,8 +584,8 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     private boolean hasOutstandingWork() {
         synchronized (writeOwnershipLock) {
-            return !pendingMinutes.isEmpty() || !inFlightMinutes.isEmpty() || !pendingProfiles.isEmpty() || !inFlightProfiles.isEmpty()
-                    || !pendingJoins.isEmpty() || !inFlightJoins.isEmpty();
+            return activeWriteBatch != null || pendingRecovery != null || recoveryApplyInProgress.get()
+                    || !pendingMinutes.isEmpty() || !pendingProfiles.isEmpty() || !pendingJoins.isEmpty();
         }
     }
 
@@ -619,10 +605,17 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     OutstandingWork outstandingWorkForTesting() {
         synchronized (writeOwnershipLock) {
-            return new OutstandingWork(pendingMinutes.size() + inFlightMinutes.size(),
-                    pendingJoins.size() + inFlightJoins.size(),
-                    pendingProfiles.size() + inFlightProfiles.size());
+            int batchMinutes = activeWriteBatch == null ? 0 : activeWriteBatch.minutes().size();
+            int batchJoins = activeWriteBatch == null ? 0 : activeWriteBatch.joins().size();
+            int batchProfiles = activeWriteBatch == null ? 0 : activeWriteBatch.profiles().size();
+            return new OutstandingWork(pendingMinutes.size() + batchMinutes,
+                    pendingJoins.size() + batchJoins,
+                    pendingProfiles.size() + batchProfiles);
         }
+    }
+
+    UUID activeBatchIdForTesting() {
+        synchronized (writeOwnershipLock) { return activeWriteBatch == null ? null : activeWriteBatch.batchId(); }
     }
 
     record OutstandingWork(int minutePlayers, int joins, int profiles) {}

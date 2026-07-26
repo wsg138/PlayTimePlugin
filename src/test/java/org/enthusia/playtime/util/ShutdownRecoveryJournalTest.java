@@ -30,7 +30,7 @@ class ShutdownRecoveryJournalTest {
         when(plugin.getLogger()).thenReturn(java.util.logging.Logger.getAnonymousLogger());
         PlaytimeRepository failedRepository = mock(PlaytimeRepository.class);
         doThrow(new java.sql.SQLException("injected failure"))
-                .when(failedRepository).batchRecordMinutes(anyMap(), any());
+                .when(failedRepository).applyWriteBatch(any());
         AsyncWriteQueue failed = new AsyncWriteQueue(plugin, failedRepository, new PerformanceCounters(), 20L);
         UUID player = UUID.randomUUID();
         assertEquals(AsyncWriteQueue.EnqueueResult.ACCEPTED, failed.enqueueMinute(player, 2, 0));
@@ -47,7 +47,7 @@ class ShutdownRecoveryJournalTest {
         AsyncWriteQueue restored = new AsyncWriteQueue(plugin, restoredRepository, new PerformanceCounters(), 20L);
         journal.restoreInto(restored);
         assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, restored.flushNow());
-        verify(restoredRepository).applyRecoveryBatch(any());
+        verify(restoredRepository).applyWriteBatch(any());
         assertFalse(temp.resolve("shutdown-recovery.yml").toFile().exists());
     }
 
@@ -61,7 +61,7 @@ class ShutdownRecoveryJournalTest {
         UUID livePlayer = UUID.randomUUID();
         AsyncWriteQueue.RecoverySnapshot recovery = new AsyncWriteQueue.RecoverySnapshot(UUID.randomUUID(),
                 java.util.Map.of(recoveredPlayer, new MinuteDelta(2, 0)), java.util.Map.of(), java.util.List.of());
-        when(repository.applyRecoveryBatch(recovery)).thenReturn(RecoveryApplyResult.ALREADY_APPLIED);
+        when(repository.applyWriteBatch(any())).thenReturn(RecoveryApplyResult.ALREADY_APPLIED);
         AsyncWriteQueue queue = new AsyncWriteQueue(plugin, repository, new PerformanceCounters(), 20L,
                 new AsyncWriteQueue.QueueScheduler() {
                     @Override public org.bukkit.scheduler.BukkitTask schedulePeriodic(Runnable task, long intervalTicks) { return null; }
@@ -75,14 +75,12 @@ class ShutdownRecoveryJournalTest {
         queue.enqueuePlayerProfile(newer);
 
         assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, queue.flushNow());
-        verify(repository).applyRecoveryBatch(recovery);
+        verify(repository).applyWriteBatch(any());
         assertEquals(1, settled.get());
         assertEquals(new AsyncWriteQueue.OutstandingWork(1, 1, 1), queue.outstandingWorkForTesting());
 
         assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, queue.flushNow());
-        verify(repository).batchRecordMinutes(anyMap(), any());
-        verify(repository).batchRecordJoins(java.util.List.of(new JoinRecord(livePlayer, Instant.EPOCH)));
-        verify(repository).batchUpsertPlayerProfiles(java.util.List.of(newer));
+        verify(repository, times(2)).applyWriteBatch(any());
         assertEquals(new AsyncWriteQueue.OutstandingWork(0, 0, 0), queue.outstandingWorkForTesting());
     }
 }

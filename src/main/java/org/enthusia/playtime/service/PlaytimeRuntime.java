@@ -785,12 +785,12 @@ public final class PlaytimeRuntime implements AutoCloseable {
             plugin.getLogger().severe("Playtime write queue shutdown did not durably flush all work: " + result);
             if (storageQueue.hasOutstandingWorkForShutdown()) {
                 databaseCloseDeferred.set(true);
-                if (persistRecoveryJournalBeforeRelease(storageQueue.recoverySnapshot())
-                        && storageQueue.isFlushInProgressForShutdown()) {
+                boolean journalSaved = persistRecoveryJournalBeforeRelease(storageQueue.recoverySnapshot());
+                if (journalSaved && storageQueue.isFlushInProgressForShutdown()) {
                     storageQueue.closeDatabaseAfterFlush(databaseProvider::shutdown,
                             Math.max(1, runtimeConfig.leaderboards().export().shutdownTimeoutSeconds()),
                             recoveryJournal::write);
-                } else if (!storageQueue.isFlushInProgressForShutdown()) {
+                } else if (journalSaved && !storageQueue.isFlushInProgressForShutdown()) {
                     databaseCloseDeferred.set(false);
                 }
             }

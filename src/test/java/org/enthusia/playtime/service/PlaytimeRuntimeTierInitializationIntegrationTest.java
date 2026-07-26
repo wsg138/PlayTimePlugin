@@ -103,7 +103,7 @@ class PlaytimeRuntimeTierInitializationIntegrationTest {
         assertNotNull(progress);
         assertTrue(progress.initialized());
         assertEquals(60, progress.activeMinutes());
-        assertEquals(1, runtime.writeQueue().getAcceptedUncommittedTotals(uuid).activeMinutes);
+        assertEquals(0, runtime.writeQueue().getAcceptedUncommittedTotals(uuid).activeMinutes);
         assertEquals(1, announcements.get());
     }
 

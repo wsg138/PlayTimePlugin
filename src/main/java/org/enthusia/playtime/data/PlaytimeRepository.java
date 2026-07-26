@@ -224,7 +224,7 @@ public final class PlaytimeRepository {
     }
 
     /** Applies a retained shutdown journal exactly once with its durable batch marker. */
-    public RecoveryApplyResult applyRecoveryBatch(AsyncWriteQueue.RecoverySnapshot snapshot) throws SQLException {
+    public RecoveryApplyResult applyWriteBatch(WriteBatch snapshot) throws SQLException {
         if (snapshot == null || snapshot.isEmpty() || snapshot.batchId() == null) {
             return RecoveryApplyResult.ALREADY_APPLIED;
         }
@@ -251,6 +251,12 @@ public final class PlaytimeRepository {
                 }
             }
         });
+    }
+
+    /** Compatibility entry point for older callers; queue-owned recovery uses applyWriteBatch directly. */
+    public RecoveryApplyResult applyRecoveryBatch(AsyncWriteQueue.RecoverySnapshot snapshot) throws SQLException {
+        if (snapshot == null) return RecoveryApplyResult.ALREADY_APPLIED;
+        return applyWriteBatch(new WriteBatch(snapshot.batchId(), snapshot.minutes(), snapshot.profiles(), snapshot.joins()));
     }
 
     private void applyRecoveryJoins(Connection connection, List<JoinRecord> records) throws SQLException {
