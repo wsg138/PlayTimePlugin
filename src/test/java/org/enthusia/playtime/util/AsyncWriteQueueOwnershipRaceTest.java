@@ -61,6 +61,9 @@ class AsyncWriteQueueOwnershipRaceTest {
         assertEquals(0, f.queue.getPendingTotals(player).activeMinutes);
         assertEquals(0, f.queue.getAcceptedUncommittedTotals(player).activeMinutes);
         verify(f.repository, times(2)).batchRecordMinutes(anyMap(), any());
+        org.mockito.ArgumentCaptor<WriteBatch> batches = org.mockito.ArgumentCaptor.forClass(WriteBatch.class);
+        verify(f.repository, times(2)).applyWriteBatch(batches.capture());
+        assertEquals(batches.getAllValues().get(0).aggregationTime(), batches.getAllValues().get(1).aggregationTime());
     }
 
     @Test
@@ -86,6 +89,8 @@ class AsyncWriteQueueOwnershipRaceTest {
         Thread flush = new Thread(blocked.scheduler.periodic, "periodic-flush-test");
         flush.start();
         assertTrue(writeStarted.await(1, java.util.concurrent.TimeUnit.SECONDS));
+        assertEquals(1, blocked.queue.getPendingTotals(player).activeMinutes);
+        assertEquals(1, blocked.queue.getPendingTotalsForServer().activeMinutes);
         AtomicReference<AsyncWriteQueue.TransitionResult> handoff = new AtomicReference<>();
         Thread prepare = new Thread(() -> handoff.set(blocked.queue.prepareHandoff(2)), "handoff-test");
         prepare.start();
@@ -259,7 +264,7 @@ class AsyncWriteQueueOwnershipRaceTest {
                     WriteBatch batch = call.getArgument(0);
                     if (!batch.joins().isEmpty()) repository.batchRecordJoins(batch.joins());
                     if (!batch.profiles().isEmpty()) repository.batchUpsertPlayerProfiles(new ArrayList<>(batch.profiles().values()));
-                    if (!batch.minutes().isEmpty()) repository.batchRecordMinutes(batch.minutes(), Instant.now());
+                    if (!batch.minutes().isEmpty()) repository.batchRecordMinutes(batch.minutes(), batch.aggregationTime());
                     return RecoveryApplyResult.APPLIED;
                 }).when(repository).applyWriteBatch(any());
             } catch (java.sql.SQLException exception) {

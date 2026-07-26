@@ -2,6 +2,7 @@ package org.enthusia.playtime.util;
 
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.enthusia.playtime.PlayTimePlugin;
+import org.enthusia.playtime.data.WriteBatch;
 import org.enthusia.playtime.data.PlaytimeRepository.JoinRecord;
 import org.enthusia.playtime.data.model.MinuteDelta;
 import org.enthusia.playtime.data.model.PlayerProfile;
@@ -19,7 +20,7 @@ import java.util.UUID;
 
 /** Compact crash-recovery ownership record used only when shutdown cannot settle a closed queue. */
 public final class ShutdownRecoveryJournal {
-    private static final int FORMAT_VERSION = 2;
+    private static final int FORMAT_VERSION = 3;
     private final File file;
 
     public ShutdownRecoveryJournal(PlayTimePlugin plugin) {
@@ -32,32 +33,40 @@ public final class ShutdownRecoveryJournal {
 
     public void restoreInto(AsyncWriteQueue queue) {
         if (!file.isFile()) return;
-        AsyncWriteQueue.RecoverySnapshot snapshot = read();
+        AsyncWriteQueue.RecoveryJournalSnapshot snapshot = read();
         queue.restoreRecoverySnapshot(snapshot, this::deleteAfterDurableFlush);
     }
 
-    public void write(AsyncWriteQueue.RecoverySnapshot snapshot) {
+    public void write(AsyncWriteQueue.RecoveryJournalSnapshot snapshot) {
         if (snapshot == null || snapshot.isEmpty()) return;
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.set("format", FORMAT_VERSION);
         yaml.set("createdAt", Instant.now().toEpochMilli());
-        yaml.set("batchId", snapshot.batchId().toString());
-        snapshot.minutes().forEach((uuid, delta) -> {
-            String path = "minutes." + uuid;
-            yaml.set(path + ".active", delta.activeMinutes());
-            yaml.set(path + ".afk", delta.afkMinutes());
-        });
-        snapshot.profiles().forEach((uuid, profile) -> {
-            String path = "profiles." + uuid;
-            yaml.set(path + ".username", profile.username());
-            yaml.set(path + ".displayName", profile.displayName());
-            yaml.set(path + ".seenAt", profile.seenAt().toEpochMilli());
-        });
-        List<Map<String, Object>> joins = new ArrayList<>();
-        for (JoinRecord join : snapshot.joins()) {
-            joins.add(Map.of("uuid", join.uuid().toString(), "joinedAt", join.joinedAt().toEpochMilli()));
+        List<Map<String, Object>> batches = new ArrayList<>();
+        for (WriteBatch batch : snapshot.batches()) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("batchId", batch.batchId().toString());
+            entry.put("aggregationTime", batch.aggregationTime().toEpochMilli());
+            Map<String, Object> minutes = new LinkedHashMap<>();
+            batch.minutes().forEach((uuid, delta) -> minutes.put(uuid.toString(), Map.of("active", delta.activeMinutes(), "afk", delta.afkMinutes())));
+            entry.put("minutes", minutes);
+            Map<String, Object> profiles = new LinkedHashMap<>();
+            batch.profiles().forEach((uuid, profile) -> {
+                Map<String, Object> values = new LinkedHashMap<>();
+                values.put("username", profile.username());
+                values.put("displayName", profile.displayName());
+                values.put("seenAt", profile.seenAt().toEpochMilli());
+                profiles.put(uuid.toString(), values);
+            });
+            entry.put("profiles", profiles);
+            List<Map<String, Object>> joins = new ArrayList<>();
+            for (JoinRecord join : batch.joins()) {
+                joins.add(Map.of("uuid", join.uuid().toString(), "joinedAt", join.joinedAt().toEpochMilli()));
+            }
+            entry.put("joins", joins);
+            batches.add(entry);
         }
-        yaml.set("joins", joins);
+        yaml.set("batches", batches);
         try {
             File parent = file.getParentFile();
             if (parent != null) parent.mkdirs();
@@ -74,37 +83,50 @@ public final class ShutdownRecoveryJournal {
         }
     }
 
-    private AsyncWriteQueue.RecoverySnapshot read() {
+    private AsyncWriteQueue.RecoveryJournalSnapshot read() {
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+        if (yaml.getInt("format") == 2) return new AsyncWriteQueue.RecoveryJournalSnapshot(List.of(readBatch(yaml, "", Instant.ofEpochMilli(yaml.getLong("createdAt")))));
+        List<WriteBatch> batches = new ArrayList<>();
+        for (Map<?, ?> entry : yaml.getMapList("batches")) {
+            YamlConfiguration batch = new YamlConfiguration();
+            entry.forEach((key, value) -> batch.set(String.valueOf(key), value));
+            batches.add(readBatch(batch, "", Instant.ofEpochMilli(batch.getLong("aggregationTime"))));
+        }
+        return new AsyncWriteQueue.RecoveryJournalSnapshot(batches);
+    }
+
+    private WriteBatch readBatch(YamlConfiguration yaml, String prefix, Instant fallbackAggregationTime) {
         Map<UUID, MinuteDelta> minutes = new LinkedHashMap<>();
-        if (yaml.isConfigurationSection("minutes")) {
-            for (String key : yaml.getConfigurationSection("minutes").getKeys(false)) {
+        if (yaml.isConfigurationSection(prefix + "minutes")) {
+            for (String key : yaml.getConfigurationSection(prefix + "minutes").getKeys(false)) {
                 UUID uuid = parse(key);
-                if (uuid != null) minutes.put(uuid, new MinuteDelta(yaml.getLong("minutes." + key + ".active"),
-                        yaml.getLong("minutes." + key + ".afk")));
+                if (uuid != null) minutes.put(uuid, new MinuteDelta(yaml.getLong(prefix + "minutes." + key + ".active"),
+                        yaml.getLong(prefix + "minutes." + key + ".afk")));
             }
         }
         Map<UUID, PlayerProfile> profiles = new LinkedHashMap<>();
-        if (yaml.isConfigurationSection("profiles")) {
-            for (String key : yaml.getConfigurationSection("profiles").getKeys(false)) {
+        if (yaml.isConfigurationSection(prefix + "profiles")) {
+            for (String key : yaml.getConfigurationSection(prefix + "profiles").getKeys(false)) {
                 UUID uuid = parse(key);
-                if (uuid != null) profiles.put(uuid, new PlayerProfile(uuid, yaml.getString("profiles." + key + ".username"),
-                        yaml.getString("profiles." + key + ".displayName"), Instant.ofEpochMilli(yaml.getLong("profiles." + key + ".seenAt"))));
+                if (uuid != null) profiles.put(uuid, new PlayerProfile(uuid, yaml.getString(prefix + "profiles." + key + ".username"),
+                        yaml.getString(prefix + "profiles." + key + ".displayName"), Instant.ofEpochMilli(yaml.getLong(prefix + "profiles." + key + ".seenAt"))));
             }
         }
         List<JoinRecord> joins = new ArrayList<>();
-        for (Map<?, ?> join : yaml.getMapList("joins")) {
+        for (Map<?, ?> join : yaml.getMapList(prefix + "joins")) {
             UUID uuid = parse(String.valueOf(join.get("uuid")));
             Object millis = join.get("joinedAt");
             if (uuid != null && millis instanceof Number number) joins.add(new JoinRecord(uuid, Instant.ofEpochMilli(number.longValue())));
         }
-        UUID batchId = parse(yaml.getString("batchId"));
-        return new AsyncWriteQueue.RecoverySnapshot(batchId == null ? UUID.randomUUID() : batchId,
-                minutes, profiles, joins);
+        UUID batchId = parse(yaml.getString(prefix + "batchId"));
+        Instant aggregationTime = yaml.contains(prefix + "aggregationTime")
+                ? Instant.ofEpochMilli(yaml.getLong(prefix + "aggregationTime")) : fallbackAggregationTime;
+        return new WriteBatch(batchId == null ? UUID.randomUUID() : batchId, aggregationTime,
+                Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
     }
 
     private UUID parse(String value) {
-        try { return UUID.fromString(value); } catch (IllegalArgumentException ignored) { return null; }
+        try { return value == null ? null : UUID.fromString(value); } catch (IllegalArgumentException ignored) { return null; }
     }
 
     private void deleteAfterDurableFlush() {

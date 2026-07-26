@@ -3,6 +3,7 @@ package org.enthusia.playtime.service;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.model.MinuteDelta;
 import org.enthusia.playtime.data.RecoveryApplyResult;
+import org.enthusia.playtime.data.WriteBatch;
 import org.enthusia.playtime.util.AsyncWriteQueue;
 import org.enthusia.playtime.util.TierProgressTracker;
 import org.junit.jupiter.api.AfterEach;
@@ -112,7 +113,7 @@ class PlaytimeRuntimeTierInitializationIntegrationTest {
         PlaytimeRuntime runtime = plugin.runtime();
         UUID player = UUID.randomUUID();
         UUID batchId = UUID.randomUUID();
-        AsyncWriteQueue.RecoverySnapshot snapshot = new AsyncWriteQueue.RecoverySnapshot(batchId,
+        WriteBatch snapshot = new WriteBatch(batchId, Instant.EPOCH,
                 Map.of(player, new MinuteDelta(2, 0)), Map.of(), java.util.List.of());
 
         assertEquals(RecoveryApplyResult.APPLIED, runtime.repository().applyRecoveryBatch(snapshot));

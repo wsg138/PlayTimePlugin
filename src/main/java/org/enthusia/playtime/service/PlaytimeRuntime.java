@@ -788,8 +788,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
                 boolean journalSaved = persistRecoveryJournalBeforeRelease(storageQueue.recoverySnapshot());
                 if (journalSaved && storageQueue.isFlushInProgressForShutdown()) {
                     storageQueue.closeDatabaseAfterFlush(databaseProvider::shutdown,
-                            Math.max(1, runtimeConfig.leaderboards().export().shutdownTimeoutSeconds()),
-                            recoveryJournal::write);
+                            Math.max(1, runtimeConfig.leaderboards().export().shutdownTimeoutSeconds()));
                 } else if (journalSaved && !storageQueue.isFlushInProgressForShutdown()) {
                     databaseCloseDeferred.set(false);
                 }
@@ -804,7 +803,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         return result;
     }
 
-    private boolean persistRecoveryJournalBeforeRelease(AsyncWriteQueue.RecoverySnapshot snapshot) {
+    private boolean persistRecoveryJournalBeforeRelease(AsyncWriteQueue.RecoveryJournalSnapshot snapshot) {
         RuntimeException lastFailure = null;
         for (int attempt = 1; attempt <= 3; attempt++) {
             try {

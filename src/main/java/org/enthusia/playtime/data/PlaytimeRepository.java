@@ -242,7 +242,7 @@ public final class PlaytimeRepository {
                     }
                     applyRecoveryJoins(connection, snapshot.joins());
                     applyRecoveryProfiles(connection, snapshot.profiles().values());
-                    applyRecoveryMinutes(connection, snapshot.minutes(), Instant.now());
+                    applyRecoveryMinutes(connection, snapshot.minutes(), snapshot.aggregationTime());
                     connection.commit();
                     return RecoveryApplyResult.APPLIED;
                 } catch (SQLException failure) {
@@ -254,9 +254,8 @@ public final class PlaytimeRepository {
     }
 
     /** Compatibility entry point for older callers; queue-owned recovery uses applyWriteBatch directly. */
-    public RecoveryApplyResult applyRecoveryBatch(AsyncWriteQueue.RecoverySnapshot snapshot) throws SQLException {
-        if (snapshot == null) return RecoveryApplyResult.ALREADY_APPLIED;
-        return applyWriteBatch(new WriteBatch(snapshot.batchId(), snapshot.minutes(), snapshot.profiles(), snapshot.joins()));
+    public RecoveryApplyResult applyRecoveryBatch(WriteBatch snapshot) throws SQLException {
+        return applyWriteBatch(snapshot);
     }
 
     private void applyRecoveryJoins(Connection connection, List<JoinRecord> records) throws SQLException {

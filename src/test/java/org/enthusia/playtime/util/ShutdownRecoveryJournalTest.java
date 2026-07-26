@@ -3,6 +3,7 @@ package org.enthusia.playtime.util;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.data.RecoveryApplyResult;
+import org.enthusia.playtime.data.WriteBatch;
 import org.enthusia.playtime.data.PlaytimeRepository.JoinRecord;
 import org.enthusia.playtime.data.model.MinuteDelta;
 import org.enthusia.playtime.data.model.PlayerProfile;
@@ -59,8 +60,8 @@ class ShutdownRecoveryJournalTest {
         PlaytimeRepository repository = mock(PlaytimeRepository.class);
         UUID recoveredPlayer = UUID.randomUUID();
         UUID livePlayer = UUID.randomUUID();
-        AsyncWriteQueue.RecoverySnapshot recovery = new AsyncWriteQueue.RecoverySnapshot(UUID.randomUUID(),
-                java.util.Map.of(recoveredPlayer, new MinuteDelta(2, 0)), java.util.Map.of(), java.util.List.of());
+        AsyncWriteQueue.RecoveryJournalSnapshot recovery = new AsyncWriteQueue.RecoveryJournalSnapshot(java.util.List.of(new WriteBatch(UUID.randomUUID(), Instant.EPOCH,
+                java.util.Map.of(recoveredPlayer, new MinuteDelta(2, 0)), java.util.Map.of(), java.util.List.of())));
         when(repository.applyWriteBatch(any())).thenReturn(RecoveryApplyResult.ALREADY_APPLIED);
         AsyncWriteQueue queue = new AsyncWriteQueue(plugin, repository, new PerformanceCounters(), 20L,
                 new AsyncWriteQueue.QueueScheduler() {
@@ -75,12 +76,42 @@ class ShutdownRecoveryJournalTest {
         queue.enqueuePlayerProfile(newer);
 
         assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, queue.flushNow());
-        verify(repository).applyWriteBatch(any());
+        verify(repository, times(2)).applyWriteBatch(any());
         assertEquals(1, settled.get());
-        assertEquals(new AsyncWriteQueue.OutstandingWork(1, 1, 1), queue.outstandingWorkForTesting());
+        assertEquals(new AsyncWriteQueue.OutstandingWork(0, 0, 0), queue.outstandingWorkForTesting());
 
         assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, queue.flushNow());
         verify(repository, times(2)).applyWriteBatch(any());
         assertEquals(new AsyncWriteQueue.OutstandingWork(0, 0, 0), queue.outstandingWorkForTesting());
+    }
+
+    @Test
+    void shutdownSnapshotKeepsRestoredRecoveryAndNewLiveBatchSeparate() {
+        PlayTimePlugin plugin = mock(PlayTimePlugin.class);
+        when(plugin.isEnabled()).thenReturn(true);
+        when(plugin.getLogger()).thenReturn(java.util.logging.Logger.getAnonymousLogger());
+        PlaytimeRepository repository = mock(PlaytimeRepository.class);
+        UUID recoveredPlayer = UUID.randomUUID();
+        UUID livePlayer = UUID.randomUUID();
+        UUID recoveredId = UUID.randomUUID();
+        AsyncWriteQueue queue = new AsyncWriteQueue(plugin, repository, new PerformanceCounters(), 20L,
+                new AsyncWriteQueue.QueueScheduler() {
+                    @Override public org.bukkit.scheduler.BukkitTask schedulePeriodic(Runnable task, long intervalTicks) { return null; }
+                    @Override public void scheduleImmediate(Runnable task) { }
+                });
+        queue.restoreRecoverySnapshot(new AsyncWriteQueue.RecoveryJournalSnapshot(java.util.List.of(new WriteBatch(recoveredId,
+                Instant.ofEpochSecond(10), java.util.Map.of(recoveredPlayer, new MinuteDelta(2, 0)), java.util.Map.of(), java.util.List.of()))), () -> { });
+        queue.enqueueMinute(livePlayer, 1, 0);
+        queue.enqueueJoin(livePlayer, Instant.ofEpochSecond(20));
+        queue.enqueuePlayerProfile(new PlayerProfile(livePlayer, "Live", null, Instant.ofEpochSecond(20)));
+
+        AsyncWriteQueue.RecoveryJournalSnapshot snapshot = queue.recoverySnapshot();
+        assertEquals(2, snapshot.batches().size());
+        assertEquals(recoveredId, snapshot.batches().get(0).batchId());
+        assertEquals(Instant.ofEpochSecond(10), snapshot.batches().get(0).aggregationTime());
+        assertNotEquals(recoveredId, snapshot.batches().get(1).batchId());
+        assertEquals(1, snapshot.batches().get(1).minutes().get(livePlayer).activeMinutes());
+        assertEquals(1, snapshot.batches().get(1).joins().size());
+        assertEquals("Live", snapshot.batches().get(1).profiles().get(livePlayer).username());
     }
 }
