@@ -162,6 +162,68 @@ placeholders:
   # %playtime_top_active_all_1_value%
   # %playtime_top_active_all_1_formatted%
 
+numerals:
+  enabled: true
+  tiers:
+    "1":
+      label: "I"
+      hours: 1
+      color: "&7"
+    "2":
+      label: "II"
+      hours: 8
+      color: "&f"
+    "3":
+      label: "III"
+      hours: 20
+      color: "&a"
+    "4":
+      label: "IV"
+      hours: 45
+      color: "&e"
+    "5":
+      label: "V"
+      hours: 90
+      color: "&6"
+    "6":
+      label: "VI"
+      hours: 170
+      color: "&d"
+    "7":
+      label: "VII"
+      hours: 320
+      color: "&9"
+    "8":
+      label: "VIII"
+      hours: 580
+      color: "&3"
+    "9":
+      label: "IX"
+      hours: 1090
+      color: "&c"
+    "10":
+      label: "x"
+      hours: 2000
+      color: "&4"
+    "11":
+      label: "y"
+      hours: 5000
+      color: "&5"
+    "12":
+      label: "z"
+      hours: 15000
+      color: "&b"
+  tier-up-announcement:
+    enabled: true
+    message: "&6%player% &ehas reached playtime tier &6%tier_label%&e! (%tier_hours%h active)"
+  display:
+    header: "&6[Playtime] &ePlaytime numeral tiers:"
+    your-tier: "&7You (active): &b%playtime% &7-> %tier_color%%tier_label%"
+    no-data: "&7You: &cNo playtime recorded yet."
+    loading: "&7You: &eRefreshing cached playtime..."
+    tier-entry: "%tier_color%%tier_label%&8:&b%tier_hours%h"
+    separator: "&8 | "
+
 ux:
   show-afk-title: false
 

@@ -9,6 +9,7 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.enthusia.playtime.PlayTimePlugin;
+import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.data.model.LeaderboardEntry;
 import org.enthusia.playtime.data.model.PlaytimeSnapshot;
 import org.enthusia.playtime.gui.LeaderboardGui;
@@ -290,27 +291,39 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        sender.sendMessage(ChatColor.GOLD + "[Playtime] " + ChatColor.YELLOW + "Playtime numeral tiers:");
+        PlaytimeConfig.NumeralDisplay display = runtime.config().numerals().display();
+
+        sender.sendMessage(ChatColor.translateAlternateColorCodes('&', display.header()));
         if (sender instanceof Player player) {
             Optional<PlaytimeSnapshot> optional = runtime.readService().getLifetime(player.getUniqueId());
             if (optional.isPresent()) {
                 PlaytimeSnapshot snapshot = optional.get();
                 RomanTiering.Tier tier = RomanTiering.getTierForMinutes(snapshot.activeMinutes);
-                sender.sendMessage(ChatColor.GRAY + "You (active): " + ChatColor.AQUA + TimeFormats.formatMinutes(snapshot.activeMinutes)
-                        + ChatColor.GRAY + " -> " + ChatColor.GOLD + (tier == null ? ChatColor.DARK_GRAY + "None" : tier.label()));
+                String tierLabel = tier == null ? "" : tier.label();
+                String tierColor = tier == null ? "" : tier.color();
+                String msg = display.yourTier()
+                        .replace("%playtime%", TimeFormats.formatMinutes(snapshot.activeMinutes))
+                        .replace("%tier_label%", tierLabel)
+                        .replace("%tier_color%", tierColor)
+                        .replace("%tier_hours%", tier == null ? "0" : String.valueOf(tier.requiredHours()));
+                sender.sendMessage(ChatColor.translateAlternateColorCodes('&', msg));
             } else {
-                sender.sendMessage(ChatColor.GRAY + "You: "
-                        + (runtime.readService().isLoading() ? ChatColor.YELLOW + "Refreshing cached playtime..." : ChatColor.RED + "No playtime recorded yet."));
+                sender.sendMessage(ChatColor.translateAlternateColorCodes('&',
+                        runtime.readService().isLoading() ? display.loading() : display.noData()));
             }
         }
 
         StringBuilder builder = new StringBuilder();
+        String sep = ChatColor.translateAlternateColorCodes('&', display.separator());
         for (RomanTiering.Tier tier : RomanTiering.getTiers()) {
             if (builder.length() > 0) {
-                builder.append(ChatColor.DARK_GRAY).append(" | ");
+                builder.append(sep);
             }
-            builder.append(ChatColor.GRAY).append(tier.label()).append(ChatColor.DARK_GRAY).append(":")
-                    .append(ChatColor.AQUA).append(tier.requiredHours()).append("h");
+            String entry = display.tierEntry()
+                    .replace("%tier_label%", tier.label())
+                    .replace("%tier_color%", tier.color())
+                    .replace("%tier_hours%", String.valueOf(tier.requiredHours()));
+            builder.append(ChatColor.translateAlternateColorCodes('&', entry));
         }
         sender.sendMessage(builder.toString());
     }

@@ -86,7 +86,7 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         if (id.equals("total") || id.equals("total_formatted")
                 || id.equals("active") || id.equals("active_formatted")
                 || id.equals("afk") || id.equals("afk_formatted")
-                || id.equals("roman")) {
+                || id.equals("roman") || id.equals("roman_colored")) {
 
             Optional<PlaytimeSnapshot> optional = runtime.readService().getLifetime(uuid);
             if (optional.isEmpty() && runtime.readService().isLifetimeLoading(uuid)) {
@@ -97,6 +97,11 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
             if (id.equals("roman")) {
                 RomanTiering.Tier tier = RomanTiering.getTierForMinutes(snapshot.activeMinutes);
                 return tier == null ? "" : tier.label();
+            }
+
+            if (id.equals("roman_colored")) {
+                RomanTiering.Tier tier = RomanTiering.getTierForMinutes(snapshot.activeMinutes);
+                return tier == null ? "" : tier.coloredLabel();
             }
 
             boolean formatted = id.endsWith("_formatted");

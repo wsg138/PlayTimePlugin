@@ -3,6 +3,7 @@ package org.enthusia.playtime.service;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.event.HandlerList;
 import org.bukkit.scheduler.BukkitTask;
@@ -16,15 +17,18 @@ import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.data.DatabaseProvider;
 import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.data.model.PlayerProfile;
+import org.enthusia.playtime.data.model.PlaytimeSnapshot;
 import org.enthusia.playtime.event.PlayerPlaytimeTickEvent;
 import org.enthusia.playtime.leaderboard.LeaderboardExportService;
 import org.enthusia.playtime.skin.HeadCache;
 import org.enthusia.playtime.util.AsyncWriteQueue;
 import org.enthusia.playtime.util.PerformanceCounters;
+import org.enthusia.playtime.util.RomanTiering;
 
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -47,6 +51,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private final Map<UUID, Integer> suspiciousStreakMinutes = new ConcurrentHashMap<>();
     private final Map<UUID, Long> processedSuspicionResetMarkers = new ConcurrentHashMap<>();
     private final Map<UUID, JoinDecision> recentJoinDecisions = new ConcurrentHashMap<>();
+    private final Map<UUID, String> lastKnownTierLabel = new ConcurrentHashMap<>();
 
     private BukkitTask minuteTickTask;
     private BukkitTask joinPurgeTask;
@@ -329,6 +334,12 @@ public final class PlaytimeRuntime implements AutoCloseable {
             }
 
             writeQueue.enqueueMinute(player.getUniqueId(), event.getActiveMinutes(), event.getAfkMinutes());
+
+            // Tier advancement check
+            if (config.numerals().tierUpAnnouncementEnabled() && event.getActiveMinutes() > 0) {
+                checkTierAdvancement(player, event.getActiveMinutes());
+            }
+
             readService.invalidatePlayer(player.getUniqueId());
         }
     }
@@ -351,6 +362,37 @@ public final class PlaytimeRuntime implements AutoCloseable {
     public void resetSuspiciousTracking(UUID uuid) {
         suspiciousStreakMinutes.remove(uuid);
         processedSuspicionResetMarkers.remove(uuid);
+    }
+
+    private void checkTierAdvancement(Player player, int activeMinutesAdded) {
+        UUID uuid = player.getUniqueId();
+        Optional<PlaytimeSnapshot> optional = readService.getLifetime(uuid);
+        if (optional.isEmpty()) {
+            return;
+        }
+        long newActiveMinutes = optional.get().activeMinutes() + activeMinutesAdded;
+        RomanTiering.Tier newTier = RomanTiering.getTierForMinutes(newActiveMinutes);
+        if (newTier == null) {
+            return;
+        }
+
+        String oldLabel = lastKnownTierLabel.get(uuid);
+        lastKnownTierLabel.put(uuid, newTier.label());
+
+        if (oldLabel != null && oldLabel.equals(newTier.label())) {
+            return; // no change
+        }
+
+        // First time tracking or tier advancement
+        if (oldLabel != null) {
+            // Tier advanced — broadcast
+            String message = config.numerals().tierUpAnnouncementMessage();
+            message = ChatColor.translateAlternateColorCodes('&', message
+                    .replace("%player%", player.getName())
+                    .replace("%tier_label%", newTier.coloredLabel())
+                    .replace("%tier_hours%", String.valueOf(newTier.requiredHours())));
+            Bukkit.broadcastMessage(message);
+        }
     }
 
     @Override

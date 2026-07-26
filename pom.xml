@@ -12,6 +12,13 @@
     <packaging>jar</packaging>
 
     <name>EnthusiaPlaytime</name>
+
+    <licenses>
+        <license>
+            <name>GNU Affero General Public License v3.0</name>
+            <url>https://www.gnu.org/licenses/agpl-3.0.txt</url>
+        </license>
+    </licenses>
     <description>Playtime tracking / leaderboards for Enthusia SMP</description>
 
     <properties>

@@ -15,6 +15,7 @@ import org.enthusia.playtime.joins.JoinLogListener;
 import org.enthusia.playtime.placeholders.PlaytimePlaceholderExpansion;
 import org.enthusia.playtime.skin.HeadCacheListener;
 import org.enthusia.playtime.service.PlaytimeRuntime;
+import org.enthusia.playtime.util.RomanTiering;
 
 import java.util.logging.Level;
 
@@ -67,6 +68,7 @@ public final class PlayTimePlugin extends JavaPlugin {
             reloadConfig();
             new ConfigMigrator(this).migrateConfig();
             config = PlaytimeConfig.load(this);
+            RomanTiering.initializeFromConfig(config);
         } catch (Exception exception) {
             getLogger().log(Level.SEVERE, "Failed to parse playtime config. Existing runtime was left running.", exception);
             return false;

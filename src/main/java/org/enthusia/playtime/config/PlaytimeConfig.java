@@ -6,8 +6,10 @@ import org.enthusia.playtime.data.StorageType;
 
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public final class PlaytimeConfig {
 
@@ -20,6 +22,7 @@ public final class PlaytimeConfig {
     private final Analytics analytics;
     private final Gui gui;
     private final Placeholders placeholders;
+    private final Numerals numerals;
     private final ActionBar actionBar;
     private final PlaytimeAudit playtimeAudit;
     private final Debug debug;
@@ -33,6 +36,7 @@ public final class PlaytimeConfig {
                            Analytics analytics,
                            Gui gui,
                            Placeholders placeholders,
+                           Numerals numerals,
                            ActionBar actionBar,
                            PlaytimeAudit playtimeAudit,
                            Debug debug) {
@@ -45,6 +49,7 @@ public final class PlaytimeConfig {
         this.analytics = analytics;
         this.gui = gui;
         this.placeholders = placeholders;
+        this.numerals = numerals;
         this.actionBar = actionBar;
         this.playtimeAudit = playtimeAudit;
         this.debug = debug;
@@ -164,6 +169,8 @@ public final class PlaytimeConfig {
                 Math.max(10, intValue(cfg, List.of("placeholders.top-leaderboard-max-rank"), 100))
         );
 
+        Numerals numerals = loadNumerals(cfg);
+
         ActionBar actionBar = new ActionBar(
                 booleanValue(cfg, List.of("ux.actionbar.enabled"), true),
                 booleanValue(cfg, List.of("ux.actionbar.show-active"), false),
@@ -195,7 +202,7 @@ public final class PlaytimeConfig {
                 )
         );
 
-        return new PlaytimeConfig(storage, sampling, activity, chatActivity, joins, leaderboards, analytics, gui, placeholders, actionBar, playtimeAudit, debug);
+        return new PlaytimeConfig(storage, sampling, activity, chatActivity, joins, leaderboards, analytics, gui, placeholders, numerals, actionBar, playtimeAudit, debug);
     }
 
     public Storage storage() {
@@ -232,6 +239,10 @@ public final class PlaytimeConfig {
 
     public Placeholders placeholders() {
         return placeholders;
+    }
+
+    public Numerals numerals() {
+        return numerals;
     }
 
     public ActionBar actionBar() {
@@ -428,6 +439,18 @@ public final class PlaytimeConfig {
     public record Placeholders(boolean enabled, String leaderboardFallback, int topLeaderboardMaxRank) {
     }
 
+    public record Numerals(boolean enabled, List<NumeralTier> tiers, boolean tierUpAnnouncementEnabled, String tierUpAnnouncementMessage, NumeralDisplay display) {
+    }
+
+    public record NumeralTier(String label, long hours, String color) {
+    }
+
+    public record TierUpAnnouncement(boolean enabled, String message) {
+    }
+
+    public record NumeralDisplay(String header, String yourTier, String noData, String loading, String tierEntry, String separator) {
+    }
+
     public record ActionBar(boolean enabled,
                             boolean showActive,
                             boolean showIdle,
@@ -450,6 +473,60 @@ public final class PlaytimeConfig {
     }
 
     public record PerformanceDebug(boolean enabled, int logIntervalSeconds) {
+    }
+
+    private static Numerals loadNumerals(FileConfiguration cfg) {
+        boolean enabled = booleanValue(cfg, List.of("numerals.enabled"), true);
+        List<NumeralTier> tiers = new ArrayList<>();
+
+        if (cfg.isConfigurationSection("numerals.tiers")) {
+            Set<String> keys = cfg.getConfigurationSection("numerals.tiers").getKeys(false);
+            List<String> sortedKeys = new ArrayList<>(keys);
+            sortedKeys.sort((a, b) -> {
+                try {
+                    return Integer.compare(Integer.parseInt(a), Integer.parseInt(b));
+                } catch (NumberFormatException e) {
+                    return a.compareTo(b);
+                }
+            });
+            for (String key : sortedKeys) {
+                String label = stringValue(cfg, List.of("numerals.tiers." + key + ".label"), key);
+                long hours = Math.max(0L, longValue(cfg, List.of("numerals.tiers." + key + ".hours"), 0L));
+                String color = stringValue(cfg, List.of("numerals.tiers." + key + ".color"), "&f");
+                tiers.add(new NumeralTier(label, hours, color));
+            }
+        }
+
+        if (tiers.isEmpty()) {
+            // Sensible defaults if no config
+            tiers.add(new NumeralTier("I", 1, "&7"));
+            tiers.add(new NumeralTier("II", 8, "&f"));
+            tiers.add(new NumeralTier("III", 20, "&a"));
+            tiers.add(new NumeralTier("IV", 45, "&e"));
+            tiers.add(new NumeralTier("V", 90, "&6"));
+            tiers.add(new NumeralTier("VI", 170, "&d"));
+            tiers.add(new NumeralTier("VII", 320, "&9"));
+            tiers.add(new NumeralTier("VIII", 580, "&3"));
+            tiers.add(new NumeralTier("IX", 1090, "&c"));
+            tiers.add(new NumeralTier("x", 2000, "&4"));
+            tiers.add(new NumeralTier("y", 5000, "&5"));
+            tiers.add(new NumeralTier("z", 15000, "&b"));
+        }
+
+        boolean announceEnabled = booleanValue(cfg, List.of("numerals.tier-up-announcement.enabled"), true);
+        String announceMessage = stringValue(cfg, List.of("numerals.tier-up-announcement.message"),
+                "&6%player% &ehas reached playtime tier &6%tier_label%&e! (%tier_hours%h active)");
+
+        NumeralDisplay display = new NumeralDisplay(
+                stringValue(cfg, List.of("numerals.display.header"), "&6[Playtime] &ePlaytime numeral tiers:"),
+                stringValue(cfg, List.of("numerals.display.your-tier"), "&7You (active): &b%playtime% &7-> %tier_color%%tier_label%"),
+                stringValue(cfg, List.of("numerals.display.no-data"), "&7You: &cNo playtime recorded yet."),
+                stringValue(cfg, List.of("numerals.display.loading"), "&7You: &eRefreshing cached playtime..."),
+                stringValue(cfg, List.of("numerals.display.tier-entry"), "%tier_color%%tier_label%&8:&b%tier_hours%h"),
+                stringValue(cfg, List.of("numerals.display.separator"), "&8 | ")
+        );
+
+        return new Numerals(enabled, Collections.unmodifiableList(tiers), announceEnabled, announceMessage, display);
     }
 
     private static String stringValue(FileConfiguration cfg, List<String> paths, String defaultValue) {
