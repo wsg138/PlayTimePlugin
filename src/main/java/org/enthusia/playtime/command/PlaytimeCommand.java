@@ -9,6 +9,7 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.enthusia.playtime.PlayTimePlugin;
+import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.data.model.LeaderboardEntry;
 import org.enthusia.playtime.data.model.PlaytimeSnapshot;
 import org.enthusia.playtime.gui.LeaderboardGui;
@@ -17,7 +18,7 @@ import org.enthusia.playtime.gui.admin.AdminMainGui;
 import org.enthusia.playtime.gui.admin.AdminPlayersGui;
 import org.enthusia.playtime.gui.admin.AdminServerActivityGui;
 import org.enthusia.playtime.service.PlaytimeRuntime;
-import org.enthusia.playtime.util.RomanTiering;
+import org.enthusia.playtime.util.NumeralTierCatalog;
 import org.enthusia.playtime.util.TimeFormats;
 
 import java.util.ArrayList;
@@ -338,29 +339,43 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        send(sender, "Playtime numeral tiers:");
+        if (!runtime.config().numerals().enabled()) {
+            send(sender, color(runtime.config().numerals().display().disabled()));
+            return;
+        }
+        PlaytimeConfig.NumeralDisplay display = runtime.config().numerals().display();
+        send(sender, color(display.header()));
         if (sender instanceof Player player) {
             Optional<PlaytimeSnapshot> optional = runtime.readService().getLifetime(player.getUniqueId());
             if (optional.isPresent()) {
                 PlaytimeSnapshot snapshot = optional.get();
-                RomanTiering.Tier tier = RomanTiering.getTierForMinutes(snapshot.activeMinutes);
-                sender.sendMessage(ChatColor.GRAY + "You (active): " + ChatColor.AQUA + TimeFormats.formatMinutes(snapshot.activeMinutes)
-                        + ChatColor.GRAY + " -> " + ChatColor.GOLD + (tier == null ? ChatColor.DARK_GRAY + "None" : tier.label()));
+                NumeralTierCatalog.Tier tier = runtime.config().numerals().catalog().tierForMinutes(snapshot.activeMinutes).orElse(null);
+                sender.sendMessage(color(template(display.currentTier(), snapshot.activeMinutes, tier)));
             } else {
-                sender.sendMessage(ChatColor.GRAY + "You: "
-                        + (runtime.readService().isLoading() ? ChatColor.YELLOW + "Refreshing cached playtime..." : ChatColor.RED + "No playtime recorded yet."));
+                sender.sendMessage(color(runtime.readService().isLoading() ? display.loading() : display.noData()));
             }
         }
 
         StringBuilder builder = new StringBuilder();
-        for (RomanTiering.Tier tier : RomanTiering.getTiers()) {
+        for (NumeralTierCatalog.Tier tier : runtime.config().numerals().catalog().tiers()) {
             if (builder.length() > 0) {
-                builder.append(ChatColor.DARK_GRAY).append(" | ");
+                builder.append(display.separator());
             }
-            builder.append(ChatColor.GRAY).append(tier.label()).append(ChatColor.DARK_GRAY).append(':')
-                    .append(ChatColor.AQUA).append(tier.requiredHours()).append('h');
+            builder.append(template(display.tierEntry(), 0L, tier));
         }
-        sender.sendMessage(builder.toString());
+        sender.sendMessage(color(builder.toString()));
+    }
+
+    private String template(String value, long activeMinutes, NumeralTierCatalog.Tier tier) {
+        String label = tier == null ? "None" : tier.label();
+        String color = tier == null ? "&8" : tier.color();
+        String hours = tier == null ? "" : String.valueOf(tier.requiredHours());
+        return value.replace("%playtime%", TimeFormats.formatMinutes(activeMinutes))
+                .replace("%tier_label%", label).replace("%tier_color%", color).replace("%tier_hours%", hours);
+    }
+
+    private String color(String value) {
+        return ChatColor.translateAlternateColorCodes('&', value);
     }
 
     private String resolveName(UUID uuid) {

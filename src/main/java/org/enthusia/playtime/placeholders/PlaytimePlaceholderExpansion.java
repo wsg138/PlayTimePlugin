@@ -9,7 +9,8 @@ import org.enthusia.playtime.data.model.PlaytimeSnapshot;
 import org.enthusia.playtime.data.model.PublicLeaderboardEntry;
 import org.enthusia.playtime.data.model.RangeTotals;
 import org.enthusia.playtime.service.PlaytimeRuntime;
-import org.enthusia.playtime.util.RomanTiering;
+import org.enthusia.playtime.util.NumeralTierCatalog;
+import org.bukkit.ChatColor;
 import org.enthusia.playtime.util.TimeFormats;
 
 import java.util.List;
@@ -110,7 +111,7 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         return id.equals(METRIC_TOTAL) || id.equals(METRIC_TOTAL + FORMATTED_SUFFIX)
                 || id.equals(METRIC_ACTIVE) || id.equals(METRIC_ACTIVE + FORMATTED_SUFFIX)
                 || id.equals(METRIC_AFK) || id.equals(METRIC_AFK + FORMATTED_SUFFIX)
-                || id.equals("roman");
+                || id.equals("roman") || id.equals("roman_colored");
     }
 
     private String resolveLifetimePlaceholder(PlaytimeRuntime runtime, UUID uuid, String id) {
@@ -119,9 +120,15 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
             return "";
         }
         PlaytimeSnapshot snapshot = optional.orElseGet(() -> new PlaytimeSnapshot(0, 0, 0));
-        if (id.equals("roman")) {
-            RomanTiering.Tier tier = RomanTiering.getTierForMinutes(snapshot.activeMinutes);
-            return tier == null ? "" : tier.label();
+        if (id.equals("roman") || id.equals("roman_colored")) {
+            if (!runtime.config().numerals().enabled()) {
+                return "";
+            }
+            NumeralTierCatalog.Tier tier = runtime.config().numerals().catalog().tierForMinutes(snapshot.activeMinutes).orElse(null);
+            if (tier == null) {
+                return "";
+            }
+            return id.equals("roman_colored") ? ChatColor.translateAlternateColorCodes('&', tier.color()) + tier.label() : tier.label();
         }
         return formatMinutesForPlaceholder(snapshotMetricMinutes(snapshot, id), id.endsWith(FORMATTED_SUFFIX));
     }

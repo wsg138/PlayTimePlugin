@@ -1,6 +1,7 @@
 package org.enthusia.playtime.config;
 
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.enthusia.playtime.data.StorageType;
 
@@ -8,6 +9,9 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.HashSet;
+import java.util.Set;
+import org.enthusia.playtime.util.NumeralTierCatalog;
 
 public final class PlaytimeConfig {
 
@@ -23,6 +27,7 @@ public final class PlaytimeConfig {
     private final ActionBar actionBarConfig;
     private final PlaytimeAudit playtimeAuditConfig;
     private final Debug debugConfig;
+    private final Numerals numeralsConfig;
 
     private PlaytimeConfig(Storage storage,
                            Sampling sampling,
@@ -35,7 +40,8 @@ public final class PlaytimeConfig {
                            Placeholders placeholders,
                            ActionBar actionBar,
                            PlaytimeAudit playtimeAudit,
-                           Debug debug) {
+                           Debug debug,
+                           Numerals numerals) {
         this.storageConfig = storage;
         this.samplingConfig = sampling;
         this.activityConfig = activity;
@@ -48,6 +54,7 @@ public final class PlaytimeConfig {
         this.actionBarConfig = actionBar;
         this.playtimeAuditConfig = playtimeAudit;
         this.debugConfig = debug;
+        this.numeralsConfig = numerals;
     }
 
     public static PlaytimeConfig load(JavaPlugin plugin) {
@@ -195,7 +202,9 @@ public final class PlaytimeConfig {
                 )
         );
 
-        return new PlaytimeConfig(storage, sampling, activity, chatActivity, joins, leaderboards, analytics, gui, placeholders, actionBar, playtimeAudit, debug);
+        Numerals numerals = loadNumerals(plugin, cfg);
+
+        return new PlaytimeConfig(storage, sampling, activity, chatActivity, joins, leaderboards, analytics, gui, placeholders, actionBar, playtimeAudit, debug, numerals);
     }
 
     public Storage storage() {
@@ -244,6 +253,10 @@ public final class PlaytimeConfig {
 
     public Debug debug() {
         return debugConfig;
+    }
+
+    public Numerals numerals() {
+        return numeralsConfig;
     }
 
     public StorageType getStorageType() {
@@ -450,6 +463,59 @@ public final class PlaytimeConfig {
     }
 
     public record PerformanceDebug(boolean enabled, int logIntervalSeconds) {
+    }
+
+    public record Numerals(boolean enabled, NumeralTierCatalog catalog, TierAnnouncement announcement, NumeralDisplay display) {
+    }
+
+    public record TierAnnouncement(boolean enabled, String message) {
+    }
+
+    public record NumeralDisplay(String header, String currentTier, String noData, String loading, String tierEntry,
+                                 String separator, String disabled) {
+    }
+
+    private static Numerals loadNumerals(JavaPlugin plugin, FileConfiguration cfg) {
+        List<NumeralTierCatalog.Tier> defaults = NumeralTierCatalog.defaultTiers();
+        List<NumeralTierCatalog.Tier> valid = new ArrayList<>();
+        ConfigurationSection section = cfg.getConfigurationSection("numerals.tiers");
+        if (section != null) {
+            Set<String> labels = new HashSet<>();
+            Set<Long> thresholds = new HashSet<>();
+            for (String key : section.getKeys(false)) {
+                String base = "numerals.tiers." + key;
+                String label = cfg.getString(base + ".label", "").trim();
+                boolean numericHours = cfg.isLong(base + ".hours") || cfg.isInt(base + ".hours");
+                long hours = numericHours ? cfg.getLong(base + ".hours") : -1L;
+                String color = cfg.getString(base + ".color", "");
+                long minutes = hours < 0 || hours > Long.MAX_VALUE / 60L ? -1L : hours * 60L;
+                if (label.isBlank() || !labels.add(label.toLowerCase(Locale.ROOT)) || minutes < 0 || !thresholds.add(minutes) || !safeColor(color)) {
+                    plugin.getLogger().warning("Ignoring invalid numerals tier '" + key + "' (labels and thresholds must be unique; hours nonnegative; color must use legacy color codes).");
+                    continue;
+                }
+                valid.add(new NumeralTierCatalog.Tier(label, minutes, color));
+            }
+        }
+        if (section != null && valid.isEmpty()) {
+            plugin.getLogger().warning("No usable numerals tiers were configured; using default tiers.");
+            valid = defaults;
+        } else if (section == null) {
+            valid = defaults;
+        }
+        return new Numerals(booleanValue(cfg, List.of("numerals.enabled"), true), new NumeralTierCatalog(valid),
+                new TierAnnouncement(booleanValue(cfg, List.of("numerals.tier-up-announcement.enabled"), false),
+                        stringValue(cfg, List.of("numerals.tier-up-announcement.message"), "&6%player% &ehas reached playtime tier %tier_color%%tier_label%&e!")),
+                new NumeralDisplay(stringValue(cfg, List.of("numerals.display.header"), "&6[Playtime] &ePlaytime numeral tiers:"),
+                        stringValue(cfg, List.of("numerals.display.current-tier"), "&7You (active): &b%playtime% &7-> %tier_color%%tier_label%"),
+                        stringValue(cfg, List.of("numerals.display.no-data"), "&cNo playtime recorded yet."),
+                        stringValue(cfg, List.of("numerals.display.loading"), "&eRefreshing cached playtime..."),
+                        stringValue(cfg, List.of("numerals.display.tier-entry"), "%tier_color%%tier_label%&8:&b%tier_hours%h"),
+                        stringValue(cfg, List.of("numerals.display.separator"), "&8 | "),
+                        stringValue(cfg, List.of("numerals.display.disabled"), "&cPlaytime numerals are disabled.")));
+    }
+
+    private static boolean safeColor(String value) {
+        return value != null && value.matches("(?:&[0-9A-FK-ORa-fk-or])*");
     }
 
     private static String stringValue(FileConfiguration cfg, List<String> paths, String defaultValue) {

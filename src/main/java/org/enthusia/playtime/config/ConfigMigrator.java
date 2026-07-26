@@ -18,7 +18,7 @@ import java.util.logging.Level;
 
 public final class ConfigMigrator {
 
-    public static final int CURRENT_CONFIG_VERSION = 2;
+    public static final int CURRENT_CONFIG_VERSION = 3;
 
     private final JavaPlugin plugin;
 
@@ -49,6 +49,9 @@ public final class ConfigMigrator {
             }
 
             for (String path : defaults.getKeys(true)) {
+                if (path.startsWith("numerals.tiers.") && config.isConfigurationSection("numerals.tiers")) {
+                    continue;
+                }
                 if (defaults.isConfigurationSection(path) || config.isSet(path)) {
                     continue;
                 }

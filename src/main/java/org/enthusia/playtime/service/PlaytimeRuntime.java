@@ -21,11 +21,16 @@ import org.enthusia.playtime.leaderboard.LeaderboardExportService;
 import org.enthusia.playtime.skin.HeadCache;
 import org.enthusia.playtime.util.AsyncWriteQueue;
 import org.enthusia.playtime.util.PerformanceCounters;
+import org.enthusia.playtime.util.NumeralTierCatalog;
+import org.enthusia.playtime.util.TierAdvancement;
+import org.enthusia.playtime.data.model.PlaytimeSnapshot;
+import org.bukkit.ChatColor;
 
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -325,9 +330,32 @@ public final class PlaytimeRuntime implements AutoCloseable {
                 continue;
             }
 
+            announceTierAdvance(player, Math.max(0, event.getActiveMinutes()));
             storageQueue.enqueueMinute(player.getUniqueId(), event.getActiveMinutes(), event.getAfkMinutes());
             reads.invalidatePlayer(player.getUniqueId());
         }
+    }
+
+    private void announceTierAdvance(Player player, int acceptedActiveMinutes) {
+        if (acceptedActiveMinutes <= 0 || !runtimeConfig.numerals().enabled() || !runtimeConfig.numerals().announcement().enabled()) {
+            return;
+        }
+        Optional<PlaytimeSnapshot> current = reads.getLifetime(player.getUniqueId());
+        if (current.isEmpty()) {
+            return;
+        }
+        long before = current.get().activeMinutes;
+        NumeralTierCatalog.Tier newTier = TierAdvancement.reachedTier(runtimeConfig.numerals().catalog(), before, acceptedActiveMinutes)
+                .orElse(null);
+        if (newTier == null) {
+            return;
+        }
+        String message = runtimeConfig.numerals().announcement().message()
+                .replace("%player%", player.getName())
+                .replace("%tier_label%", newTier.label())
+                .replace("%tier_color%", newTier.color())
+                .replace("%tier_hours%", String.valueOf(newTier.requiredHours()));
+        Bukkit.broadcastMessage(ChatColor.translateAlternateColorCodes('&', message));
     }
 
     private MinuteCredit minuteCredit(ActivityState state) {

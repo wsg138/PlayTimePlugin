@@ -1,4 +1,31 @@
-config-version: 2
+config-version: 3
+
+numerals:
+  enabled: true
+  tiers:
+    "1": { label: "I", hours: 1, color: "&7" }
+    "2": { label: "II", hours: 8, color: "&7" }
+    "3": { label: "III", hours: 20, color: "&7" }
+    "4": { label: "IV", hours: 45, color: "&7" }
+    "5": { label: "V", hours: 90, color: "&7" }
+    "6": { label: "VI", hours: 170, color: "&7" }
+    "7": { label: "VII", hours: 320, color: "&7" }
+    "8": { label: "VIII", hours: 580, color: "&7" }
+    "9": { label: "IX", hours: 1090, color: "&7" }
+    "10": { label: "x", hours: 2000, color: "&7" }
+    "11": { label: "y", hours: 5000, color: "&7" }
+    "12": { label: "z", hours: 15000, color: "&7" }
+  tier-up-announcement:
+    enabled: false
+    message: "&6%player% &ehas reached playtime tier %tier_color%%tier_label%&e!"
+  display:
+    header: "&6[Playtime] &ePlaytime numeral tiers:"
+    current-tier: "&7You (active): &b%playtime% &7-> %tier_color%%tier_label%"
+    no-data: "&cNo playtime recorded yet."
+    loading: "&eRefreshing cached playtime..."
+    tier-entry: "%tier_color%%tier_label%&8:&b%tier_hours%h"
+    separator: "&8 | "
+    disabled: "&cPlaytime numerals are disabled."
 
 storage:
   # sqlite is the intended default target.
