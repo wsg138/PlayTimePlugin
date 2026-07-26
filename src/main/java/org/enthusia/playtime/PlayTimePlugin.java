@@ -19,8 +19,14 @@ import org.enthusia.playtime.util.AsyncWriteQueue;
 
 import java.util.Optional;
 import java.util.logging.Level;
+import java.util.function.Consumer;
 
 public class PlayTimePlugin extends JavaPlugin {
+    enum ReloadStage {
+        CONFIG_LOADED, OLD_PREPARED, CANDIDATE_CREATED, OLD_COMMITTED,
+        CANDIDATE_PUBLISHED, OLD_CLOSED, PLACEHOLDER_REFRESH
+    }
+    private static volatile Consumer<ReloadStage> reloadProbe = ignored -> { };
 
     private final Object runtimeLock = new Object();
     private volatile Optional<PlaytimeRuntime> activeRuntime = Optional.empty();
@@ -79,6 +85,7 @@ public class PlayTimePlugin extends JavaPlugin {
             reloadConfig();
             new ConfigMigrator(this).migrateConfig();
             config = PlaytimeConfig.load(this);
+            reloadProbe.accept(ReloadStage.CONFIG_LOADED);
         } catch (Exception exception) {
             getLogger().log(Level.SEVERE, "Failed to parse playtime config. Existing runtime was left running.", exception);
             return false;
@@ -87,34 +94,48 @@ public class PlayTimePlugin extends JavaPlugin {
         PlaytimeRuntime.RuntimeState state = null;
         PlaytimeRuntime oldRuntime = this.activeRuntime.orElse(null);
         if (oldRuntime != null) {
-            PlaytimeRuntime.HandoffPreparation preparation = oldRuntime.prepareRuntimeHandoff();
-            if (preparation.result() != AsyncWriteQueue.TransitionResult.SUCCESS) {
-                getLogger().warning("Playtime runtime reload aborted because queued writes could not be handed off: " + preparation.result());
+            try {
+                PlaytimeRuntime.HandoffPreparation preparation = oldRuntime.prepareRuntimeHandoff();
+                if (preparation.result() != AsyncWriteQueue.TransitionResult.SUCCESS) {
+                    getLogger().warning("Playtime runtime reload aborted because queued writes could not be handed off: " + preparation.result());
+                    return false;
+                }
+                state = preparation.state();
+                reloadProbe.accept(ReloadStage.OLD_PREPARED);
+            } catch (Exception exception) {
+                oldRuntime.abortRuntimeHandoff();
+                getLogger().log(Level.SEVERE,
+                        "Failed to prepare the existing playtime runtime for reload. Existing runtime was left running.",
+                        exception);
                 return false;
             }
-            state = preparation.state();
         }
 
         PlaytimeRuntime newRuntime = null;
         boolean oldCommitted = false;
         try {
             newRuntime = PlaytimeRuntime.create(this, config, state);
+            reloadProbe.accept(ReloadStage.CANDIDATE_CREATED);
             if (oldRuntime != null) {
                 AsyncWriteQueue.TransitionResult result = oldRuntime.commitRuntimeHandoff();
                 if (result != AsyncWriteQueue.TransitionResult.SUCCESS) {
                     throw new IllegalStateException("Old runtime handoff did not complete: " + result);
                 }
                 oldCommitted = true;
+                reloadProbe.accept(ReloadStage.OLD_COMMITTED);
             }
             this.activeRuntime = Optional.of(newRuntime);
+            reloadProbe.accept(ReloadStage.CANDIDATE_PUBLISHED);
             if (oldRuntime != null) {
                 try {
                     oldRuntime.close(true);
+                    reloadProbe.accept(ReloadStage.OLD_CLOSED);
                 } catch (Exception closeException) {
                     getLogger().log(Level.WARNING, "New playtime runtime is active, but the old runtime did not close cleanly.", closeException);
                 }
             }
             try {
+                reloadProbe.accept(ReloadStage.PLACEHOLDER_REFRESH);
                 refreshPlaceholderExpansion();
             } catch (RuntimeException integrationFailure) {
                 getLogger().log(Level.WARNING,
@@ -130,6 +151,14 @@ public class PlayTimePlugin extends JavaPlugin {
         } catch (Exception exception) {
             if (oldCommitted) {
                 this.activeRuntime = Optional.of(newRuntime);
+                if (oldRuntime != null) {
+                    try {
+                        oldRuntime.close(true);
+                    } catch (Exception closeFailure) {
+                        getLogger().log(Level.WARNING,
+                                "Committed replacement is active, but old runtime cleanup failed.", closeFailure);
+                    }
+                }
                 getLogger().log(Level.SEVERE,
                         "Playtime runtime committed; a post-commit step failed and the new runtime remains active.",
                         exception);
@@ -167,6 +196,10 @@ public class PlayTimePlugin extends JavaPlugin {
     public PlaytimeService getPlaytimeService() {
         PlaytimeRuntime current = activeRuntime.orElse(null);
         return current == null ? null : current.playtimeService();
+    }
+
+    static void setReloadProbeForTesting(Consumer<ReloadStage> probe) {
+        reloadProbe = probe == null ? ignored -> { } : probe;
     }
 
     private void registerAdapters() {

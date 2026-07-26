@@ -35,8 +35,18 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
+import java.util.function.Consumer;
 
 public final class PlaytimeRuntime implements AutoCloseable {
+    enum CreationStage {
+        DATABASE_ALLOCATED, DATABASE_INITIALIZED, REPOSITORY_CREATED, SCHEMA_INITIALIZED,
+        HEAD_CACHE_CREATED, WRITE_QUEUE_CREATED, READ_SERVICE_CREATED, EXPORT_SERVICE_CREATED,
+        QUEUE_STARTED, PLAN_HOOK_CREATED, LISTENER_REGISTERED, SERVICE_REGISTERED,
+        ONLINE_PLAYERS_BOOTSTRAPPED, MINUTE_TASK_SCHEDULED, JOIN_PURGE_TASK_SCHEDULED,
+        ACTION_BAR_TASK_SCHEDULED, AUDIT_TASK_SCHEDULED, PERFORMANCE_TASK_SCHEDULED,
+        LEADERBOARD_TASKS_SCHEDULED
+    }
+    private static volatile Consumer<CreationStage> creationProbe = ignored -> { };
 
     private final PlayTimePlugin plugin;
     private final PlaytimeConfig runtimeConfig;
@@ -78,9 +88,13 @@ public final class PlaytimeRuntime implements AutoCloseable {
         HeadCache allocatedHeadCache = null;
         try {
             allocatedDatabase = new DatabaseProvider(plugin, config);
+            probe(CreationStage.DATABASE_ALLOCATED);
             allocatedDatabase.init(config.getStorageType());
+            probe(CreationStage.DATABASE_INITIALIZED);
             PlaytimeRepository allocatedRepository = new PlaytimeRepository(plugin, allocatedDatabase, config);
+            probe(CreationStage.REPOSITORY_CREATED);
             allocatedRepository.initSchema();
+            probe(CreationStage.SCHEMA_INITIALIZED);
             SessionManager allocatedSessions = new SessionManager(
                     previousState == null ? Map.of() : previousState.sessionStarts());
             ActivityTracker allocatedActivities = new ActivityTracker(config, allocatedSessions,
@@ -88,12 +102,16 @@ public final class PlaytimeRuntime implements AutoCloseable {
             TierProgressTracker allocatedTierProgress = new TierProgressTracker(config.numerals().catalog(),
                     previousState == null ? Map.of() : previousState.tierProgress());
             allocatedHeadCache = new HeadCache(plugin, performanceCounters, allocatedRepository);
+            probe(CreationStage.HEAD_CACHE_CREATED);
             AsyncWriteQueue allocatedQueue = new AsyncWriteQueue(
                     plugin, allocatedRepository, performanceCounters, config.getFlushIntervalTicks());
+            probe(CreationStage.WRITE_QUEUE_CREATED);
             PlaytimeReadService allocatedReads = new PlaytimeReadService(plugin, allocatedRepository,
                     allocatedQueue, performanceCounters, config.leaderboards().cacheTtlSeconds());
+            probe(CreationStage.READ_SERVICE_CREATED);
             LeaderboardExportService allocatedExport = new LeaderboardExportService(
                     plugin, allocatedRepository, config.leaderboards().export(), performanceCounters);
+            probe(CreationStage.EXPORT_SERVICE_CREATED);
             PlaytimeServiceImpl allocatedService = new PlaytimeServiceImpl(
                     allocatedReads, allocatedRepository, allocatedActivities, allocatedSessions);
 
@@ -128,8 +146,14 @@ public final class PlaytimeRuntime implements AutoCloseable {
 
     private void activate() {
         storageQueue.start();
+        probe(CreationStage.QUEUE_STARTED);
         planHook = createPlanHook();
-        registerRuntimeBindings();
+        probe(CreationStage.PLAN_HOOK_CREATED);
+        Bukkit.getPluginManager().registerEvents(activities, plugin);
+        probe(CreationStage.LISTENER_REGISTERED);
+        Bukkit.getServicesManager().register(PlaytimeService.class, serviceApi, plugin,
+                org.bukkit.plugin.ServicePriority.Normal);
+        probe(CreationStage.SERVICE_REGISTERED);
 
         long nowMillis = System.currentTimeMillis();
         for (Player player : Bukkit.getOnlinePlayers()) {
@@ -140,13 +164,28 @@ public final class PlaytimeRuntime implements AutoCloseable {
             initializeTierProgress(player.getUniqueId());
         }
         tierProgress.uninitializedPlayers().forEach((uuid, connected) -> initializeTierProgress(uuid, connected));
+        probe(CreationStage.ONLINE_PLAYERS_BOOTSTRAPPED);
 
         startMinuteTickTask();
+        probe(CreationStage.MINUTE_TASK_SCHEDULED);
         startJoinPurgeTask();
+        probe(CreationStage.JOIN_PURGE_TASK_SCHEDULED);
         startActionBarTask();
+        probe(CreationStage.ACTION_BAR_TASK_SCHEDULED);
         startAuditTask();
+        probe(CreationStage.AUDIT_TASK_SCHEDULED);
         startPerformanceLogTask();
+        probe(CreationStage.PERFORMANCE_TASK_SCHEDULED);
         startLeaderboardExportTask();
+        probe(CreationStage.LEADERBOARD_TASKS_SCHEDULED);
+    }
+
+    static void setCreationProbeForTesting(Consumer<CreationStage> probe) {
+        creationProbe = probe == null ? ignored -> { } : probe;
+    }
+
+    private static void probe(CreationStage stage) {
+        creationProbe.accept(stage);
     }
 
     public PlaytimeConfig config() {

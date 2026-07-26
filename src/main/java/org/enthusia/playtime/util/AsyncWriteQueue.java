@@ -27,6 +27,8 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private static final long MIN_TOTAL_MINUTES = 1L;
     private static final int SPINS_PER_SECOND = 100;
     private static final long WAIT_SLEEP_MILLIS = 10L;
+    private static final java.util.concurrent.atomic.AtomicInteger ACTIVE_QUEUES =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     private final PlayTimePlugin plugin;
     private final PlaytimeRepository repository;
@@ -42,6 +44,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private final ConcurrentLinkedQueue<JoinRecord> pendingJoins = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<JoinRecord> inFlightJoins = new ConcurrentLinkedQueue<>();
     private final long flushIntervalTicks;
+    private final QueueScheduler scheduler;
     private final AtomicBoolean flushInProgress = new AtomicBoolean(false);
     private final AtomicBoolean immediateFlushScheduled = new AtomicBoolean(false);
     private final AtomicBoolean minuteCommitInProgress = new AtomicBoolean(false);
@@ -49,24 +52,42 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     private volatile BukkitTask flushTask;
     private QueueState state = QueueState.RUNNING;
+    private boolean countedActive;
 
     public enum TransitionResult { SUCCESS, TIMED_OUT, WRITE_FAILED, HANDOFF_ABORTED }
     public enum EnqueueResult { ACCEPTED, HANDOFF_PAUSED, CLOSED }
     public enum QueueState { RUNNING, HANDOFF_PAUSED, CLOSED }
 
     public AsyncWriteQueue(PlayTimePlugin plugin, PlaytimeRepository repository, PerformanceCounters counters, long flushIntervalTicks) {
+        this(plugin, repository, counters, flushIntervalTicks, new QueueScheduler() {
+            @Override public BukkitTask schedulePeriodic(Runnable task, long intervalTicks) {
+                return Bukkit.getScheduler().runTaskTimerAsynchronously(
+                        plugin, task, intervalTicks, intervalTicks);
+            }
+            @Override public void scheduleImmediate(Runnable task) {
+                Bukkit.getScheduler().runTaskAsynchronously(plugin, task);
+            }
+        });
+    }
+
+    AsyncWriteQueue(PlayTimePlugin plugin, PlaytimeRepository repository, PerformanceCounters counters,
+                    long flushIntervalTicks, QueueScheduler scheduler) {
         this.plugin = plugin;
         this.repository = repository;
         this.counters = counters;
         this.flushIntervalTicks = flushIntervalTicks;
+        this.scheduler = scheduler;
     }
 
     public void start() {
         synchronized (lifecycleLock) {
             if (state != QueueState.RUNNING || flushTask != null) return;
             if (plugin == null) return;
-            flushTask = Bukkit.getScheduler().runTaskTimerAsynchronously(
-                    plugin, this::flushAsyncSafely, flushIntervalTicks, flushIntervalTicks);
+            flushTask = scheduler.schedulePeriodic(this::flushAsyncSafely, flushIntervalTicks);
+            if (!countedActive) {
+                countedActive = true;
+                ACTIVE_QUEUES.incrementAndGet();
+            }
         }
     }
 
@@ -337,7 +358,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
             }
             if (immediateFlushScheduled.compareAndSet(false, true)) {
                 try {
-                    Bukkit.getScheduler().runTaskAsynchronously(plugin, this::flushAsyncSafely);
+                    scheduler.scheduleImmediate(this::flushAsyncSafely);
                 } catch (IllegalPluginAccessException exception) {
                     immediateFlushScheduled.set(false);
                     if (plugin.isEnabled()) throw exception;
@@ -380,6 +401,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 return TransitionResult.HANDOFF_ABORTED;
             }
             state = QueueState.CLOSED;
+            releaseActiveCount();
             minuteCommitGeneration.incrementAndGet();
         }
         return TransitionResult.SUCCESS;
@@ -391,6 +413,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 return hasOutstandingWork() ? TransitionResult.WRITE_FAILED : TransitionResult.SUCCESS;
             }
             state = QueueState.CLOSED;
+            releaseActiveCount();
             minuteCommitGeneration.incrementAndGet();
             if (flushTask != null) {
                 flushTask.cancel();
@@ -421,6 +444,30 @@ public final class AsyncWriteQueue implements AutoCloseable {
         synchronized (lifecycleLock) {
             return state;
         }
+    }
+
+    OutstandingWork outstandingWorkForTesting() {
+        return new OutstandingWork(pendingMinutes.size() + inFlightMinutes.size(),
+                pendingJoins.size() + inFlightJoins.size(),
+                pendingProfiles.size() + inFlightProfiles.size());
+    }
+
+    record OutstandingWork(int minutePlayers, int joins, int profiles) {}
+
+    private void releaseActiveCount() {
+        if (countedActive) {
+            countedActive = false;
+            ACTIVE_QUEUES.decrementAndGet();
+        }
+    }
+
+    public static int activeQueueCountForTesting() {
+        return ACTIVE_QUEUES.get();
+    }
+
+    interface QueueScheduler {
+        BukkitTask schedulePeriodic(Runnable task, long intervalTicks);
+        void scheduleImmediate(Runnable task);
     }
 
     private LedgerCutoff ledgerCutoff(UUID uuid) {

@@ -27,6 +27,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -34,6 +36,7 @@ import java.util.concurrent.TimeUnit;
  * Legacy skins.yml data is imported once into the configured SQL backend.
  */
 public final class HeadCache implements AutoCloseable {
+    private static final AtomicInteger ACTIVE_EXECUTORS = new AtomicInteger();
 
     private record CachedSkin(SkinProfile profile, long version) {
     }
@@ -51,16 +54,19 @@ public final class HeadCache implements AutoCloseable {
 
     private volatile boolean flushQueued;
     private volatile boolean closed;
+    private final AtomicBoolean executorCounted = new AtomicBoolean(true);
 
     public HeadCache(PlayTimePlugin plugin, PerformanceCounters counters, PlaytimeRepository repository) throws Exception {
         this.plugin = plugin;
         this.counters = counters;
         this.repository = repository;
+        ACTIVE_EXECUTORS.incrementAndGet();
         try {
             load();
         } catch (Exception | Error failure) {
             closed = true;
             writerExecutor.shutdownNow();
+            releaseExecutorCount();
             throw failure;
         }
     }
@@ -128,7 +134,17 @@ public final class HeadCache implements AutoCloseable {
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             writerExecutor.shutdownNow();
+        } finally {
+            releaseExecutorCount();
         }
+    }
+
+    private void releaseExecutorCount() {
+        if (executorCounted.compareAndSet(true, false)) ACTIVE_EXECUTORS.decrementAndGet();
+    }
+
+    public static int activeExecutorCountForTesting() {
+        return ACTIVE_EXECUTORS.get();
     }
 
     private void load() throws Exception {

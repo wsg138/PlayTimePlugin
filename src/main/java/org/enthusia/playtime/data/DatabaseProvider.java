@@ -13,8 +13,11 @@ import java.sql.SQLException;
 import java.util.Locale;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class DatabaseProvider {
+    private static final AtomicInteger OPEN_PROVIDERS = new AtomicInteger();
     private static final int SQLITE_READONLY_DBMOVED = 1038;
     private static final int SQLITE_READONLY_DIRECTORY_MOVED = 1039;
 
@@ -25,6 +28,7 @@ public final class DatabaseProvider {
     private SqlDialect dialect;
     private StorageType storageType;
     private File sqliteFile;
+    private final AtomicBoolean countedOpen = new AtomicBoolean();
 
     public DatabaseProvider(JavaPlugin plugin, PlaytimeConfig config) {
         this.plugin = plugin;
@@ -41,6 +45,7 @@ public final class DatabaseProvider {
 
         synchronized (lock) {
             rebuildDataSource();
+            if (countedOpen.compareAndSet(false, true)) OPEN_PROVIDERS.incrementAndGet();
         }
     }
 
@@ -80,7 +85,12 @@ public final class DatabaseProvider {
             if (dataSource != null) {
                 dataSource.close();
             }
+            if (countedOpen.compareAndSet(true, false)) OPEN_PROVIDERS.decrementAndGet();
         }
+    }
+
+    public static int openProviderCountForTesting() {
+        return OPEN_PROVIDERS.get();
     }
 
     private void rebuildDataSource() {
