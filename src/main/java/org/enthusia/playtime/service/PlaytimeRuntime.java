@@ -38,6 +38,14 @@ import java.util.logging.Level;
 import java.util.function.Consumer;
 
 public final class PlaytimeRuntime implements AutoCloseable {
+    enum CloseStage {
+        TASKS, BUKKIT_SERVICE, PLAN, LISTENERS, HEAD_CACHE, QUEUE_AND_EXPORT, DATABASE
+    }
+    private static volatile Consumer<CloseStage> closeProbe = ignored -> { };
+    enum TierReadStage { AFTER_CUTOFF_BEFORE_SQL, AFTER_SQL, MAIN_COMPLETION_SCHEDULED }
+    private static volatile Consumer<TierReadStage> tierReadProbe = ignored -> { };
+    private static volatile Consumer<String> announcementProbe = ignored -> { };
+    private static volatile Consumer<Runnable> tierMainExecutor;
     enum CreationStage {
         DATABASE_ALLOCATED, DATABASE_INITIALIZED, REPOSITORY_CREATED, SCHEMA_INITIALIZED,
         HEAD_CACHE_CREATED, WRITE_QUEUE_CREATED, READ_SERVICE_CREATED, EXPORT_SERVICE_CREATED,
@@ -182,6 +190,22 @@ public final class PlaytimeRuntime implements AutoCloseable {
 
     static void setCreationProbeForTesting(Consumer<CreationStage> probe) {
         creationProbe = probe == null ? ignored -> { } : probe;
+    }
+
+    static void setCloseProbeForTesting(Consumer<CloseStage> probe) {
+        closeProbe = probe == null ? ignored -> { } : probe;
+    }
+
+    static void setTierReadProbeForTesting(Consumer<TierReadStage> probe) {
+        tierReadProbe = probe == null ? ignored -> { } : probe;
+    }
+
+    static void setAnnouncementProbeForTesting(Consumer<String> probe) {
+        announcementProbe = probe == null ? ignored -> { } : probe;
+    }
+
+    static void setTierMainExecutorForTesting(Consumer<Runnable> executor) {
+        tierMainExecutor = executor;
     }
 
     private static void probe(CreationStage stage) {
@@ -464,17 +488,30 @@ public final class PlaytimeRuntime implements AutoCloseable {
                 continue;
             }
 
-            AsyncWriteQueue.EnqueueResult ownership = storageQueue.enqueueMinute(
-                    player.getUniqueId(), event.getActiveMinutes(), event.getAfkMinutes());
-            if (!owns(ownership)) {
-                logRejectedWrite("minute", player.getUniqueId(), ownership);
-                continue;
-            }
-            int acceptedActiveMinutes = Math.max(0, event.getActiveMinutes());
-            TierProgressTracker.ActiveUpdate update = tierProgress.acceptActiveMinutes(player.getUniqueId(), acceptedActiveMinutes);
-            announceTierAdvance(player, update.reachedTier());
-            reads.invalidatePlayer(player.getUniqueId());
+            acceptMinute(player, event.getActiveMinutes(), event.getAfkMinutes());
         }
+    }
+
+    boolean acceptMinuteForTesting(Player player, int activeMinutes, int afkMinutes) {
+        return acceptMinute(player, activeMinutes, afkMinutes);
+    }
+
+    private boolean acceptMinute(Player player, int activeMinutes, int afkMinutes) {
+        AsyncWriteQueue.EnqueueResult ownership = storageQueue.enqueueMinute(
+                player.getUniqueId(), activeMinutes, afkMinutes);
+        if (!owns(ownership)) {
+            logRejectedWrite("minute", player.getUniqueId(), ownership);
+            return false;
+        }
+        TierProgressTracker.ActiveUpdate update =
+                tierProgress.acceptActiveMinutes(player.getUniqueId(), Math.max(0, activeMinutes));
+        announceTierAdvance(player, update.reachedTier());
+        reads.invalidatePlayer(player.getUniqueId());
+        return true;
+    }
+
+    TierProgressTracker.ProgressState tierProgressForTesting(UUID uuid) {
+        return tierProgress.snapshot().get(uuid);
     }
 
     private boolean owns(AsyncWriteQueue.EnqueueResult result) {
@@ -500,36 +537,53 @@ public final class PlaytimeRuntime implements AutoCloseable {
         initializeTierProgress(uuid, true);
     }
 
+    void initializeTierProgressForTesting(UUID uuid, boolean connected) {
+        initializeTierProgress(uuid, connected);
+    }
+
     private void initializeTierProgress(UUID uuid, boolean connected) {
         Optional<TierProgressTracker.InitializationRequest> request = tierProgress.requestInitialization(uuid, connected,
                 storageQueue.acceptedActiveSequence(uuid));
         if (request.isEmpty()) {
             return;
         }
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            AsyncWriteQueue.EffectiveActiveSnapshot effectiveSnapshot;
-            try {
-                Optional<AsyncWriteQueue.EffectiveActiveSnapshot> snapshot = storageQueue.readEffectiveActiveSnapshot(uuid, () -> {
-                    LifetimeRead read = playtimeRepository.readLifetimeStrict(uuid);
-                    if (read.status() == LifetimeReadStatus.FAILED) {
-                        throw new TierInitializationReadException();
-                    }
-                    return read.status() == LifetimeReadStatus.FOUND ? read.snapshot().activeMinutes : 0L;
-                });
-                if (snapshot.isEmpty()) {
-                    scheduleTierInitializationRetry(request.get());
-                    return;
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> performTierInitializationRead(request.get()));
+    }
+
+    void performTierInitializationReadForTesting(UUID uuid, boolean connected) {
+        tierProgress.requestInitialization(uuid, connected, storageQueue.acceptedActiveSequence(uuid))
+                .ifPresent(this::performTierInitializationRead);
+    }
+
+    private void performTierInitializationRead(TierProgressTracker.InitializationRequest request) {
+        AsyncWriteQueue.EffectiveActiveSnapshot effectiveSnapshot;
+        try {
+            Optional<AsyncWriteQueue.EffectiveActiveSnapshot> snapshot = storageQueue.readEffectiveActiveSnapshot(request.uuid(), () -> {
+                tierReadProbe.accept(TierReadStage.AFTER_CUTOFF_BEFORE_SQL);
+                LifetimeRead read = playtimeRepository.readLifetimeStrict(request.uuid());
+                tierReadProbe.accept(TierReadStage.AFTER_SQL);
+                if (read.status() == LifetimeReadStatus.FAILED) {
+                    throw new TierInitializationReadException();
                 }
-                effectiveSnapshot = snapshot.get();
-            } catch (TierInitializationReadException exception) {
-                scheduleTierInitializationRetry(request.get());
+                return read.status() == LifetimeReadStatus.FOUND ? read.snapshot().activeMinutes : 0L;
+            });
+            if (snapshot.isEmpty()) {
+                scheduleTierInitializationRetry(request);
                 return;
             }
-            if (closed.get() || tierProgressHandedOff.get()) {
-                return;
-            }
-            Bukkit.getScheduler().runTask(plugin, () -> finishTierProgressInitialization(request.get(), effectiveSnapshot));
-        });
+            effectiveSnapshot = snapshot.get();
+        } catch (TierInitializationReadException exception) {
+            scheduleTierInitializationRetry(request);
+            return;
+        }
+        if (closed.get() || tierProgressHandedOff.get()) {
+            return;
+        }
+        Runnable completion = () -> finishTierProgressInitialization(request, effectiveSnapshot);
+        Consumer<Runnable> executor = tierMainExecutor;
+        if (executor == null) Bukkit.getScheduler().runTask(plugin, completion);
+        else executor.accept(completion);
+        tierReadProbe.accept(TierReadStage.MAIN_COMPLETION_SCHEDULED);
     }
 
     private void scheduleTierInitializationRetry(TierProgressTracker.InitializationRequest request) {
@@ -576,6 +630,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
                 .replace("%tier_label%", newTier.label())
                 .replace("%tier_color%", newTier.color())
                 .replace("%tier_hours%", String.valueOf(newTier.requiredHours()));
+        announcementProbe.accept(message);
         Bukkit.broadcastMessage(ChatColor.translateAlternateColorCodes('&', message));
     }
 
@@ -627,12 +682,29 @@ public final class PlaytimeRuntime implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
-        cancelRuntimeTasks();
-        unregisterRuntimeServices();
-        persistOnlinePlayersForShutdown();
-        playerHeadCache.close();
-        closeStorageAndExport(reloadClose);
-        databaseProvider.shutdown();
+        cleanup(CloseStage.TASKS, this::cancelRuntimeTasks);
+        cleanup(CloseStage.BUKKIT_SERVICE, () -> Bukkit.getServicesManager().unregister(serviceApi));
+        cleanup(CloseStage.PLAN, this::closePlanHook);
+        cleanup(CloseStage.LISTENERS, () -> HandlerList.unregisterAll(activities));
+        cleanup(CloseStage.HEAD_CACHE, playerHeadCache::close);
+        cleanup(CloseStage.QUEUE_AND_EXPORT, () -> {
+            persistOnlinePlayersForShutdown();
+            closeStorageAndExport(reloadClose);
+        });
+        cleanup(CloseStage.DATABASE, databaseProvider::shutdown);
+    }
+
+    private void cleanup(CloseStage stage, Runnable action) {
+        try {
+            closeProbe.accept(stage);
+        } catch (Exception exception) {
+            plugin.getLogger().log(Level.WARNING, "Failed runtime cleanup stage " + stage + ".", exception);
+        }
+        try {
+            action.run();
+        } catch (Exception exception) {
+            plugin.getLogger().log(Level.WARNING, "Failed runtime cleanup stage " + stage + ".", exception);
+        }
     }
 
     private void cancelRuntimeTasks() {
@@ -666,14 +738,22 @@ public final class PlaytimeRuntime implements AutoCloseable {
         leaderboardExportTask = null;
     }
 
-    private void unregisterRuntimeServices() {
-        Bukkit.getServicesManager().unregister(serviceApi);
+    private void closePlanHook() {
         try {
             planHook.close();
         } catch (Exception exception) {
-            plugin.getLogger().log(Level.FINE, "Failed to close Plan analytics integration.", exception);
+            throw new IllegalStateException("Plan cleanup failed", exception);
         } finally {
             planHook = () -> { };
+        }
+    }
+
+    private void unregisterRuntimeServices() {
+        Bukkit.getServicesManager().unregister(serviceApi);
+        try {
+            closePlanHook();
+        } catch (RuntimeException exception) {
+            plugin.getLogger().log(Level.FINE, "Failed to close Plan analytics integration.", exception);
         }
         HandlerList.unregisterAll(activities);
     }

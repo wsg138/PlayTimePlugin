@@ -31,6 +31,23 @@ public class PlayTimePlugin extends JavaPlugin {
     private final Object runtimeLock = new Object();
     private volatile Optional<PlaytimeRuntime> activeRuntime = Optional.empty();
     private Optional<PlaytimePlaceholderExpansion> placeholderExpansion = Optional.empty();
+    private PlaceholderLifecycle placeholderLifecycle = new PlaceholderLifecycle() {
+        @Override public boolean available() {
+            return Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
+        }
+        @Override public boolean registered() {
+            return placeholderExpansion.isPresent();
+        }
+        @Override public void unregister() {
+            placeholderExpansion.ifPresent(PlaytimePlaceholderExpansion::unregister);
+            placeholderExpansion = Optional.empty();
+        }
+        @Override public void register() {
+            PlaytimePlaceholderExpansion expansion = new PlaytimePlaceholderExpansion(PlayTimePlugin.this);
+            expansion.register();
+            placeholderExpansion = Optional.of(expansion);
+        }
+    };
 
     private BedrockSupport bedrockSupport;
 
@@ -136,7 +153,7 @@ public class PlayTimePlugin extends JavaPlugin {
             }
             try {
                 reloadProbe.accept(ReloadStage.PLACEHOLDER_REFRESH);
-                refreshPlaceholderExpansion();
+                refreshPlaceholderExpansion(reason != null);
             } catch (RuntimeException integrationFailure) {
                 getLogger().log(Level.WARNING,
                         "New playtime runtime is active, but PlaceholderAPI refresh failed.", integrationFailure);
@@ -202,6 +219,14 @@ public class PlayTimePlugin extends JavaPlugin {
         reloadProbe = probe == null ? ignored -> { } : probe;
     }
 
+    void setPlaceholderLifecycleForTesting(PlaceholderLifecycle lifecycle) {
+        placeholderLifecycle = lifecycle;
+    }
+
+    void refreshPlaceholderExpansionForTesting() {
+        refreshPlaceholderExpansion(true);
+    }
+
     private void registerAdapters() {
         PlaytimeCommand playtimeCommand = new PlaytimeCommand(this);
         FirstJoinCommand firstJoinCommand = new FirstJoinCommand(this);
@@ -231,21 +256,30 @@ public class PlayTimePlugin extends JavaPlugin {
     }
 
     private void refreshPlaceholderExpansion() {
-        boolean papiPresent = Bukkit.getPluginManager().getPlugin("PlaceholderAPI") != null;
-        boolean enabled = papiPresent && getRuntimeConfig().isPlaceholdersEnabled();
+        refreshPlaceholderExpansion(false);
+    }
+
+    private void refreshPlaceholderExpansion(boolean replaceExisting) {
+        boolean enabled = placeholderLifecycle.available() && getRuntimeConfig().isPlaceholdersEnabled();
 
         if (!enabled) {
-            placeholderExpansion.ifPresent(PlaytimePlaceholderExpansion::unregister);
-            placeholderExpansion = Optional.empty();
+            placeholderLifecycle.unregister();
             return;
         }
 
-        if (placeholderExpansion.isEmpty()) {
-            PlaytimePlaceholderExpansion expansion = new PlaytimePlaceholderExpansion(this);
-            expansion.register();
-            placeholderExpansion = Optional.of(expansion);
+        if (replaceExisting && placeholderLifecycle.registered()) {
+            placeholderLifecycle.unregister();
+        }
+        if (!placeholderLifecycle.registered()) {
+            placeholderLifecycle.register();
             getLogger().info("Registered PlaceholderAPI expansion.");
         }
     }
 
+    interface PlaceholderLifecycle {
+        boolean available();
+        boolean registered();
+        void unregister();
+        void register();
+    }
 }
