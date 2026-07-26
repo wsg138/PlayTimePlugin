@@ -20,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.logging.Level;
 import java.util.function.LongSupplier;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class AsyncWriteQueue implements AutoCloseable {
 
@@ -32,15 +33,23 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private final PerformanceCounters counters;
     private final ConcurrentHashMap<UUID, MinuteDelta> pendingMinutes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, MinuteDelta> acceptedUncommittedMinutes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<UUID, MinuteDelta> inFlightMinutes = new ConcurrentHashMap<>();
     private final Object minuteLedgerLock = new Object();
     private final ConcurrentHashMap<UUID, PlayerProfile> pendingProfiles = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<UUID, PlayerProfile> inFlightProfiles = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<JoinRecord> pendingJoins = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<JoinRecord> inFlightJoins = new ConcurrentLinkedQueue<>();
     private final long flushIntervalTicks;
     private final AtomicBoolean flushInProgress = new AtomicBoolean(false);
     private final AtomicBoolean immediateFlushScheduled = new AtomicBoolean(false);
+    private final AtomicBoolean minuteCommitInProgress = new AtomicBoolean(false);
+    private final AtomicLong minuteCommitGeneration = new AtomicLong();
 
     private volatile BukkitTask flushTask;
     private volatile boolean closed;
+    private volatile boolean pausedForHandoff;
+
+    public enum TransitionResult { SUCCESS, TIMED_OUT, WRITE_FAILED, HANDOFF_ABORTED }
 
     public AsyncWriteQueue(PlayTimePlugin plugin, PlaytimeRepository repository, PerformanceCounters counters, long flushIntervalTicks) {
         this.plugin = plugin;
@@ -99,14 +108,22 @@ public final class AsyncWriteQueue implements AutoCloseable {
         return delta == null ? new RangeTotals(0, 0, 0) : delta.toRangeTotals();
     }
 
-    /**
-     * Returns a stable durable-plus-uncommitted active total. The supplier and transaction confirmation
-     * share one lock so a successfully committed batch cannot be counted in both places.
-     */
+    /** Returns a generation-verified durable-plus-uncommitted active total without holding a lock during SQL. */
     public long getEffectiveActiveMinutes(UUID uuid, LongSupplier durableActiveMinutes) {
-        synchronized (minuteLedgerLock) {
-            MinuteDelta uncommitted = acceptedUncommittedMinutes.get(uuid);
-            return Math.max(0L, durableActiveMinutes.getAsLong()) + (uncommitted == null ? 0L : uncommitted.activeMinutes());
+        for (;;) {
+            long before = minuteCommitGeneration.get();
+            if (minuteCommitInProgress.get()) {
+                Thread.onSpinWait();
+                continue;
+            }
+            long durable = Math.max(0L, durableActiveMinutes.getAsLong());
+            MinuteDelta uncommitted;
+            synchronized (minuteLedgerLock) {
+                uncommitted = acceptedUncommittedMinutes.get(uuid);
+            }
+            if (!minuteCommitInProgress.get() && before == minuteCommitGeneration.get()) {
+                return durable + (uncommitted == null ? 0L : uncommitted.activeMinutes());
+            }
         }
     }
 
@@ -127,8 +144,8 @@ public final class AsyncWriteQueue implements AutoCloseable {
         return new RangeTotals(active, afk, active + afk);
     }
 
-    public void flushNow() {
-        flushSyncInternal();
+    public TransitionResult flushNow() {
+        return flushSyncInternal();
     }
 
     private void flushAsyncSafely() {
@@ -145,14 +162,16 @@ public final class AsyncWriteQueue implements AutoCloseable {
         }
     }
 
-    private void flushSyncInternal() {
+    private TransitionResult flushSyncInternal() {
         if (!flushInProgress.compareAndSet(false, true)) {
-            return;
+            return TransitionResult.TIMED_OUT;
         }
         try {
             flushInternal();
+            return TransitionResult.SUCCESS;
         } catch (Exception exception) {
             plugin.getLogger().log(Level.WARNING, "Failed to flush buffered playtime writes.", exception);
+            return TransitionResult.WRITE_FAILED;
         } finally {
             flushInProgress.set(false);
         }
@@ -162,26 +181,43 @@ public final class AsyncWriteQueue implements AutoCloseable {
         Map<UUID, MinuteDelta> minuteBatch = drainMinuteBatch();
         Map<UUID, PlayerProfile> profileBatch = drainProfileBatch();
         List<JoinRecord> joinBatch = drainJoinBatch();
+        boolean joinsCommitted = false;
+        boolean profilesCommitted = false;
 
         try {
             if (!joinBatch.isEmpty()) {
                 repository.batchRecordJoins(joinBatch);
+                joinsCommitted = true;
+                inFlightJoins.clear();
             }
             if (!profileBatch.isEmpty()) {
                 repository.batchUpsertPlayerProfiles(new ArrayList<>(profileBatch.values()));
+                profilesCommitted = true;
+                inFlightProfiles.clear();
             }
             if (!minuteBatch.isEmpty()) {
-                synchronized (minuteLedgerLock) {
+                minuteCommitInProgress.set(true);
+                try {
                     repository.batchRecordMinutes(minuteBatch, Instant.now());
-                    confirmMinuteBatch(minuteBatch);
+                    synchronized (minuteLedgerLock) {
+                        confirmMinuteBatch(minuteBatch);
+                    }
+                    inFlightMinutes.clear();
+                    minuteCommitGeneration.incrementAndGet();
+                } finally {
+                    minuteCommitInProgress.set(false);
                 }
             }
             if (!joinBatch.isEmpty() || !profileBatch.isEmpty() || !minuteBatch.isEmpty()) {
                 counters.flushBatches.increment();
             }
         } catch (Exception exception) {
-            requeueJoinBatch(joinBatch);
-            requeueProfileBatch(profileBatch);
+            if (!joinsCommitted) {
+                requeueJoinBatch(joinBatch);
+            }
+            if (!profilesCommitted) {
+                requeueProfileBatch(profileBatch);
+            }
             requeueMinuteBatch(minuteBatch);
             throw exception;
         }
@@ -194,6 +230,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 batch.put(entry.getKey(), entry.getValue());
             }
         }
+        inFlightMinutes.putAll(batch);
         return batch;
     }
 
@@ -205,6 +242,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 break;
             }
             batch.add(record);
+            inFlightJoins.add(record);
         }
         return batch;
     }
@@ -216,6 +254,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 batch.put(entry.getKey(), entry.getValue());
             }
         }
+        inFlightProfiles.putAll(batch);
         return batch;
     }
 
@@ -223,6 +262,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
         for (Map.Entry<UUID, MinuteDelta> entry : batch.entrySet()) {
             pendingMinutes.merge(entry.getKey(), entry.getValue(), MinuteDelta::plus);
         }
+        inFlightMinutes.clear();
     }
 
     private void confirmMinuteBatch(Map<UUID, MinuteDelta> batch) {
@@ -240,16 +280,18 @@ public final class AsyncWriteQueue implements AutoCloseable {
         for (JoinRecord record : batch) {
             pendingJoins.add(record);
         }
+        inFlightJoins.clear();
     }
 
     private void requeueProfileBatch(Map<UUID, PlayerProfile> batch) {
         for (Map.Entry<UUID, PlayerProfile> entry : batch.entrySet()) {
             pendingProfiles.put(entry.getKey(), entry.getValue());
         }
+        inFlightProfiles.clear();
     }
 
     private void scheduleImmediateFlush() {
-        if (closed || !plugin.isEnabled()) {
+        if (closed || pausedForHandoff || !plugin.isEnabled()) {
             return;
         }
         if (immediateFlushScheduled.compareAndSet(false, true)) {
@@ -264,22 +306,53 @@ public final class AsyncWriteQueue implements AutoCloseable {
         }
     }
 
-    @Override
-    public void close() {
-        close(10);
+    public TransitionResult prepareHandoff(int timeoutSeconds) {
+        pausedForHandoff = true;
+        if (flushTask != null) {
+            flushTask.cancel();
+            flushTask = null;
+        }
+        if (!waitForActiveFlush(timeoutSeconds)) {
+            return TransitionResult.TIMED_OUT;
+        }
+        TransitionResult result = flushSyncInternal();
+        return result == TransitionResult.SUCCESS && hasOutstandingWork() ? TransitionResult.WRITE_FAILED : result;
     }
 
-    public void close(int timeoutSeconds) {
+    public void abortHandoff() {
+        if (!pausedForHandoff || closed) {
+            return;
+        }
+        pausedForHandoff = false;
+        start();
+    }
+
+    public TransitionResult completeHandoff() {
+        if (!pausedForHandoff || hasOutstandingWork()) {
+            return TransitionResult.HANDOFF_ABORTED;
+        }
+        closed = true;
+        return TransitionResult.SUCCESS;
+    }
+
+    public TransitionResult shutdown(int timeoutSeconds) {
         closed = true;
         if (flushTask != null) {
             flushTask.cancel();
         }
-        waitForActiveFlush(timeoutSeconds);
-        flushSyncInternal();
-        waitForActiveFlush(timeoutSeconds);
+        if (!waitForActiveFlush(timeoutSeconds)) {
+            return TransitionResult.TIMED_OUT;
+        }
+        TransitionResult result = flushSyncInternal();
+        return result == TransitionResult.SUCCESS && hasOutstandingWork() ? TransitionResult.WRITE_FAILED : result;
     }
 
-    private void waitForActiveFlush(int timeoutSeconds) {
+    private boolean hasOutstandingWork() {
+        return !pendingMinutes.isEmpty() || !inFlightMinutes.isEmpty() || !pendingProfiles.isEmpty() || !inFlightProfiles.isEmpty()
+                || !pendingJoins.isEmpty() || !inFlightJoins.isEmpty();
+    }
+
+    private boolean waitForActiveFlush(int timeoutSeconds) {
         int spins = 0;
         int maxSpins = Math.max(1, timeoutSeconds) * SPINS_PER_SECOND;
         while (flushInProgress.get() && spins < maxSpins) {
@@ -288,8 +361,14 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 Thread.sleep(WAIT_SLEEP_MILLIS);
             } catch (InterruptedException interruptedException) {
                 Thread.currentThread().interrupt();
-                break;
+                return false;
             }
         }
+        return !flushInProgress.get();
+    }
+
+    @Override
+    public void close() {
+        shutdown(10);
     }
 }

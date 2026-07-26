@@ -49,14 +49,24 @@ public final class TierProgressTracker {
             return Optional.empty();
         }
         long withheld = progress.withheldActiveMinutes;
-        long baseline = Math.max(0L, effectiveActiveMinutes);
-        progress.activeMinutes = baseline + withheld;
+        long effective = Math.max(0L, effectiveActiveMinutes);
+        long baseline = Math.max(0L, effective - withheld);
+        progress.activeMinutes = effective;
         progress.withheldActiveMinutes = 0L;
         progress.initialized = true;
         progress.initializing = false;
         progress.currentTier = catalog.tierForMinutes(progress.activeMinutes).orElse(null);
         return Optional.of(new InitializationResult(withheld,
                 TierAdvancement.reachedTier(catalog, baseline, withheld), progress.connected));
+    }
+
+    public synchronized boolean failInitialization(InitializationRequest request) {
+        Progress progress = progressByPlayer.get(request.uuid());
+        if (progress == null || progress.initialized || !progress.initializing || progress.generation != request.generation()) {
+            return false;
+        }
+        progress.initializing = false;
+        return true;
     }
 
     public synchronized void disconnect(UUID uuid) {

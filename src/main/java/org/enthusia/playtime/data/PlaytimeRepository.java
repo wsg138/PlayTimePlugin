@@ -279,15 +279,21 @@ public final class PlaytimeRepository {
     }
 
     public Optional<PlaytimeSnapshot> getLifetime(UUID uuid) {
+        LifetimeRead read = readLifetimeStrict(uuid);
+        return read.status() == LifetimeReadStatus.FOUND ? Optional.of(read.snapshot()) : Optional.empty();
+    }
+
+    /** Strict result for persistence paths; unlike display reads, a database failure is never treated as no data. */
+    public LifetimeRead readLifetimeStrict(UUID uuid) {
         String sql = "SELECT active_minutes, afk_minutes, total_minutes FROM lifetime_agg WHERE player_uuid = ?";
         try (Connection connection = provider.getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, uuid.toString());
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next()) {
-                    return Optional.empty();
+                    return new LifetimeRead(LifetimeReadStatus.NOT_FOUND, null);
                 }
-                return Optional.of(new PlaytimeSnapshot(
+                return new LifetimeRead(LifetimeReadStatus.FOUND, new PlaytimeSnapshot(
                         resultSet.getLong("active_minutes"),
                         resultSet.getLong("afk_minutes"),
                         resultSet.getLong("total_minutes")
@@ -295,8 +301,13 @@ public final class PlaytimeRepository {
             }
         } catch (SQLException exception) {
             plugin.getLogger().warning("Failed to load lifetime playtime: " + exception.getMessage());
-            return Optional.empty();
+            return new LifetimeRead(LifetimeReadStatus.FAILED, null);
         }
+    }
+
+    public enum LifetimeReadStatus { FOUND, NOT_FOUND, FAILED }
+
+    public record LifetimeRead(LifetimeReadStatus status, PlaytimeSnapshot snapshot) {
     }
 
     public Optional<Instant> getFirstJoin(UUID uuid) {

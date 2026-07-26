@@ -23,7 +23,7 @@ class TierProgressTrackerTest {
 
         TierProgressTracker.InitializationRequest request = request(tracker, player);
         assertFalse(tracker.acceptActiveMinutes(player, 1).initialized());
-        TierProgressTracker.InitializationResult result = tracker.finishInitialization(request, 59).orElseThrow();
+        TierProgressTracker.InitializationResult result = tracker.finishInitialization(request, 60).orElseThrow();
 
         assertEquals(1, result.withheldActiveMinutes());
         assertEquals("I", result.reachedTier().orElseThrow().label());
@@ -40,7 +40,7 @@ class TierProgressTrackerTest {
         UUID crossingPlayer = UUID.randomUUID();
         TierProgressTracker.InitializationRequest request = request(tracker, crossingPlayer);
         tracker.acceptActiveMinutes(crossingPlayer, 2);
-        assertEquals("II", tracker.finishInitialization(request, 89).orElseThrow().reachedTier().orElseThrow().label());
+        assertEquals("II", tracker.finishInitialization(request, 91).orElseThrow().reachedTier().orElseThrow().label());
     }
 
     @Test
@@ -76,7 +76,7 @@ class TierProgressTrackerTest {
         TierProgressTracker.InitializationRequest second = request(tracker, player);
 
         assertTrue(tracker.finishInitialization(first, 59).isEmpty());
-        assertEquals("I", tracker.finishInitialization(second, 59).orElseThrow().reachedTier().orElseThrow().label());
+        assertEquals("I", tracker.finishInitialization(second, 60).orElseThrow().reachedTier().orElseThrow().label());
     }
 
     @Test
@@ -89,7 +89,7 @@ class TierProgressTrackerTest {
 
         TierProgressTracker reloaded = new TierProgressTracker(catalog, tracker.snapshot());
         TierProgressTracker.InitializationRequest request = reloaded.requestInitialization(player, false).orElseThrow();
-        TierProgressTracker.InitializationResult result = reloaded.finishInitialization(request, 59).orElseThrow();
+        TierProgressTracker.InitializationResult result = reloaded.finishInitialization(request, 60).orElseThrow();
         assertEquals(1, result.withheldActiveMinutes());
         assertFalse(result.connected());
         assertEquals("I", result.reachedTier().orElseThrow().label());

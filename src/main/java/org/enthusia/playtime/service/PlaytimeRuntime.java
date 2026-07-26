@@ -15,6 +15,8 @@ import org.enthusia.playtime.api.impl.PlaytimeServiceImpl;
 import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.data.DatabaseProvider;
 import org.enthusia.playtime.data.PlaytimeRepository;
+import org.enthusia.playtime.data.PlaytimeRepository.LifetimeRead;
+import org.enthusia.playtime.data.PlaytimeRepository.LifetimeReadStatus;
 import org.enthusia.playtime.data.model.PlayerProfile;
 import org.enthusia.playtime.event.PlayerPlaytimeTickEvent;
 import org.enthusia.playtime.leaderboard.LeaderboardExportService;
@@ -54,6 +56,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private final Map<UUID, Integer> suspiciousStreakMinutes = new ConcurrentHashMap<>();
     private final Map<UUID, Long> processedSuspicionResetMarkers = new ConcurrentHashMap<>();
     private final Map<UUID, JoinDecision> recentJoinDecisions = new ConcurrentHashMap<>();
+    private final Map<UUID, Integer> tierInitializationRetries = new ConcurrentHashMap<>();
     private final TierProgressTracker tierProgress;
 
     private BukkitTask minuteTickTask;
@@ -194,20 +197,31 @@ public final class PlaytimeRuntime implements AutoCloseable {
         playerHeadCache.updateHead(player);
     }
 
-    public RuntimeState prepareRuntimeStateSnapshot() {
-        return new RuntimeState(
+    public HandoffPreparation prepareRuntimeHandoff() {
+        AsyncWriteQueue.TransitionResult result = storageQueue.prepareHandoff(runtimeConfig.leaderboards().export().shutdownTimeoutSeconds());
+        if (result != AsyncWriteQueue.TransitionResult.SUCCESS) {
+            storageQueue.abortHandoff();
+            return new HandoffPreparation(result, null);
+        }
+        return new HandoffPreparation(result, new RuntimeState(
                 new HashMap<>(sessions.snapshot()),
                 new HashMap<>(activities.snapshot()),
                 tierProgress.snapshot()
-        );
+        ));
     }
 
-    public void commitRuntimeHandoff() {
+    public AsyncWriteQueue.TransitionResult commitRuntimeHandoff() {
+        AsyncWriteQueue.TransitionResult result = storageQueue.completeHandoff();
+        if (result != AsyncWriteQueue.TransitionResult.SUCCESS) {
+            return result;
+        }
         tierProgressHandedOff.set(true);
+        return result;
     }
 
     public void abortRuntimeHandoff() {
         tierProgressHandedOff.set(false);
+        storageQueue.abortHandoff();
     }
 
     private void startMinuteTickTask() {
@@ -350,11 +364,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
             int acceptedActiveMinutes = Math.max(0, event.getActiveMinutes());
             TierProgressTracker.ActiveUpdate update = tierProgress.acceptActiveMinutes(player.getUniqueId(), acceptedActiveMinutes);
             announceTierAdvance(player, update.reachedTier());
-            if (update.initialized()) {
-                storageQueue.enqueueMinute(player.getUniqueId(), event.getActiveMinutes(), event.getAfkMinutes());
-            } else if (event.getAfkMinutes() > 0) {
-                storageQueue.enqueueMinute(player.getUniqueId(), 0, event.getAfkMinutes());
-            }
+            storageQueue.enqueueMinute(player.getUniqueId(), event.getActiveMinutes(), event.getAfkMinutes());
             reads.invalidatePlayer(player.getUniqueId());
         }
     }
@@ -377,13 +387,33 @@ public final class PlaytimeRuntime implements AutoCloseable {
             return;
         }
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            long effectiveActiveMinutes = storageQueue.getEffectiveActiveMinutes(uuid,
-                    () -> playtimeRepository.getLifetime(uuid).map(snapshot -> snapshot.activeMinutes).orElse(0L));
+            long effectiveActiveMinutes;
+            try {
+                effectiveActiveMinutes = storageQueue.getEffectiveActiveMinutes(uuid, () -> {
+                    LifetimeRead read = playtimeRepository.readLifetimeStrict(uuid);
+                    if (read.status() == LifetimeReadStatus.FAILED) {
+                        throw new TierInitializationReadException();
+                    }
+                    return read.status() == LifetimeReadStatus.FOUND ? read.snapshot().activeMinutes : 0L;
+                });
+            } catch (TierInitializationReadException exception) {
+                scheduleTierInitializationRetry(request.get());
+                return;
+            }
             if (closed.get() || tierProgressHandedOff.get()) {
                 return;
             }
             Bukkit.getScheduler().runTask(plugin, () -> finishTierProgressInitialization(request.get(), effectiveActiveMinutes));
         });
+    }
+
+    private void scheduleTierInitializationRetry(TierProgressTracker.InitializationRequest request) {
+        if (!tierProgress.failInitialization(request) || closed.get() || tierProgressHandedOff.get()) {
+            return;
+        }
+        int attempt = tierInitializationRetries.merge(request.uuid(), 1, Integer::sum);
+        long delayTicks = Math.min(20L * 60L, 20L << Math.min(5, attempt));
+        Bukkit.getScheduler().runTaskLater(plugin, () -> initializeTierProgress(request.uuid(), Bukkit.getPlayer(request.uuid()) != null), delayTicks);
     }
 
     private void finishTierProgressInitialization(TierProgressTracker.InitializationRequest request, long effectiveActiveMinutes) {
@@ -395,20 +425,11 @@ public final class PlaytimeRuntime implements AutoCloseable {
             return;
         }
         TierProgressTracker.InitializationResult result = completed.get();
+        tierInitializationRetries.remove(request.uuid());
         UUID uuid = request.uuid();
-        enqueueWithheldActiveMinutes(uuid, result.withheldActiveMinutes());
         Player player = Bukkit.getPlayer(uuid);
         if (player != null && result.connected()) {
             announceTierAdvance(player, result.reachedTier());
-        }
-    }
-
-    private void enqueueWithheldActiveMinutes(UUID uuid, long activeMinutes) {
-        long remaining = activeMinutes;
-        while (remaining > 0L) {
-            int batch = (int) Math.min(Integer.MAX_VALUE, remaining);
-            storageQueue.enqueueMinute(uuid, batch, 0);
-            remaining -= batch;
         }
     }
 
@@ -478,9 +499,6 @@ public final class PlaytimeRuntime implements AutoCloseable {
         }
         cancelRuntimeTasks();
         unregisterRuntimeServices();
-        if (!reloadClose) {
-            tierProgress.drainWithheldActiveMinutes().forEach(this::enqueueWithheldActiveMinutes);
-        }
         persistOnlinePlayersForShutdown();
         playerHeadCache.close();
         closeStorageAndExport(reloadClose);
@@ -534,14 +552,18 @@ public final class PlaytimeRuntime implements AutoCloseable {
         }
     }
 
-    private void closeStorageAndExport(boolean reloadClose) {
-        storageQueue.close(runtimeConfig.leaderboards().export().shutdownTimeoutSeconds());
+    private AsyncWriteQueue.TransitionResult closeStorageAndExport(boolean reloadClose) {
+        AsyncWriteQueue.TransitionResult result = storageQueue.shutdown(runtimeConfig.leaderboards().export().shutdownTimeoutSeconds());
+        if (result != AsyncWriteQueue.TransitionResult.SUCCESS) {
+            plugin.getLogger().severe("Playtime write queue shutdown did not durably flush all work: " + result);
+        }
         boolean exportOnClose = reloadClose
                 ? runtimeConfig.leaderboards().export().runOnReloadClose()
                 : runtimeConfig.leaderboards().export().runOnDisable();
         if (exportOnClose) {
             exportService.exportAll();
         }
+        return result;
     }
 
     private AutoCloseable createPlanHook() {
@@ -591,9 +613,15 @@ public final class PlaytimeRuntime implements AutoCloseable {
                                Map<UUID, TierProgressTracker.ProgressState> tierProgress) {
     }
 
+    public record HandoffPreparation(AsyncWriteQueue.TransitionResult result, RuntimeState state) {
+    }
+
     public record JoinDecision(boolean firstKnownJoin, int uniqueNumber, long createdAtMillis) {
     }
 
     private record MinuteCredit(int activeMinutes, int afkMinutes) {
+    }
+
+    private static final class TierInitializationReadException extends RuntimeException {
     }
 }

@@ -15,6 +15,7 @@ import org.enthusia.playtime.joins.JoinLogListener;
 import org.enthusia.playtime.placeholders.PlaytimePlaceholderExpansion;
 import org.enthusia.playtime.skin.HeadCacheListener;
 import org.enthusia.playtime.service.PlaytimeRuntime;
+import org.enthusia.playtime.util.AsyncWriteQueue;
 
 import java.util.Optional;
 import java.util.logging.Level;
@@ -86,14 +87,25 @@ public class PlayTimePlugin extends JavaPlugin {
         PlaytimeRuntime.RuntimeState state = null;
         PlaytimeRuntime oldRuntime = this.activeRuntime.orElse(null);
         if (oldRuntime != null) {
-            state = oldRuntime.prepareRuntimeStateSnapshot();
+            PlaytimeRuntime.HandoffPreparation preparation = oldRuntime.prepareRuntimeHandoff();
+            if (preparation.result() != AsyncWriteQueue.TransitionResult.SUCCESS) {
+                getLogger().warning("Playtime runtime reload aborted because queued writes could not be handed off: " + preparation.result());
+                return false;
+            }
+            state = preparation.state();
         }
 
+        PlaytimeRuntime newRuntime = null;
         try {
-            PlaytimeRuntime newRuntime = new PlaytimeRuntime(this, config, state);
+            newRuntime = new PlaytimeRuntime(this, config, state);
+            if (oldRuntime != null) {
+                AsyncWriteQueue.TransitionResult result = oldRuntime.commitRuntimeHandoff();
+                if (result != AsyncWriteQueue.TransitionResult.SUCCESS) {
+                    throw new IllegalStateException("Old runtime handoff did not complete: " + result);
+                }
+            }
             this.activeRuntime = Optional.of(newRuntime);
             if (oldRuntime != null) {
-                oldRuntime.commitRuntimeHandoff();
                 try {
                     oldRuntime.close(true);
                 } catch (Exception closeException) {
@@ -109,6 +121,13 @@ public class PlayTimePlugin extends JavaPlugin {
             }
             return true;
         } catch (Exception exception) {
+            if (newRuntime != null) {
+                try {
+                    newRuntime.close(false);
+                } catch (Exception cleanupException) {
+                    getLogger().log(Level.WARNING, "Failed to clean up replacement runtime after reload failure.", cleanupException);
+                }
+            }
             if (oldRuntime != null) {
                 oldRuntime.abortRuntimeHandoff();
             }
