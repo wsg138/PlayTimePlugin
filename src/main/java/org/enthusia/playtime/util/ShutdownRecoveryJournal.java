@@ -88,11 +88,45 @@ public final class ShutdownRecoveryJournal {
         if (yaml.getInt("format") == 2) return new AsyncWriteQueue.RecoveryJournalSnapshot(List.of(readBatch(yaml, "", Instant.ofEpochMilli(yaml.getLong("createdAt")))));
         List<WriteBatch> batches = new ArrayList<>();
         for (Map<?, ?> entry : yaml.getMapList("batches")) {
-            YamlConfiguration batch = new YamlConfiguration();
-            entry.forEach((key, value) -> batch.set(String.valueOf(key), value));
-            batches.add(readBatch(batch, "", Instant.ofEpochMilli(batch.getLong("aggregationTime"))));
+            batches.add(readBatchMap(entry, Instant.ofEpochMilli(yaml.getLong("createdAt"))));
         }
         return new AsyncWriteQueue.RecoveryJournalSnapshot(batches);
+    }
+
+    private WriteBatch readBatchMap(Map<?, ?> entry, Instant fallbackAggregationTime) {
+        Map<UUID, MinuteDelta> minutes = new LinkedHashMap<>();
+        if (entry.get("minutes") instanceof Map<?, ?> entries) {
+            for (Map.Entry<?, ?> minute : entries.entrySet()) {
+                UUID uuid = parse(String.valueOf(minute.getKey()));
+                if (uuid != null && minute.getValue() instanceof Map<?, ?> values) {
+                    minutes.put(uuid, new MinuteDelta(numberValue(values.get("active"), 0L), numberValue(values.get("afk"), 0L)));
+                }
+            }
+        }
+        Map<UUID, PlayerProfile> profiles = new LinkedHashMap<>();
+        if (entry.get("profiles") instanceof Map<?, ?> entries) {
+            for (Map.Entry<?, ?> profile : entries.entrySet()) {
+                UUID uuid = parse(String.valueOf(profile.getKey()));
+                if (uuid != null && profile.getValue() instanceof Map<?, ?> values) {
+                    profiles.put(uuid, new PlayerProfile(uuid, nullableString(values.get("username")),
+                            nullableString(values.get("displayName")), Instant.ofEpochMilli(numberValue(values.get("seenAt"), 0L))));
+                }
+            }
+        }
+        List<JoinRecord> joins = new ArrayList<>();
+        if (entry.get("joins") instanceof List<?> entries) {
+            for (Object value : entries) {
+                if (value instanceof Map<?, ?> join) {
+                    UUID uuid = parse(nullableString(join.get("uuid")));
+                    if (uuid != null) joins.add(new JoinRecord(uuid, Instant.ofEpochMilli(numberValue(join.get("joinedAt"), 0L))));
+                }
+            }
+        }
+        UUID batchId = parse(nullableString(entry.get("batchId")));
+        Instant aggregationTime = entry.containsKey("aggregationTime")
+                ? Instant.ofEpochMilli(numberValue(entry.get("aggregationTime"), fallbackAggregationTime.toEpochMilli())) : fallbackAggregationTime;
+        return new WriteBatch(batchId == null ? UUID.randomUUID() : batchId, aggregationTime,
+                Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
     }
 
     private WriteBatch readBatch(YamlConfiguration yaml, String prefix, Instant fallbackAggregationTime) {
@@ -127,6 +161,14 @@ public final class ShutdownRecoveryJournal {
 
     private UUID parse(String value) {
         try { return value == null ? null : UUID.fromString(value); } catch (IllegalArgumentException ignored) { return null; }
+    }
+
+    private long numberValue(Object value, long fallback) {
+        return value instanceof Number number ? number.longValue() : fallback;
+    }
+
+    private String nullableString(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 
     private void deleteAfterDurableFlush() {

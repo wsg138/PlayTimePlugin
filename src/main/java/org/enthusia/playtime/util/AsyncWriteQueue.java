@@ -55,6 +55,8 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private final AtomicBoolean recoverySettlementPending = new AtomicBoolean();
     private volatile Runnable recoverySettlement = () -> { };
     private final Deque<WriteBatch> pendingRecoveryBatches = new ArrayDeque<>();
+    /** Pending work promoted for a shutdown journal remains queue-owned until durable handoff completes. */
+    private final Deque<WriteBatch> retainedShutdownBatches = new ArrayDeque<>();
     private WriteBatch activeWriteBatch;
     private static final int MAX_BATCHES_PER_FLUSH = 16;
 
@@ -219,6 +221,9 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 for (MinuteDelta delta : activeWriteBatch.minutes().values()) total = total.plus(delta);
             }
             for (WriteBatch batch : pendingRecoveryBatches) {
+                for (MinuteDelta delta : batch.minutes().values()) total = total.plus(delta);
+            }
+            for (WriteBatch batch : retainedShutdownBatches) {
                 for (MinuteDelta delta : batch.minutes().values()) total = total.plus(delta);
             }
             return total.toRangeTotals();
@@ -481,6 +486,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
         synchronized (writeOwnershipLock) {
             List<WriteBatch> batches = new ArrayList<>(pendingRecoveryBatches);
             if (activeWriteBatch != null) batches.add(activeWriteBatch);
+            batches.addAll(retainedShutdownBatches);
             if (!pendingMinutes.isEmpty() || !pendingProfiles.isEmpty() || !pendingJoins.isEmpty()) {
                 Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>(pendingMinutes);
                 Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>(pendingProfiles);
@@ -488,7 +494,9 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 pendingMinutes.keySet().removeAll(minutes.keySet());
                 pendingProfiles.keySet().removeAll(profiles.keySet());
                 pendingJoins.removeAll(joins);
-                batches.add(new WriteBatch(UUID.randomUUID(), Instant.now(), Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins)));
+                WriteBatch retained = new WriteBatch(UUID.randomUUID(), Instant.now(), Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
+                retainedShutdownBatches.addLast(retained);
+                batches.add(retained);
             }
             return new RecoveryJournalSnapshot(batches);
         }
@@ -505,7 +513,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     private boolean hasOutstandingWork() {
         synchronized (writeOwnershipLock) {
-            return activeWriteBatch != null || !pendingRecoveryBatches.isEmpty()
+            return activeWriteBatch != null || !pendingRecoveryBatches.isEmpty() || !retainedShutdownBatches.isEmpty()
                     || !pendingMinutes.isEmpty() || !pendingProfiles.isEmpty() || !pendingJoins.isEmpty();
         }
     }
@@ -533,6 +541,11 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 batchMinutes += recovery.minutes().size();
                 batchJoins += recovery.joins().size();
                 batchProfiles += recovery.profiles().size();
+            }
+            for (WriteBatch retained : retainedShutdownBatches) {
+                batchMinutes += retained.minutes().size();
+                batchJoins += retained.joins().size();
+                batchProfiles += retained.profiles().size();
             }
             return new OutstandingWork(pendingMinutes.size() + batchMinutes,
                     pendingJoins.size() + batchJoins,
@@ -566,6 +579,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
         MinuteDelta delta = pendingMinutes.get(uuid);
         if (activeWriteBatch != null) delta = plus(delta, activeWriteBatch.minutes().get(uuid));
         for (WriteBatch recovery : pendingRecoveryBatches) delta = plus(delta, recovery.minutes().get(uuid));
+        for (WriteBatch retained : retainedShutdownBatches) delta = plus(delta, retained.minutes().get(uuid));
         return delta == null ? new MinuteDelta(0, 0) : delta;
     }
 

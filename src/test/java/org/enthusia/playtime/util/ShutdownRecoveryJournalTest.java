@@ -113,5 +113,53 @@ class ShutdownRecoveryJournalTest {
         assertEquals(1, snapshot.batches().get(1).minutes().get(livePlayer).activeMinutes());
         assertEquals(1, snapshot.batches().get(1).joins().size());
         assertEquals("Live", snapshot.batches().get(1).profiles().get(livePlayer).username());
+        assertEquals(new AsyncWriteQueue.OutstandingWork(2, 1, 1), queue.outstandingWorkForTesting());
+
+        AsyncWriteQueue.RecoveryJournalSnapshot repeated = queue.recoverySnapshot();
+        assertEquals(2, repeated.batches().size());
+        assertEquals(snapshot.batches().get(1).batchId(), repeated.batches().get(1).batchId());
+        assertEquals(snapshot.batches().get(1).aggregationTime(), repeated.batches().get(1).aggregationTime());
+        assertEquals(snapshot.batches().get(1).minutes(), repeated.batches().get(1).minutes());
+        assertEquals(snapshot.batches().get(1).profiles(), repeated.batches().get(1).profiles());
+        assertEquals(snapshot.batches().get(1).joins(), repeated.batches().get(1).joins());
+        assertEquals(new AsyncWriteQueue.OutstandingWork(2, 1, 1), queue.outstandingWorkForTesting());
+    }
+
+    @Test
+    void formatThreeRoundTripRestoresAllBatchContentsInOrderBeforeDeletion() throws Exception {
+        PlayTimePlugin plugin = mock(PlayTimePlugin.class);
+        when(plugin.getDataFolder()).thenReturn(temp.toFile());
+        when(plugin.getLogger()).thenReturn(java.util.logging.Logger.getAnonymousLogger());
+        UUID minutePlayer = UUID.randomUUID();
+        UUID profilePlayer = UUID.randomUUID();
+        UUID joinPlayer = UUID.randomUUID();
+        WriteBatch first = new WriteBatch(UUID.randomUUID(), Instant.ofEpochSecond(100),
+                java.util.Map.of(minutePlayer, new MinuteDelta(3, 2)),
+                java.util.Map.of(profilePlayer, new PlayerProfile(profilePlayer, "Profile", "Display", Instant.ofEpochSecond(101))),
+                java.util.List.of(new JoinRecord(joinPlayer, Instant.ofEpochSecond(102))));
+        WriteBatch second = new WriteBatch(UUID.randomUUID(), Instant.ofEpochSecond(200),
+                java.util.Map.of(), java.util.Map.of(), java.util.List.of());
+        ShutdownRecoveryJournal journal = new ShutdownRecoveryJournal(plugin);
+        journal.write(new AsyncWriteQueue.RecoveryJournalSnapshot(java.util.List.of(first, second)));
+
+        PlaytimeRepository repository = mock(PlaytimeRepository.class);
+        when(repository.applyWriteBatch(any())).thenReturn(RecoveryApplyResult.APPLIED);
+        AsyncWriteQueue queue = new AsyncWriteQueue(plugin, repository, new PerformanceCounters(), 20L);
+        journal.restoreInto(queue);
+        assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, queue.flushNow());
+
+        org.mockito.ArgumentCaptor<WriteBatch> batches = org.mockito.ArgumentCaptor.forClass(WriteBatch.class);
+        verify(repository, times(2)).applyWriteBatch(batches.capture());
+        WriteBatch restoredFirst = batches.getAllValues().get(0);
+        WriteBatch restoredSecond = batches.getAllValues().get(1);
+        assertEquals(first.batchId(), restoredFirst.batchId());
+        assertEquals(first.aggregationTime(), restoredFirst.aggregationTime());
+        assertEquals(3, restoredFirst.minutes().get(minutePlayer).activeMinutes());
+        assertEquals(2, restoredFirst.minutes().get(minutePlayer).afkMinutes());
+        assertEquals(first.profiles().get(profilePlayer), restoredFirst.profiles().get(profilePlayer));
+        assertEquals(first.joins(), restoredFirst.joins());
+        assertEquals(second.batchId(), restoredSecond.batchId());
+        assertEquals(second.aggregationTime(), restoredSecond.aggregationTime());
+        assertFalse(temp.resolve("shutdown-recovery.yml").toFile().exists());
     }
 }
