@@ -95,6 +95,7 @@ public final class DatabaseProvider {
 
     private void rebuildDataSource() {
         HikariDataSource candidate = null;
+        RuntimeException failure = null;
         try {
             candidate = createDataSource();
             validateConnection(candidate);
@@ -104,9 +105,20 @@ public final class DatabaseProvider {
             if (previous != null) {
                 previous.close();
             }
+        } catch (RuntimeException exception) {
+            failure = exception;
+            throw exception;
         } finally {
             if (candidate != null) {
-                candidate.close();
+                try {
+                    candidate.close();
+                } catch (RuntimeException closeFailure) {
+                    if (failure != null) {
+                        failure.addSuppressed(closeFailure);
+                    } else {
+                        throw closeFailure;
+                    }
+                }
             }
         }
     }

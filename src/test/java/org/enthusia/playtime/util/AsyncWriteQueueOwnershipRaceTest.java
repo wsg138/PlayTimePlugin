@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -185,6 +187,53 @@ class AsyncWriteQueueOwnershipRaceTest {
         org.mockito.ArgumentCaptor<List<PlayerProfile>> profiles = org.mockito.ArgumentCaptor.forClass(List.class);
         verify(f.repository, times(2)).batchUpsertPlayerProfiles(profiles.capture());
         assertEquals(newer, profiles.getAllValues().get(1).getFirst());
+    }
+
+    @Test
+    void successfulOlderProfileBatchDoesNotClearNewerPendingProfile() throws Exception {
+        Fixture f = new Fixture();
+        UUID player = UUID.randomUUID();
+        PlayerProfile older = new PlayerProfile(player, "Old", "Old", Instant.ofEpochSecond(1));
+        PlayerProfile newer = new PlayerProfile(player, "New", "New", Instant.ofEpochSecond(2));
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch complete = new CountDownLatch(1);
+        doAnswer(call -> { started.countDown(); complete.await(); return null; })
+                .when(f.repository).batchUpsertPlayerProfiles(anyList());
+        f.queue.enqueuePlayerProfile(older);
+        Thread flush = new Thread(f.queue::flushNow, "older-profile-success-flush");
+        flush.start();
+        assertTrue(started.await(1, TimeUnit.SECONDS));
+        f.queue.enqueuePlayerProfile(newer);
+        complete.countDown();
+        flush.join();
+        assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, f.queue.flushNow());
+        org.mockito.ArgumentCaptor<List<PlayerProfile>> profiles = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(f.repository, times(2)).batchUpsertPlayerProfiles(profiles.capture());
+        assertEquals(newer, profiles.getAllValues().get(1).getFirst());
+    }
+
+    @Test
+    void deferredDatabaseCloseWaitsForBlockedInFlightCommit() throws Exception {
+        Fixture f = new Fixture();
+        UUID player = UUID.randomUUID();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch complete = new CountDownLatch(1);
+        CountDownLatch databaseClosed = new CountDownLatch(1);
+        AtomicBoolean closed = new AtomicBoolean();
+        doAnswer(call -> { started.countDown(); complete.await(); return null; })
+                .when(f.repository).batchRecordMinutes(anyMap(), any());
+        assertEquals(AsyncWriteQueue.EnqueueResult.ACCEPTED, f.queue.enqueueMinute(player, 1, 0));
+        Thread flush = new Thread(f.queue::flushNow, "blocked-commit");
+        flush.start();
+        assertTrue(started.await(1, TimeUnit.SECONDS));
+        assertEquals(AsyncWriteQueue.TransitionResult.TIMED_OUT, f.queue.shutdown(0));
+        f.queue.closeDatabaseAfterFlush(() -> { closed.set(true); databaseClosed.countDown(); }, 1);
+        assertFalse(databaseClosed.await(100, TimeUnit.MILLISECONDS));
+        complete.countDown();
+        flush.join();
+        assertTrue(databaseClosed.await(2, TimeUnit.SECONDS));
+        assertTrue(closed.get());
+        verify(f.repository, times(1)).batchRecordMinutes(anyMap(), any());
     }
 
     private static PlayerProfile profile(UUID uuid) {
