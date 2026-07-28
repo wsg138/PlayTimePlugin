@@ -1,20 +1,27 @@
-config-version: 3
+config-version: 4
 
 numerals:
   enabled: true
+  # Tier colors accept:
+  # - named Minecraft colors: "gray", "dark_aqua", "light_purple"
+  # - hex colors: "#55FFAA"
+  # - gradients with two or more hex stops: "gradient:#FF5F6D:#FFC371"
+  #   MiniMessage-style wrappers also work: "<gradient:#FF5F6D:#FFC371>"
+  # Existing legacy colors such as "&7" remain supported.
+  # Keep %tier_color%%tier_label% together in display/announcement templates so gradients cover the full label.
   tiers:
-    "1": { label: "I", hours: 1, color: "&7" }
-    "2": { label: "II", hours: 8, color: "&7" }
-    "3": { label: "III", hours: 20, color: "&7" }
-    "4": { label: "IV", hours: 45, color: "&7" }
-    "5": { label: "V", hours: 90, color: "&7" }
-    "6": { label: "VI", hours: 170, color: "&7" }
-    "7": { label: "VII", hours: 320, color: "&7" }
-    "8": { label: "VIII", hours: 580, color: "&7" }
-    "9": { label: "IX", hours: 1090, color: "&7" }
-    "10": { label: "x", hours: 2000, color: "&7" }
-    "11": { label: "y", hours: 5000, color: "&7" }
-    "12": { label: "z", hours: 15000, color: "&7" }
+    "1": { label: "I", hours: 1, color: "gray" }
+    "2": { label: "II", hours: 8, color: "white" }
+    "3": { label: "III", hours: 20, color: "green" }
+    "4": { label: "IV", hours: 45, color: "yellow" }
+    "5": { label: "V", hours: 90, color: "gold" }
+    "6": { label: "VI", hours: 170, color: "light_purple" }
+    "7": { label: "VII", hours: 320, color: "blue" }
+    "8": { label: "VIII", hours: 580, color: "dark_aqua" }
+    "9": { label: "IX", hours: 1090, color: "red" }
+    "10": { label: "x", hours: 2000, color: "dark_red" }
+    "11": { label: "y", hours: 5000, color: "dark_purple" }
+    "12": { label: "z", hours: 15000, color: "aqua" }
   tier-up-announcement:
     enabled: false
     message: "&6%player% &ehas reached playtime tier %tier_color%%tier_label%&e!"

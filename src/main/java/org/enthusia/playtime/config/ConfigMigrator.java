@@ -18,7 +18,7 @@ import java.util.logging.Level;
 
 public final class ConfigMigrator {
 
-    public static final int CURRENT_CONFIG_VERSION = 3;
+    public static final int CURRENT_CONFIG_VERSION = 4;
 
     private final JavaPlugin plugin;
 
@@ -48,17 +48,7 @@ public final class ConfigMigrator {
                 backedUp = true;
             }
 
-            for (String path : defaults.getKeys(true)) {
-                if (path.startsWith("numerals.tiers.") && config.isConfigurationSection("numerals.tiers")) {
-                    continue;
-                }
-                if (defaults.isConfigurationSection(path) || config.isSet(path)) {
-                    continue;
-                }
-                config.set(path, defaults.get(path));
-                added.add(path);
-                changed = true;
-            }
+            changed = backfillDefaults(config, defaults, added);
 
             if (existingVersion < CURRENT_CONFIG_VERSION) {
                 config.set("config-version", CURRENT_CONFIG_VERSION);
@@ -82,6 +72,20 @@ public final class ConfigMigrator {
         }
 
         return new MigrationResult(existingVersion, CURRENT_CONFIG_VERSION, List.copyOf(added), backedUp);
+    }
+
+    private boolean backfillDefaults(FileConfiguration config, YamlConfiguration defaults, List<String> added) {
+        boolean changed = false;
+        boolean hasConfiguredNumeralTiers = config.contains("numerals.tiers", true);
+        for (String path : defaults.getKeys(true)) {
+            if (defaults.isConfigurationSection(path)) continue;
+            if (path.startsWith("numerals.tiers.") && hasConfiguredNumeralTiers) continue;
+            if (config.contains(path, true)) continue;
+            config.set(path, defaults.get(path));
+            added.add(path);
+            changed = true;
+        }
+        return changed;
     }
 
     private void backup(String fileName) throws Exception {

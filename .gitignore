@@ -40,3 +40,6 @@ build/
 
 # Local scratch files
 __tmp_*
+
+# Local Codacy CLI cache and analysis logs
+.codacy/

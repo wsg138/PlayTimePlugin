@@ -10,6 +10,7 @@ import org.enthusia.playtime.data.model.PublicLeaderboardEntry;
 import org.enthusia.playtime.data.model.RangeTotals;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 import org.enthusia.playtime.util.NumeralTierCatalog;
+import org.enthusia.playtime.util.TierColorFormatter;
 import org.bukkit.ChatColor;
 import org.enthusia.playtime.util.TimeFormats;
 
@@ -128,7 +129,7 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
             if (tier == null) {
                 return "";
             }
-            return id.equals("roman_colored") ? ChatColor.translateAlternateColorCodes('&', tier.color()) + tier.label() : tier.label();
+            return id.equals("roman_colored") ? TierColorFormatter.apply(tier.color(), tier.label()) : tier.label();
         }
         return formatMinutesForPlaceholder(snapshotMetricMinutes(snapshot, id), id.endsWith(FORMATTED_SUFFIX));
     }

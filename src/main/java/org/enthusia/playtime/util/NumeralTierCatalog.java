@@ -7,10 +7,10 @@ import java.util.Optional;
 /** Immutable, threshold-ordered playtime numeral tiers. */
 public final class NumeralTierCatalog {
     private static final List<Tier> DEFAULT_TIERS = List.of(
-            new Tier("I", 60, "&7"), new Tier("II", 480, "&7"), new Tier("III", 1200, "&7"),
-            new Tier("IV", 2700, "&7"), new Tier("V", 5400, "&7"), new Tier("VI", 10200, "&7"),
-            new Tier("VII", 19200, "&7"), new Tier("VIII", 34800, "&7"), new Tier("IX", 65400, "&7"),
-            new Tier("x", 120000, "&7"), new Tier("y", 300000, "&7"), new Tier("z", 900000, "&7"));
+            new Tier("I", 60, "gray"), new Tier("II", 480, "white"), new Tier("III", 1200, "green"),
+            new Tier("IV", 2700, "yellow"), new Tier("V", 5400, "gold"), new Tier("VI", 10200, "light_purple"),
+            new Tier("VII", 19200, "blue"), new Tier("VIII", 34800, "dark_aqua"), new Tier("IX", 65400, "red"),
+            new Tier("x", 120000, "dark_red"), new Tier("y", 300000, "dark_purple"), new Tier("z", 900000, "aqua"));
     private final List<Tier> tiers;
 
     public NumeralTierCatalog(List<Tier> tiers) {

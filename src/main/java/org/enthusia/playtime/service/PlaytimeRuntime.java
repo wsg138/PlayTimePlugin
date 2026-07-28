@@ -24,6 +24,7 @@ import org.enthusia.playtime.skin.HeadCache;
 import org.enthusia.playtime.util.AsyncWriteQueue;
 import org.enthusia.playtime.util.PerformanceCounters;
 import org.enthusia.playtime.util.NumeralTierCatalog;
+import org.enthusia.playtime.util.TierColorFormatter;
 import org.enthusia.playtime.util.TierProgressTracker;
 import org.enthusia.playtime.util.ShutdownRecoveryJournal;
 import org.bukkit.ChatColor;
@@ -631,10 +632,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
         if (newTier == null) {
             return;
         }
-        String message = runtimeConfig.numerals().announcement().message()
+        String message = TierColorFormatter.replaceTierLabelTokens(runtimeConfig.numerals().announcement().message(), newTier)
                 .replace("%player%", player.getName())
-                .replace("%tier_label%", newTier.label())
-                .replace("%tier_color%", newTier.color())
                 .replace("%tier_hours%", String.valueOf(newTier.requiredHours()));
         announcementProbe.accept(message);
         Bukkit.broadcastMessage(ChatColor.translateAlternateColorCodes('&', message));

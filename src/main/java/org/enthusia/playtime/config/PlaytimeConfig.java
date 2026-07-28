@@ -12,6 +12,7 @@ import java.util.Locale;
 import java.util.HashSet;
 import java.util.Set;
 import org.enthusia.playtime.util.NumeralTierCatalog;
+import org.enthusia.playtime.util.TierColorFormatter;
 
 public final class PlaytimeConfig {
 
@@ -490,7 +491,7 @@ public final class PlaytimeConfig {
                 String color = cfg.getString(base + ".color", "");
                 long minutes = hours < 0 || hours > Long.MAX_VALUE / 60L ? -1L : hours * 60L;
                 if (label.isBlank() || !labels.add(label.toLowerCase(Locale.ROOT)) || minutes < 0 || !thresholds.add(minutes) || !safeColor(color)) {
-                    plugin.getLogger().warning("Ignoring invalid numerals tier '" + key + "' (labels and thresholds must be unique; hours nonnegative; color must use legacy color codes).");
+                    plugin.getLogger().warning("Ignoring invalid numerals tier '" + key + "' (labels and thresholds must be unique; hours nonnegative; color must be named, hex, gradient, or legacy format).");
                     continue;
                 }
                 valid.add(new NumeralTierCatalog.Tier(label, minutes, color));
@@ -515,7 +516,7 @@ public final class PlaytimeConfig {
     }
 
     private static boolean safeColor(String value) {
-        return value != null && value.matches("(?:&[0-9A-FK-ORa-fk-or])*");
+        return TierColorFormatter.isValid(value);
     }
 
     private static String stringValue(FileConfiguration cfg, List<String> paths, String defaultValue) {

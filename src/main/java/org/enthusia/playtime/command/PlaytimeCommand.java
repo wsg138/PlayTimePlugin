@@ -19,6 +19,7 @@ import org.enthusia.playtime.gui.admin.AdminPlayersGui;
 import org.enthusia.playtime.gui.admin.AdminServerActivityGui;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 import org.enthusia.playtime.util.NumeralTierCatalog;
+import org.enthusia.playtime.util.TierColorFormatter;
 import org.enthusia.playtime.util.TimeFormats;
 
 import java.util.ArrayList;
@@ -367,11 +368,10 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
     }
 
     private String template(String value, long activeMinutes, NumeralTierCatalog.Tier tier) {
-        String label = tier == null ? "None" : tier.label();
-        String color = tier == null ? "&8" : tier.color();
         String hours = tier == null ? "" : String.valueOf(tier.requiredHours());
-        return value.replace("%playtime%", TimeFormats.formatMinutes(activeMinutes))
-                .replace("%tier_label%", label).replace("%tier_color%", color).replace("%tier_hours%", hours);
+        return TierColorFormatter.replaceTierLabelTokens(value, tier)
+                .replace("%playtime%", TimeFormats.formatMinutes(activeMinutes))
+                .replace("%tier_hours%", hours);
     }
 
     private String color(String value) {
