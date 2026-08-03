@@ -12,34 +12,47 @@ class TierColorFormatterMiniMessageParsingTest {
 
     @Test
     void generatedNamedHexGradientAndLegacyMarkupParsesToTheOriginalText() {
-        assertParses("gray", "I");
-        assertParses("#12AB34", "II");
-        assertParses("gradient:#FF0000:#00FF00", "III");
-        assertParses("<gradient:#ff5f6d:#ffc371>", "IV");
-        assertParses("&a&l", "V");
+        Component named = parse("gray", "I");
+        Component hex = parse("#12AB34", "II");
+        Component gradient = parse("gradient:#FF0000:#00FF00", "III");
+        Component miniGradient = parse("<gradient:#ff5f6d:#ffc371>", "IV");
+        Component legacy = parse("&a&l", "V");
+
+        assertEquals("I", plain(named));
+        assertEquals("II", plain(hex));
+        assertEquals("III", plain(gradient));
+        assertEquals("IV", plain(miniGradient));
+        assertEquals("V", plain(legacy));
+        assertFalse(hasClickEvent(named));
+        assertFalse(hasClickEvent(hex));
+        assertFalse(hasClickEvent(gradient));
+        assertFalse(hasClickEvent(miniGradient));
+        assertFalse(hasClickEvent(legacy));
     }
 
     @Test
     void injectionShapedLabelRemainsLiteralAndHasNoClickEvent() {
         String label = "<click:run_command:/op me>I";
-        Component component = MiniMessage.miniMessage().deserialize(
-                TierColorFormatter.applyMiniMessage("gray", label));
+        Component component = parse("gray", label);
 
-        assertEquals(label, PlainTextComponentSerializer.plainText().serialize(component));
+        assertEquals(label, plain(component));
         assertFalse(hasClickEvent(component));
     }
 
-    private void assertParses(String color, String label) {
-        Component component = MiniMessage.miniMessage().deserialize(
+    private Component parse(String color, String label) {
+        return MiniMessage.miniMessage().deserialize(
                 TierColorFormatter.applyMiniMessage(color, label));
-        assertEquals(label, PlainTextComponentSerializer.plainText().serialize(component));
-        assertFalse(hasClickEvent(component));
+    }
+
+    private String plain(Component component) {
+        return PlainTextComponentSerializer.plainText().serialize(component);
     }
 
     private boolean hasClickEvent(Component component) {
-        if (component.style().clickEvent() != null) {
-            return true;
+        boolean found = component.style().clickEvent() != null;
+        for (Component child : component.children()) {
+            found = found || hasClickEvent(child);
         }
-        return component.children().stream().anyMatch(this::hasClickEvent);
+        return found;
     }
 }
