@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - agent/playtime-minimessage-placeholder
+  pull_request:
 
 permissions:
   contents: read
