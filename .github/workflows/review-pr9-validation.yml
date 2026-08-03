@@ -40,9 +40,9 @@ jobs:
           import xml.etree.ElementTree as ET
 
           expected = {
-              ("org.enthusia.playtime.bossbar.BossbarReloadShrinkIntegrationTest", "repeatedReloadsShrinkAndExpandBossbarPool"),
-              ("org.enthusia.playtime.command.ReloadCommandIntegrationTest", "reloadCycleReusesServicesAndDoesNotDuplicateListeners"),
-              ("org.enthusia.playtime.lifecycle.PluginLifecycleIntegrationTest", "enableDisableEnableKeepsSingleListenerSet"),
+              ("org.enthusia.playtime.BossbarReloadShrinkIntegrationTest", "repeatedReloadsShrinkAndExpandBossbarPool"),
+              ("org.enthusia.playtime.ReloadCommandIntegrationTest", "reloadCycleReusesServicesAndDoesNotDuplicateListeners"),
+              ("org.enthusia.playtime.PluginLifecycleIntegrationTest", "enableDisableEnableKeepsSingleListenerSet"),
           }
           failures = set()
           errors = set()
