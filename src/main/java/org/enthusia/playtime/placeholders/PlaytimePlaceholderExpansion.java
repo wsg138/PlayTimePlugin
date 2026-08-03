@@ -11,7 +11,6 @@ import org.enthusia.playtime.data.model.RangeTotals;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 import org.enthusia.playtime.util.NumeralTierCatalog;
 import org.enthusia.playtime.util.TierColorFormatter;
-import org.bukkit.ChatColor;
 import org.enthusia.playtime.util.TimeFormats;
 
 import java.util.List;
@@ -112,26 +111,48 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         return id.equals(METRIC_TOTAL) || id.equals(METRIC_TOTAL + FORMATTED_SUFFIX)
                 || id.equals(METRIC_ACTIVE) || id.equals(METRIC_ACTIVE + FORMATTED_SUFFIX)
                 || id.equals(METRIC_AFK) || id.equals(METRIC_AFK + FORMATTED_SUFFIX)
-                || id.equals("roman") || id.equals("roman_colored");
+                || id.equals("roman") || id.equals("roman_colored") || id.equals("roman_mm");
     }
 
     private String resolveLifetimePlaceholder(PlaytimeRuntime runtime, UUID uuid, String id) {
         Optional<PlaytimeSnapshot> optional = runtime.readService().getLifetime(uuid);
-        if (optional.isEmpty() && runtime.readService().isLifetimeLoading(uuid)) {
+        boolean loading = optional.isEmpty() && runtime.readService().isLifetimeLoading(uuid);
+        if (isRomanPlaceholder(id)) {
+            return resolveRomanPlaceholder(runtime.config().numerals(), optional, loading, id);
+        }
+        if (loading) {
             return "";
         }
         PlaytimeSnapshot snapshot = optional.orElseGet(() -> new PlaytimeSnapshot(0, 0, 0));
-        if (id.equals("roman") || id.equals("roman_colored")) {
-            if (!runtime.config().numerals().enabled()) {
-                return "";
-            }
-            NumeralTierCatalog.Tier tier = runtime.config().numerals().catalog().tierForMinutes(snapshot.activeMinutes).orElse(null);
-            if (tier == null) {
-                return "";
-            }
-            return id.equals("roman_colored") ? TierColorFormatter.apply(tier.color(), tier.label()) : tier.label();
-        }
         return formatMinutesForPlaceholder(snapshotMetricMinutes(snapshot, id), id.endsWith(FORMATTED_SUFFIX));
+    }
+
+    static String resolveRomanPlaceholder(
+            PlaytimeConfig.Numerals numerals,
+            Optional<PlaytimeSnapshot> optional,
+            boolean loading,
+            String id
+    ) {
+        if (optional.isEmpty() && loading) {
+            return "";
+        }
+        if (!numerals.enabled()) {
+            return "";
+        }
+        PlaytimeSnapshot snapshot = optional.orElseGet(() -> new PlaytimeSnapshot(0, 0, 0));
+        NumeralTierCatalog.Tier tier = numerals.catalog().tierForMinutes(snapshot.activeMinutes).orElse(null);
+        if (tier == null) {
+            return "";
+        }
+        return switch (id) {
+            case "roman_colored" -> TierColorFormatter.apply(tier.color(), tier.label());
+            case "roman_mm" -> TierColorFormatter.applyMiniMessage(tier.color(), tier.label());
+            default -> tier.label();
+        };
+    }
+
+    private boolean isRomanPlaceholder(String id) {
+        return id.equals("roman") || id.equals("roman_colored") || id.equals("roman_mm");
     }
 
     private String resolveRangePlaceholder(PlaytimeRuntime runtime, UUID uuid, String id) {
