@@ -51,7 +51,10 @@ class TierColorFormatterMiniMessageParsingTest {
     private boolean hasClickEvent(Component component) {
         boolean found = component.style().clickEvent() != null;
         for (Component child : component.children()) {
-            found = found || hasClickEvent(child);
+            if (hasClickEvent(child)) {
+                found = true;
+                break;
+            }
         }
         return found;
     }
