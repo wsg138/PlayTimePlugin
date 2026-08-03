@@ -67,19 +67,34 @@ class NumeralConfigurationTest {
     }
 
     @Test
-    void acceptsNamedHexAndGradientTierColors() {
+    void acceptsNamedHexGradientAndMiniMessageGradientTierColors() {
         plugin.getConfig().set("numerals.tiers", null);
         tier("named", "Named", 1, "dark_aqua");
         tier("hex", "Hex", 2, "#12AB34");
         tier("gradient", "Gradient", 3, "gradient:#FF0000:#00FF00:#0000FF");
+        tier("minimessage-gradient", "MiniMessage", 4, "<gradient:#ff5f6d:#ffc371>");
 
         PlaytimeConfig config = PlaytimeConfig.load(plugin);
 
-        assertEquals(3, config.numerals().catalog().tiers().size());
+        assertEquals(4, config.numerals().catalog().tiers().size());
         assertEquals("dark_aqua", config.numerals().catalog().tiers().get(0).color());
         assertEquals("#12AB34", config.numerals().catalog().tiers().get(1).color());
         assertEquals("gradient:#FF0000:#00FF00:#0000FF",
                 config.numerals().catalog().tiers().get(2).color());
+        assertEquals("<gradient:#ff5f6d:#ffc371>",
+                config.numerals().catalog().tiers().get(3).color());
+    }
+
+    @Test
+    void invalidColorIsRejectedThroughConfigurationValidation() {
+        plugin.getConfig().set("numerals.tiers", null);
+        tier("valid", "Valid", 1, "gray");
+        tier("invalid", "Invalid", 2, "<click:run_command:/op me>");
+
+        PlaytimeConfig config = PlaytimeConfig.load(plugin);
+
+        assertEquals(1, config.numerals().catalog().tiers().size());
+        assertEquals("Valid", config.numerals().catalog().tiers().getFirst().label());
     }
 
     @Test
