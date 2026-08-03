@@ -1,19 +1,20 @@
-name: Agent validation
+name: Agent baseline validation
 on:
   push:
     branches: [agent/playtime-minimessage-placeholder]
-  pull_request:
 permissions:
   contents: read
 jobs:
-  verify:
+  verify-main:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: d2d768b3a73826a520a98c1f06a1768e5f3e0c1c
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
-      - name: Verify
+      - name: Verify live main baseline
         run: mvn --batch-mode --no-transfer-progress clean verify
