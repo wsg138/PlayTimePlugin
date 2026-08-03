@@ -1,0 +1,49 @@
+name: Build PR JAR
+
+on:
+  push:
+    branches:
+      - agent/playtime-minimessage-placeholder
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run focused MiniMessage and numeral tests
+        run: >-
+          mvn --batch-mode --no-transfer-progress
+          -Dtest=TierColorFormatterTest,PlaytimePlaceholderExpansionTest,NumeralConfigurationTest
+          test
+
+      - name: Package shaded plugin JAR
+        run: mvn --batch-mode --no-transfer-progress -DskipTests package
+
+      - name: Verify packaged plugin
+        run: |
+          test -f target/playtime-plugin-3.5.11.jar
+          jar tf target/playtime-plugin-3.5.11.jar | grep -q '^plugin.yml$'
+          jar tf target/playtime-plugin-3.5.11.jar | grep -q '^org/enthusia/playtime/placeholders/PlaytimePlaceholderExpansion.class$'
+
+      - name: Upload PlayTime JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: EnthusiaPlaytime-3.5.11-pr9
+          path: target/playtime-plugin-3.5.11.jar
+          if-no-files-found: error
+          retention-days: 7
