@@ -22,7 +22,7 @@ jobs:
           java-version: '21'
           cache: maven
       - name: Focused MiniMessage tests
-        run: mvn --batch-mode --no-transfer-progress -Dtest=TierColorFormatterTest,PlaytimePlaceholderExpansionTest,NumeralConfigurationTest test
+        run: mvn --batch-mode --no-transfer-progress -Dtest=TierColorFormatterTest,TierColorFormatterMiniMessageParsingTest,PlaytimePlaceholderExpansionTest,NumeralConfigurationTest test
       - name: Verify full-suite result matches the known baseline only
         shell: bash
         run: |
