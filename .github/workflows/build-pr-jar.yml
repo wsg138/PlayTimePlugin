@@ -1,6 +1,13 @@
 name: Build PR JAR
 
 on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
   push:
     branches:
       - agent/playtime-minimessage-placeholder
