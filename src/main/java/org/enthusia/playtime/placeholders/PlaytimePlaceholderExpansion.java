@@ -120,8 +120,16 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         if (isRomanPlaceholder(id)) {
             return resolveRomanPlaceholder(runtime.config().numerals(), optional, loading, id);
         }
+        return resolveLifetimeMetricPlaceholder(optional, loading, id);
+    }
+
+    static String resolveLifetimeMetricPlaceholder(
+            Optional<PlaytimeSnapshot> optional,
+            boolean loading,
+            String id
+    ) {
         if (loading) {
-            return "";
+            return id.equals(METRIC_ACTIVE) ? "0" : "";
         }
         PlaytimeSnapshot snapshot = optional.orElseGet(() -> new PlaytimeSnapshot(0, 0, 0));
         return formatMinutesForPlaceholder(snapshotMetricMinutes(snapshot, id), id.endsWith(FORMATTED_SUFFIX));
@@ -133,7 +141,7 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
             boolean loading,
             String id
     ) {
-        if (optional.isEmpty() && loading) {
+        if (loading) {
             return "";
         }
         if (!numerals.enabled()) {
@@ -223,7 +231,7 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         }
     }
 
-    private long snapshotMetricMinutes(PlaytimeSnapshot snapshot, String id) {
+    private static long snapshotMetricMinutes(PlaytimeSnapshot snapshot, String id) {
         if (id.startsWith(METRIC_TOTAL)) {
             return snapshot.totalMinutes;
         }
@@ -241,7 +249,7 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         };
     }
 
-    private String formatMinutesForPlaceholder(long minutes, boolean formatted) {
+    private static String formatMinutesForPlaceholder(long minutes, boolean formatted) {
         return formatted ? TimeFormats.formatMinutes(minutes) : String.valueOf(minutes * 60L);
     }
 
