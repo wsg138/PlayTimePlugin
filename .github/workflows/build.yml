@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          mvn --batch-mode --no-transfer-progress clean package 2>&1 | tee build.log
+          mvn --batch-mode --no-transfer-progress -DreuseForks=false clean package 2>&1 | tee build.log
 
       - name: Upload build log
         if: always()
