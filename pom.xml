@@ -8,7 +8,7 @@
 
     <groupId>org.enthusia</groupId>
     <artifactId>playtime-plugin</artifactId>
-    <version>3.5.11</version>
+    <version>3.5.12</version>
     <packaging>jar</packaging>
 
     <name>EnthusiaPlaytime</name>
@@ -146,10 +146,8 @@
                                     <pattern>com.zaxxer.hikari</pattern>
                                     <shadedPattern>org.enthusia.playtime.shaded.hikari</shadedPattern>
                                 </relocation>
-                                <relocation>
-                                    <pattern>org.sqlite</pattern>
-                                    <shadedPattern>org.enthusia.playtime.shaded.sqlite</shadedPattern>
-                                </relocation>
+                                <!-- sqlite-jdbc uses JNI entry points tied to the org.sqlite package name. -->
+                                <!-- Keep org.sqlite unrelocated so native methods remain resolvable after reload. -->
                                 <relocation>
                                     <pattern>org.mariadb.jdbc</pattern>
                                     <shadedPattern>org.enthusia.playtime.shaded.mariadb</shadedPattern>
