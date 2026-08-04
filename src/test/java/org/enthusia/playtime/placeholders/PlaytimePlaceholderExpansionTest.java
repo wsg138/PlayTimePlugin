@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlaytimePlaceholderExpansionTest {
 
@@ -27,27 +28,49 @@ class PlaytimePlaceholderExpansionTest {
     @Test
     void returnsEmptyForDisabledMissingOrLoadingNumeralData() {
         PlaytimeConfig.Numerals disabled = numerals(false, "gray", "I", 60);
-        assertEquals("", resolve(disabled, Optional.of(snapshot(60)), false, "roman_mm"));
+        assertEquals("", resolveRoman(disabled, Optional.of(snapshot(60)), false, "roman_mm"));
 
         PlaytimeConfig.Numerals noMatch = numerals(true, "gray", "I", 60);
-        assertEquals("", resolve(noMatch, Optional.of(snapshot(59)), false, "roman_mm"));
+        assertEquals("", resolveRoman(noMatch, Optional.of(snapshot(59)), false, "roman_mm"));
 
         PlaytimeConfig.Numerals loading = numerals(true, "gray", "I", 60);
-        assertEquals("", resolve(loading, Optional.empty(), true, "roman_mm"));
+        assertEquals("", resolveRoman(loading, Optional.empty(), true, "roman_mm"));
+        assertEquals("", resolveRoman(loading, Optional.of(snapshot(60)), true, "roman_mm"));
     }
 
     @Test
     void preservesPlainAndLegacyColoredPlaceholderContracts() {
         PlaytimeConfig.Numerals numerals = numerals(true, "&a", "V", 60);
 
-        assertEquals("V", resolve(numerals, Optional.of(snapshot(60)), false, "roman"));
+        assertEquals("V", resolveRoman(numerals, Optional.of(snapshot(60)), false, "roman"));
         assertEquals(ChatColor.GREEN + "V",
-                resolve(numerals, Optional.of(snapshot(60)), false, "roman_colored"));
+                resolveRoman(numerals, Optional.of(snapshot(60)), false, "roman_colored"));
+    }
+
+    @Test
+    void activePlaceholderIsAlwaysNumericForVelocitabSorting() {
+        String loading = resolveMetric(Optional.empty(), true, "active");
+        String loaded = resolveMetric(Optional.of(snapshot(62)), false, "active");
+        String missing = resolveMetric(Optional.empty(), false, "active");
+
+        assertEquals("0", loading);
+        assertEquals("3720", loaded);
+        assertEquals("0", missing);
+        assertTrue(loading.matches("\\d+"));
+        assertTrue(loaded.matches("\\d+"));
+        assertTrue(missing.matches("\\d+"));
+    }
+
+    @Test
+    void otherLifetimeLoadingFallbacksRemainUnchanged() {
+        assertEquals("", resolveMetric(Optional.empty(), true, "total"));
+        assertEquals("", resolveMetric(Optional.empty(), true, "active_formatted"));
+        assertEquals("", resolveMetric(Optional.empty(), true, "afk"));
     }
 
     private void assertRomanMm(String color, String label, String expected) {
         PlaytimeConfig.Numerals numerals = numerals(true, color, label, 60);
-        assertEquals(expected, resolve(numerals, Optional.of(snapshot(60)), false, "roman_mm"));
+        assertEquals(expected, resolveRoman(numerals, Optional.of(snapshot(60)), false, "roman_mm"));
     }
 
     private PlaytimeConfig.Numerals numerals(boolean enabled, String color, String label, long thresholdMinutes) {
@@ -60,12 +83,20 @@ class PlaytimePlaceholderExpansionTest {
         return new PlaytimeSnapshot(activeMinutes, activeMinutes, 0);
     }
 
-    private String resolve(
+    private String resolveRoman(
             PlaytimeConfig.Numerals numerals,
             Optional<PlaytimeSnapshot> snapshot,
             boolean loading,
             String identifier
     ) {
         return PlaytimePlaceholderExpansion.resolveRomanPlaceholder(numerals, snapshot, loading, identifier);
+    }
+
+    private String resolveMetric(
+            Optional<PlaytimeSnapshot> snapshot,
+            boolean loading,
+            String identifier
+    ) {
+        return PlaytimePlaceholderExpansion.resolveLifetimeMetricPlaceholder(snapshot, loading, identifier);
     }
 }
