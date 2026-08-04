@@ -1,5 +1,7 @@
 package org.enthusia.playtime.util;
 
+import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.ChatColor;
 import org.junit.jupiter.api.Test;
 
@@ -38,8 +40,17 @@ class TierColorFormatterTest {
 
     @Test
     void escapesTierLabelsBeforeEmbeddingThemInMiniMessage() {
-        assertEquals("<gray>\\<click:run_command:/op me>I</gray>",
-                TierColorFormatter.applyMiniMessage("gray", "<click:run_command:/op me>I"));
+        String rendered = TierColorFormatter.applyMiniMessage("gray", "<click:run_command:/op me>I");
+
+        assertEquals("<gray>\\<click:run_command:/op me>I</gray>", rendered);
+        assertEquals("<click:run_command:/op me>I",
+                PlainTextComponentSerializer.plainText().serialize(MiniMessage.miniMessage().deserialize(rendered)));
+    }
+
+    @Test
+    void escapesUnknownDownstreamTagsAndExistingBackslashes() {
+        assertEquals("<gray>\\<custom:danger>tag\\\\value</gray>",
+                TierColorFormatter.applyMiniMessage("gray", "<custom:danger>tag\\value"));
     }
 
     @Test
