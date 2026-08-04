@@ -1,0 +1,66 @@
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build and test
+        shell: bash
+        run: |
+          set -o pipefail
+          mvn --batch-mode --no-transfer-progress -DreuseForks=false clean package 2>&1 | tee build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.sha }}
+          path: build.log
+          if-no-files-found: error
+
+      - name: Verify plugin packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR=$(find target -maxdepth 1 -type f -name '*.jar' ! -name 'original-*' | head -n 1)
+          test -n "$JAR"
+
+          jar tf "$JAR" | grep -q '^org/sqlite/JDBC.class$'
+          if jar tf "$JAR" | grep -q '^org/enthusia/playtime/shaded/sqlite/'; then
+            echo 'sqlite-jdbc was incorrectly relocated'
+            exit 1
+          fi
+
+          POM_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          PLUGIN_VERSION=$(unzip -p "$JAR" plugin.yml | sed -n 's/^version:[[:space:]]*//p' | tr -d "'\"")
+          if [ "$PLUGIN_VERSION" != "$POM_VERSION" ]; then
+            echo "plugin.yml version $PLUGIN_VERSION does not match Maven version $POM_VERSION"
+            exit 1
+          fi
+
+      - name: Upload plugin JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: EnthusiaPlaytime-${{ github.sha }}
+          path: target/playtime-plugin-*.jar
+          if-no-files-found: error

@@ -44,8 +44,14 @@ public final class DatabaseProvider {
         }
 
         synchronized (lock) {
-            rebuildDataSource();
-            if (countedOpen.compareAndSet(false, true)) OPEN_PROVIDERS.incrementAndGet();
+            try {
+                rebuildDataSource();
+                if (countedOpen.compareAndSet(false, true)) OPEN_PROVIDERS.incrementAndGet();
+            } catch (LinkageError failure) {
+                // sqlite-jdbc loads JNI methods while the pool opens. Convert linkage failures into
+                // a normal runtime initialization failure so reload can roll back the prepared runtime.
+                throw new DatabaseInitializationException(failure);
+            }
         }
     }
 
