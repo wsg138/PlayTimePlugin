@@ -38,13 +38,23 @@ jobs:
           path: build.log
           if-no-files-found: error
 
-      - name: Verify SQLite packaging
+      - name: Verify plugin packaging
+        shell: bash
         run: |
+          set -euo pipefail
           JAR=$(find target -maxdepth 1 -type f -name '*.jar' ! -name 'original-*' | head -n 1)
           test -n "$JAR"
+
           jar tf "$JAR" | grep -q '^org/sqlite/JDBC.class$'
           if jar tf "$JAR" | grep -q '^org/enthusia/playtime/shaded/sqlite/'; then
             echo 'sqlite-jdbc was incorrectly relocated'
+            exit 1
+          fi
+
+          POM_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          PLUGIN_VERSION=$(unzip -p "$JAR" plugin.yml | sed -n 's/^version:[[:space:]]*//p' | tr -d "'\"")
+          if [ "$PLUGIN_VERSION" != "$POM_VERSION" ]; then
+            echo "plugin.yml version $PLUGIN_VERSION does not match Maven version $POM_VERSION"
             exit 1
           fi
 
