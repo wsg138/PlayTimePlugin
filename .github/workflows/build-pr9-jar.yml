@@ -1,6 +1,7 @@
 name: Build PR 9 JAR
 
 on:
+  pull_request:
   push:
     branches:
       - agent/build-pr9-jar
