@@ -1,9 +1,13 @@
 name: Agent Verify PR 9
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/playtime-minimessage-placeholder
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
   workflow_dispatch:
 
 permissions:
