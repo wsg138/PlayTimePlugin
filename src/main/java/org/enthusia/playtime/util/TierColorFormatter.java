@@ -83,9 +83,9 @@ public final class TierColorFormatter {
         }
         String value = specification.trim();
         ParsedColor parsed = parseLegacy(value);
-        if (parsed == null) parsed = parseNamed(value);
         if (parsed == null) parsed = parseSingleHex(value);
         if (parsed == null) parsed = parseGradient(value);
+        if (parsed == null) parsed = parseNamed(value);
         if (parsed != null) return parsed;
         throw new IllegalArgumentException("Unsupported color specification");
     }
