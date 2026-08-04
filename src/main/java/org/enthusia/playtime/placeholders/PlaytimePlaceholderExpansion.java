@@ -11,7 +11,6 @@ import org.enthusia.playtime.data.model.RangeTotals;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 import org.enthusia.playtime.util.NumeralTierCatalog;
 import org.enthusia.playtime.util.TierColorFormatter;
-import org.bukkit.ChatColor;
 import org.enthusia.playtime.util.TimeFormats;
 
 import java.util.List;
@@ -112,26 +111,56 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         return id.equals(METRIC_TOTAL) || id.equals(METRIC_TOTAL + FORMATTED_SUFFIX)
                 || id.equals(METRIC_ACTIVE) || id.equals(METRIC_ACTIVE + FORMATTED_SUFFIX)
                 || id.equals(METRIC_AFK) || id.equals(METRIC_AFK + FORMATTED_SUFFIX)
-                || id.equals("roman") || id.equals("roman_colored");
+                || id.equals("roman") || id.equals("roman_colored") || id.equals("roman_mm");
     }
 
     private String resolveLifetimePlaceholder(PlaytimeRuntime runtime, UUID uuid, String id) {
         Optional<PlaytimeSnapshot> optional = runtime.readService().getLifetime(uuid);
-        if (optional.isEmpty() && runtime.readService().isLifetimeLoading(uuid)) {
+        boolean loading = optional.isEmpty() && runtime.readService().isLifetimeLoading(uuid);
+        if (isRomanPlaceholder(id)) {
+            return resolveRomanPlaceholder(runtime.config().numerals(), optional, loading, id);
+        }
+        return resolveLifetimeMetricPlaceholder(optional, loading, id);
+    }
+
+    static String resolveLifetimeMetricPlaceholder(
+            Optional<PlaytimeSnapshot> optional,
+            boolean loading,
+            String id
+    ) {
+        if (loading) {
+            return id.equals(METRIC_ACTIVE) ? "0" : "";
+        }
+        PlaytimeSnapshot snapshot = optional.orElseGet(() -> new PlaytimeSnapshot(0, 0, 0));
+        return formatMinutesForPlaceholder(snapshotMetricMinutes(snapshot, id), id.endsWith(FORMATTED_SUFFIX));
+    }
+
+    static String resolveRomanPlaceholder(
+            PlaytimeConfig.Numerals numerals,
+            Optional<PlaytimeSnapshot> optional,
+            boolean loading,
+            String id
+    ) {
+        if (loading) {
+            return "";
+        }
+        if (!numerals.enabled()) {
             return "";
         }
         PlaytimeSnapshot snapshot = optional.orElseGet(() -> new PlaytimeSnapshot(0, 0, 0));
-        if (id.equals("roman") || id.equals("roman_colored")) {
-            if (!runtime.config().numerals().enabled()) {
-                return "";
-            }
-            NumeralTierCatalog.Tier tier = runtime.config().numerals().catalog().tierForMinutes(snapshot.activeMinutes).orElse(null);
-            if (tier == null) {
-                return "";
-            }
-            return id.equals("roman_colored") ? TierColorFormatter.apply(tier.color(), tier.label()) : tier.label();
+        NumeralTierCatalog.Tier tier = numerals.catalog().tierForMinutes(snapshot.activeMinutes).orElse(null);
+        if (tier == null) {
+            return "";
         }
-        return formatMinutesForPlaceholder(snapshotMetricMinutes(snapshot, id), id.endsWith(FORMATTED_SUFFIX));
+        return switch (id) {
+            case "roman_colored" -> TierColorFormatter.apply(tier.color(), tier.label());
+            case "roman_mm" -> TierColorFormatter.applyMiniMessage(tier.color(), tier.label());
+            default -> tier.label();
+        };
+    }
+
+    private boolean isRomanPlaceholder(String id) {
+        return id.equals("roman") || id.equals("roman_colored") || id.equals("roman_mm");
     }
 
     private String resolveRangePlaceholder(PlaytimeRuntime runtime, UUID uuid, String id) {
@@ -202,7 +231,7 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         }
     }
 
-    private long snapshotMetricMinutes(PlaytimeSnapshot snapshot, String id) {
+    private static long snapshotMetricMinutes(PlaytimeSnapshot snapshot, String id) {
         if (id.startsWith(METRIC_TOTAL)) {
             return snapshot.totalMinutes;
         }
@@ -220,7 +249,7 @@ public final class PlaytimePlaceholderExpansion extends PlaceholderExpansion {
         };
     }
 
-    private String formatMinutesForPlaceholder(long minutes, boolean formatted) {
+    private static String formatMinutesForPlaceholder(long minutes, boolean formatted) {
         return formatted ? TimeFormats.formatMinutes(minutes) : String.valueOf(minutes * 60L);
     }
 
