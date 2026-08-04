@@ -52,5 +52,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: EnthusiaPlaytime-${{ github.sha }}
-          path: target/PlayTimePlugin-*.jar
+          path: target/playtime-plugin-*.jar
           if-no-files-found: error
