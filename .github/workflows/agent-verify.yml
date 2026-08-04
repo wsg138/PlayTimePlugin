@@ -1,0 +1,101 @@
+name: Agent Verify PR 9
+
+on:
+  push:
+    branches:
+      - agent/playtime-minimessage-placeholder
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run focused placeholder and numeral tests
+        run: >-
+          mvn --batch-mode --no-transfer-progress
+          -Dtest=TierColorFormatterTest,PlaytimePlaceholderExpansionTest,NumeralConfigurationTest
+          test
+
+      - name: Run complete PR verification
+        id: branch_verify
+        continue-on-error: true
+        run: mvn --batch-mode --no-transfer-progress clean verify
+
+      - name: Preserve PR test reports
+        if: always()
+        run: |
+          mkdir -p /tmp/pr-surefire
+          if [ -d target/surefire-reports ]; then
+            cp -R target/surefire-reports/. /tmp/pr-surefire/
+          fi
+
+      - name: Check out current main baseline
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: baseline
+
+      - name: Run complete main verification
+        id: baseline_verify
+        continue-on-error: true
+        working-directory: baseline
+        run: mvn --batch-mode --no-transfer-progress clean verify
+
+      - name: Compare PR and baseline failures
+        if: always()
+        env:
+          PR_OUTCOME: ${{ steps.branch_verify.outcome }}
+          BASE_OUTCOME: ${{ steps.baseline_verify.outcome }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          def failures(root):
+              found = []
+              for report in pathlib.Path(root).glob('TEST-*.xml'):
+                  try:
+                      tree = ET.parse(report)
+                  except ET.ParseError:
+                      continue
+                  for case in tree.getroot().iter('testcase'):
+                      if case.find('failure') is not None or case.find('error') is not None:
+                          found.append(f"{case.attrib.get('classname', '')}.{case.attrib.get('name', '')}")
+              return sorted(found)
+
+          pr = failures('/tmp/pr-surefire')
+          base = failures('baseline/target/surefire-reports')
+          print(f"PR Maven outcome: {os.environ['PR_OUTCOME']}")
+          print(f"Main Maven outcome: {os.environ['BASE_OUTCOME']}")
+          print('PR failures:')
+          print('\n'.join(pr) if pr else '(none)')
+          print('Main failures:')
+          print('\n'.join(base) if base else '(none)')
+          if pr != base:
+              raise SystemExit('PR and main failure sets differ')
+          PY
+
+      - name: Package shaded plugin JAR
+        run: mvn --batch-mode --no-transfer-progress -DskipTests package
+
+      - name: Verify packaged plugin
+        run: |
+          test -f target/playtime-plugin-3.5.11.jar
+          jar tf target/playtime-plugin-3.5.11.jar | grep -q '^plugin.yml$'
+          jar tf target/playtime-plugin-3.5.11.jar | grep -q '^org/enthusia/playtime/placeholders/PlaytimePlaceholderExpansion.class$'
