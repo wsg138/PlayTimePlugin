@@ -3,6 +3,7 @@ package org.enthusia.playtime.data;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.config.PlaytimeConfig;
 import org.sqlite.SQLiteException;
 
@@ -28,6 +29,8 @@ public final class DatabaseProvider {
     private SqlDialect dialect;
     private StorageType storageType;
     private File sqliteFile;
+    private boolean sqliteCreationAllowed;
+    private boolean sqliteExistedBeforeOpen;
     private final AtomicBoolean countedOpen = new AtomicBoolean();
 
     public DatabaseProvider(JavaPlugin plugin, PlaytimeConfig config) {
@@ -41,11 +44,19 @@ public final class DatabaseProvider {
 
         if (type == StorageType.SQLITE) {
             this.sqliteFile = new File(plugin.getDataFolder(), config.getSqliteFile()).getAbsoluteFile();
+            this.sqliteCreationAllowed = plugin instanceof PlayTimePlugin playTimePlugin
+                    && playTimePlugin.mayCreateInitialSqliteDatabase();
+            this.sqliteExistedBeforeOpen = SqliteStorageSafety.prepareDatabasePath(
+                    sqliteFile, sqliteCreationAllowed);
         }
 
         synchronized (lock) {
             try {
                 rebuildDataSource();
+                if (type == StorageType.SQLITE) {
+                    sqliteCreationAllowed = false;
+                    validateAndBackupEstablishedSqlite();
+                }
                 if (countedOpen.compareAndSet(false, true)) OPEN_PROVIDERS.incrementAndGet();
             } catch (LinkageError failure) {
                 // sqlite-jdbc loads JNI methods while the pool opens. Convert linkage failures into
@@ -71,11 +82,16 @@ public final class DatabaseProvider {
 
         synchronized (lock) {
             try {
+                sqliteCreationAllowed = false;
+                SqliteStorageSafety.prepareDatabasePath(sqliteFile, false);
                 rebuildDataSource();
+                try (Connection connection = dataSource.getConnection()) {
+                    SqliteStorageSafety.validateEstablishedDatabase(connection);
+                }
                 return true;
-            } catch (RuntimeException rte) {
+            } catch (Exception failure) {
                 if (log.isLoggable(Level.SEVERE)) {
-                    log.severe("Failed to reopen SQLite database after move: " + rte.getMessage());
+                    log.severe("Failed to reopen SQLite database after move: " + failure.getMessage());
                 }
                 return false;
             }
@@ -133,9 +149,11 @@ public final class DatabaseProvider {
         HikariConfig hikariConfig = new HikariConfig();
 
         if (storageType == StorageType.SQLITE) {
+            SqliteStorageSafety.prepareDatabasePath(sqliteFile, sqliteCreationAllowed);
             File parent = sqliteFile.getParentFile();
             if (parent != null) {
-                // Ensure directory exists in case the data folder was moved or recreated
+                // Ensure directory exists for a genuine first installation only. Established
+                // installations are rejected above if their database unexpectedly disappears.
                 parent.mkdirs();
             }
 
@@ -164,6 +182,24 @@ public final class DatabaseProvider {
         hikariConfig.setLeakDetectionThreshold(0);
 
         return new HikariDataSource(hikariConfig);
+    }
+
+    private void validateAndBackupEstablishedSqlite() {
+        if (!sqliteExistedBeforeOpen) {
+            return;
+        }
+        try (Connection connection = dataSource.getConnection()) {
+            SqliteStorageSafety.validateEstablishedDatabase(connection);
+            if (plugin instanceof PlayTimePlugin playTimePlugin
+                    && playTimePlugin.claimSqliteStartupBackup()) {
+                File backup = SqliteStorageSafety.replaceRollingBackup(
+                        connection, sqliteFile, plugin.getDataFolder());
+                plugin.getLogger().info("Verified SQLite database " + sqliteFile.getAbsolutePath()
+                        + " and replaced rolling startup backup " + backup.getAbsolutePath() + ".");
+            }
+        } catch (SQLException failure) {
+            throw new DatabaseInitializationException(failure);
+        }
     }
 
     private void validateConnection(DataSource ds) {
