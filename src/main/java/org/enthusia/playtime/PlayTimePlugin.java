@@ -57,7 +57,14 @@ public class PlayTimePlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        boolean establishedDataFolder = containsExistingPluginData(getDataFolder());
+        File dataFolder = getDataFolder();
+        boolean establishedDataFolder = containsExistingPluginData(dataFolder);
+        if (establishedDataFolder && !new File(dataFolder, "config.yml").isFile()) {
+            getLogger().severe("Established EnthusiaPlaytime data is present but config.yml is missing. "
+                    + "Refusing to create replacement settings; restore config.yml before starting.");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
         this.allowInitialSqliteCreation = !establishedDataFolder;
         this.sqliteStartupBackupPending.set(establishedDataFolder);
 
