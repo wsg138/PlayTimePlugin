@@ -17,7 +17,9 @@ import org.enthusia.playtime.skin.HeadCacheListener;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 import org.enthusia.playtime.util.AsyncWriteQueue;
 
+import java.io.File;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.function.Consumer;
 
@@ -29,6 +31,8 @@ public class PlayTimePlugin extends JavaPlugin {
     private static volatile Consumer<ReloadStage> reloadProbe = ignored -> { };
 
     private final Object runtimeLock = new Object();
+    private final AtomicBoolean sqliteStartupBackupPending = new AtomicBoolean(false);
+    private volatile boolean allowInitialSqliteCreation;
     private volatile Optional<PlaytimeRuntime> activeRuntime = Optional.empty();
     private Optional<PlaytimePlaceholderExpansion> placeholderExpansion = Optional.empty();
     private PlaceholderLifecycle placeholderLifecycle = new PlaceholderLifecycle() {
@@ -53,6 +57,17 @@ public class PlayTimePlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        File dataFolder = getDataFolder();
+        boolean establishedDataFolder = containsExistingPluginData(dataFolder);
+        if (establishedDataFolder && !new File(dataFolder, "config.yml").isFile()) {
+            getLogger().severe("Established EnthusiaPlaytime data is present but config.yml is missing. "
+                    + "Refusing to create replacement settings; restore config.yml before starting.");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+        this.allowInitialSqliteCreation = !establishedDataFolder;
+        this.sqliteStartupBackupPending.set(establishedDataFolder);
+
         ConfigMigrator migrator = new ConfigMigrator(this);
         migrator.migrateConfig();
 
@@ -60,10 +75,13 @@ public class PlayTimePlugin extends JavaPlugin {
         registerAdapters();
 
         if (!reloadPluginRuntime(null)) {
+            this.allowInitialSqliteCreation = false;
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
 
+        this.allowInitialSqliteCreation = false;
+        this.sqliteStartupBackupPending.set(false);
         refreshPlaceholderExpansion();
 
         getLogger().info("EnthusiaPlaytime enabled.");
@@ -71,6 +89,8 @@ public class PlayTimePlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        this.allowInitialSqliteCreation = false;
+        this.sqliteStartupBackupPending.set(false);
         placeholderExpansion.ifPresent(PlaytimePlaceholderExpansion::unregister);
         placeholderExpansion = Optional.empty();
 
@@ -88,6 +108,19 @@ public class PlayTimePlugin extends JavaPlugin {
 
     public boolean reloadPluginRuntime() {
         return reloadPluginRuntime("reload");
+    }
+
+    public boolean mayCreateInitialSqliteDatabase() {
+        return allowInitialSqliteCreation;
+    }
+
+    public boolean claimSqliteStartupBackup() {
+        return sqliteStartupBackupPending.compareAndSet(true, false);
+    }
+
+    static boolean containsExistingPluginData(File dataFolder) {
+        File[] entries = dataFolder.listFiles();
+        return entries != null && entries.length > 0;
     }
 
     private boolean reloadPluginRuntime(String reason) {
