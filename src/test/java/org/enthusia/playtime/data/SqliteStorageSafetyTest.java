@@ -51,10 +51,10 @@ class SqliteStorageSafetyTest {
         File database = temporaryDirectory.resolve("playtime.db").toFile();
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database.getAbsolutePath())) {
             try (Statement statement = connection.createStatement()) {
-                statement.execute("CREATE TABLE lifetime_agg ("
-                        + "player_uuid TEXT PRIMARY KEY, active INTEGER NOT NULL, "
-                        + "afk INTEGER NOT NULL, total INTEGER NOT NULL)");
-                statement.execute("INSERT INTO lifetime_agg VALUES ('player-one', 120, 5, 125)");
+                statement.execute(SqlDialect.SQLITE.lifetimeAggCreateTable());
+                statement.execute("INSERT INTO lifetime_agg (player_uuid, first_join, last_join, last_seen, "
+                        + "active_minutes, afk_minutes, total_minutes) VALUES ("
+                        + "'player-one', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 120, 5, 125)");
             }
 
             assertTrue(SqliteStorageSafety.prepareDatabasePath(database, false));
@@ -64,7 +64,7 @@ class SqliteStorageSafetyTest {
             assertEquals(120L, activeMinutes(firstBackup));
 
             try (Statement statement = connection.createStatement()) {
-                statement.executeUpdate("UPDATE lifetime_agg SET active = 240, total = 245 "
+                statement.executeUpdate("UPDATE lifetime_agg SET active_minutes = 240, total_minutes = 245 "
                         + "WHERE player_uuid = 'player-one'");
             }
 
@@ -84,7 +84,7 @@ class SqliteStorageSafetyTest {
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database.getAbsolutePath());
              Statement statement = connection.createStatement();
              ResultSet result = statement.executeQuery(
-                     "SELECT active FROM lifetime_agg WHERE player_uuid = 'player-one'")) {
+                     "SELECT active_minutes FROM lifetime_agg WHERE player_uuid = 'player-one'")) {
             assertTrue(result.next());
             return result.getLong(1);
         }
