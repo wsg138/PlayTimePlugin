@@ -56,6 +56,24 @@ class ConfigRecoveryIntegrationTest {
     }
 
     @Test
+    void versionOnlyMigrationDoesNotOverwriteBrokenDiagnosticCopy() throws Exception {
+        PlayTimePlugin plugin = MockBukkit.load(PlayTimePlugin.class);
+        File configFile = new File(plugin.getDataFolder(), "config.yml");
+        File broken = new File(plugin.getDataFolder(), "backups/config.yml.broken");
+        Files.createDirectories(broken.toPath().getParent());
+        Files.writeString(broken.toPath(), "diagnostic-marker");
+
+        YamlConfiguration config = ConfigMigrator.loadStrict(configFile);
+        config.set("config-version", ConfigMigrator.CURRENT_CONFIG_VERSION - 1);
+        config.save(configFile);
+
+        assertTrue(plugin.reloadPluginRuntime());
+        assertEquals("diagnostic-marker", Files.readString(broken.toPath()));
+        assertEquals(ConfigMigrator.CURRENT_CONFIG_VERSION,
+                ConfigMigrator.loadStrict(configFile).getInt("config-version"));
+    }
+
+    @Test
     void reloadRestoresMissingConfigFromLastGood() throws Exception {
         PlayTimePlugin plugin = MockBukkit.load(PlayTimePlugin.class);
         File configFile = new File(plugin.getDataFolder(), "config.yml");
