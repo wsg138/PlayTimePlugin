@@ -84,48 +84,101 @@ public final class ShutdownRecoveryJournal {
     }
 
     private AsyncWriteQueue.RecoveryJournalSnapshot read() {
-        YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
-        if (yaml.getInt("format") == 2) return new AsyncWriteQueue.RecoveryJournalSnapshot(List.of(readBatch(yaml, "", Instant.ofEpochMilli(yaml.getLong("createdAt")))));
+        YamlConfiguration yaml = new YamlConfiguration();
+        try {
+            yaml.load(file);
+        } catch (Exception failure) {
+            throw new IllegalStateException("Shutdown recovery journal is malformed; leaving it untouched for recovery: "
+                    + file.getAbsolutePath(), failure);
+        }
+
+        int format = yaml.getInt("format", -1);
+        Instant createdAt = Instant.ofEpochMilli(requiredLong(yaml.get("createdAt"), "createdAt"));
         List<WriteBatch> batches = new ArrayList<>();
-        for (Map<?, ?> entry : yaml.getMapList("batches")) {
-            batches.add(readBatchMap(entry, Instant.ofEpochMilli(yaml.getLong("createdAt"))));
+        if (format == 2) {
+            batches.add(readBatch(yaml, "", createdAt));
+        } else if (format == FORMAT_VERSION) {
+            List<?> rawBatches = yaml.getList("batches");
+            if (rawBatches == null || rawBatches.isEmpty()) {
+                throw invalid("Format 3 recovery journal has no batches");
+            }
+            for (int index = 0; index < rawBatches.size(); index++) {
+                Object value = rawBatches.get(index);
+                if (!(value instanceof Map<?, ?> entry)) {
+                    throw invalid("Recovery batch " + index + " is not a map");
+                }
+                batches.add(readBatchMap(entry, createdAt, index));
+            }
+        } else {
+            throw invalid("Unsupported shutdown recovery journal format " + format);
+        }
+
+        if (batches.stream().allMatch(WriteBatch::isEmpty)) {
+            throw invalid("Recovery journal contains no recoverable writes");
         }
         return new AsyncWriteQueue.RecoveryJournalSnapshot(batches);
     }
 
-    private WriteBatch readBatchMap(Map<?, ?> entry, Instant fallbackAggregationTime) {
+    private WriteBatch readBatchMap(Map<?, ?> entry, Instant fallbackAggregationTime, int batchIndex) {
+        String prefix = "batches[" + batchIndex + "]";
         Map<UUID, MinuteDelta> minutes = new LinkedHashMap<>();
-        if (entry.get("minutes") instanceof Map<?, ?> entries) {
+        Object minuteObject = entry.get("minutes");
+        if (minuteObject != null) {
+            if (!(minuteObject instanceof Map<?, ?> entries)) {
+                throw invalid(prefix + ".minutes is not a map");
+            }
             for (Map.Entry<?, ?> minute : entries.entrySet()) {
-                UUID uuid = parse(String.valueOf(minute.getKey()));
-                if (uuid != null && minute.getValue() instanceof Map<?, ?> values) {
-                    minutes.put(uuid, new MinuteDelta(numberValue(values.get("active"), 0L), numberValue(values.get("afk"), 0L)));
+                UUID uuid = requiredUuid(String.valueOf(minute.getKey()), prefix + ".minutes UUID");
+                if (!(minute.getValue() instanceof Map<?, ?> values)) {
+                    throw invalid(prefix + ".minutes." + uuid + " is not a map");
                 }
+                long active = requiredNonNegativeLong(values.get("active"), prefix + ".minutes." + uuid + ".active");
+                long afk = requiredNonNegativeLong(values.get("afk"), prefix + ".minutes." + uuid + ".afk");
+                minutes.put(uuid, new MinuteDelta(active, afk));
             }
         }
+
         Map<UUID, PlayerProfile> profiles = new LinkedHashMap<>();
-        if (entry.get("profiles") instanceof Map<?, ?> entries) {
+        Object profileObject = entry.get("profiles");
+        if (profileObject != null) {
+            if (!(profileObject instanceof Map<?, ?> entries)) {
+                throw invalid(prefix + ".profiles is not a map");
+            }
             for (Map.Entry<?, ?> profile : entries.entrySet()) {
-                UUID uuid = parse(String.valueOf(profile.getKey()));
-                if (uuid != null && profile.getValue() instanceof Map<?, ?> values) {
-                    profiles.put(uuid, new PlayerProfile(uuid, nullableString(values.get("username")),
-                            nullableString(values.get("displayName")), Instant.ofEpochMilli(numberValue(values.get("seenAt"), 0L))));
+                UUID uuid = requiredUuid(String.valueOf(profile.getKey()), prefix + ".profiles UUID");
+                if (!(profile.getValue() instanceof Map<?, ?> values)) {
+                    throw invalid(prefix + ".profiles." + uuid + " is not a map");
                 }
+                profiles.put(uuid, new PlayerProfile(uuid, nullableString(values.get("username")),
+                        nullableString(values.get("displayName")),
+                        Instant.ofEpochMilli(requiredNonNegativeLong(values.get("seenAt"),
+                                prefix + ".profiles." + uuid + ".seenAt"))));
             }
         }
+
         List<JoinRecord> joins = new ArrayList<>();
-        if (entry.get("joins") instanceof List<?> entries) {
-            for (Object value : entries) {
-                if (value instanceof Map<?, ?> join) {
-                    UUID uuid = parse(nullableString(join.get("uuid")));
-                    if (uuid != null) joins.add(new JoinRecord(uuid, Instant.ofEpochMilli(numberValue(join.get("joinedAt"), 0L))));
+        Object joinObject = entry.get("joins");
+        if (joinObject != null) {
+            if (!(joinObject instanceof List<?> entries)) {
+                throw invalid(prefix + ".joins is not a list");
+            }
+            for (int joinIndex = 0; joinIndex < entries.size(); joinIndex++) {
+                Object value = entries.get(joinIndex);
+                if (!(value instanceof Map<?, ?> join)) {
+                    throw invalid(prefix + ".joins[" + joinIndex + "] is not a map");
                 }
+                UUID uuid = requiredUuid(nullableString(join.get("uuid")),
+                        prefix + ".joins[" + joinIndex + "].uuid");
+                joins.add(new JoinRecord(uuid, Instant.ofEpochMilli(requiredNonNegativeLong(join.get("joinedAt"),
+                        prefix + ".joins[" + joinIndex + "].joinedAt"))));
             }
         }
-        UUID batchId = parse(nullableString(entry.get("batchId")));
+
+        UUID batchId = requiredUuid(nullableString(entry.get("batchId")), prefix + ".batchId");
         Instant aggregationTime = entry.containsKey("aggregationTime")
-                ? Instant.ofEpochMilli(numberValue(entry.get("aggregationTime"), fallbackAggregationTime.toEpochMilli())) : fallbackAggregationTime;
-        return new WriteBatch(batchId == null ? UUID.randomUUID() : batchId, aggregationTime,
+                ? Instant.ofEpochMilli(requiredNonNegativeLong(entry.get("aggregationTime"), prefix + ".aggregationTime"))
+                : fallbackAggregationTime;
+        return new WriteBatch(batchId, aggregationTime,
                 Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
     }
 
@@ -133,42 +186,72 @@ public final class ShutdownRecoveryJournal {
         Map<UUID, MinuteDelta> minutes = new LinkedHashMap<>();
         if (yaml.isConfigurationSection(prefix + "minutes")) {
             for (String key : yaml.getConfigurationSection(prefix + "minutes").getKeys(false)) {
-                UUID uuid = parse(key);
-                if (uuid != null) minutes.put(uuid, new MinuteDelta(yaml.getLong(prefix + "minutes." + key + ".active"),
-                        yaml.getLong(prefix + "minutes." + key + ".afk")));
+                UUID uuid = requiredUuid(key, prefix + "minutes UUID");
+                long active = requiredNonNegativeLong(yaml.get(prefix + "minutes." + key + ".active"),
+                        prefix + "minutes." + key + ".active");
+                long afk = requiredNonNegativeLong(yaml.get(prefix + "minutes." + key + ".afk"),
+                        prefix + "minutes." + key + ".afk");
+                minutes.put(uuid, new MinuteDelta(active, afk));
             }
         }
         Map<UUID, PlayerProfile> profiles = new LinkedHashMap<>();
         if (yaml.isConfigurationSection(prefix + "profiles")) {
             for (String key : yaml.getConfigurationSection(prefix + "profiles").getKeys(false)) {
-                UUID uuid = parse(key);
-                if (uuid != null) profiles.put(uuid, new PlayerProfile(uuid, yaml.getString(prefix + "profiles." + key + ".username"),
-                        yaml.getString(prefix + "profiles." + key + ".displayName"), Instant.ofEpochMilli(yaml.getLong(prefix + "profiles." + key + ".seenAt"))));
+                UUID uuid = requiredUuid(key, prefix + "profiles UUID");
+                profiles.put(uuid, new PlayerProfile(uuid, yaml.getString(prefix + "profiles." + key + ".username"),
+                        yaml.getString(prefix + "profiles." + key + ".displayName"),
+                        Instant.ofEpochMilli(requiredNonNegativeLong(yaml.get(prefix + "profiles." + key + ".seenAt"),
+                                prefix + "profiles." + key + ".seenAt"))));
             }
         }
         List<JoinRecord> joins = new ArrayList<>();
-        for (Map<?, ?> join : yaml.getMapList(prefix + "joins")) {
-            UUID uuid = parse(String.valueOf(join.get("uuid")));
-            Object millis = join.get("joinedAt");
-            if (uuid != null && millis instanceof Number number) joins.add(new JoinRecord(uuid, Instant.ofEpochMilli(number.longValue())));
+        List<?> rawJoins = yaml.getList(prefix + "joins", List.of());
+        for (int index = 0; index < rawJoins.size(); index++) {
+            Object value = rawJoins.get(index);
+            if (!(value instanceof Map<?, ?> join)) {
+                throw invalid(prefix + "joins[" + index + "] is not a map");
+            }
+            UUID uuid = requiredUuid(nullableString(join.get("uuid")), prefix + "joins[" + index + "].uuid");
+            joins.add(new JoinRecord(uuid, Instant.ofEpochMilli(requiredNonNegativeLong(join.get("joinedAt"),
+                    prefix + "joins[" + index + "].joinedAt"))));
         }
-        UUID batchId = parse(yaml.getString(prefix + "batchId"));
+        UUID batchId = requiredUuid(yaml.getString(prefix + "batchId"), prefix + "batchId");
         Instant aggregationTime = yaml.contains(prefix + "aggregationTime")
-                ? Instant.ofEpochMilli(yaml.getLong(prefix + "aggregationTime")) : fallbackAggregationTime;
-        return new WriteBatch(batchId == null ? UUID.randomUUID() : batchId, aggregationTime,
+                ? Instant.ofEpochMilli(requiredNonNegativeLong(yaml.get(prefix + "aggregationTime"),
+                        prefix + "aggregationTime")) : fallbackAggregationTime;
+        return new WriteBatch(batchId, aggregationTime,
                 Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
     }
 
-    private UUID parse(String value) {
-        try { return value == null ? null : UUID.fromString(value); } catch (IllegalArgumentException ignored) { return null; }
+    private UUID requiredUuid(String value, String field) {
+        try {
+            return UUID.fromString(value);
+        } catch (Exception failure) {
+            throw invalid(field + " is missing or invalid");
+        }
     }
 
-    private long numberValue(Object value, long fallback) {
-        return value instanceof Number number ? number.longValue() : fallback;
+    private long requiredLong(Object value, String field) {
+        if (!(value instanceof Number number)) {
+            throw invalid(field + " is missing or not numeric");
+        }
+        return number.longValue();
+    }
+
+    private long requiredNonNegativeLong(Object value, String field) {
+        long result = requiredLong(value, field);
+        if (result < 0L) {
+            throw invalid(field + " is negative");
+        }
+        return result;
     }
 
     private String nullableString(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private IllegalStateException invalid(String message) {
+        return new IllegalStateException(message + "; leaving shutdown-recovery.yml untouched for manual recovery.");
     }
 
     private void deleteAfterDurableFlush() {
