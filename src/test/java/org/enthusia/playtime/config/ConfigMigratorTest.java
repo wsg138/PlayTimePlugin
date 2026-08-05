@@ -81,9 +81,13 @@ class ConfigMigratorTest {
     }
 
     @Test
-    void persistentDataDetectionIgnoresOnlyTheLiveConfig() throws Exception {
+    void persistentDataDetectionIgnoresOnlyConfigRecoveryFiles() throws Exception {
         Path config = temporaryDirectory.resolve("config.yml");
         Files.writeString(config, "storage:\n  type: sqlite\n");
+        assertFalse(ConfigMigrator.hasPersistentDataBesidesConfig(temporaryDirectory.toFile()));
+
+        Path backups = Files.createDirectories(temporaryDirectory.resolve("backups"));
+        Files.writeString(backups.resolve("config.yml.broken.tmp.repair"), "partial repair");
         assertFalse(ConfigMigrator.hasPersistentDataBesidesConfig(temporaryDirectory.toFile()));
 
         Files.writeString(temporaryDirectory.resolve("playtime.db"), "data");
