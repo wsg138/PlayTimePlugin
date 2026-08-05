@@ -57,7 +57,7 @@ public class PlayTimePlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        boolean establishedDataFolder = hasExistingPluginData();
+        boolean establishedDataFolder = containsExistingPluginData(getDataFolder());
         this.allowInitialSqliteCreation = !establishedDataFolder;
         this.sqliteStartupBackupPending.set(establishedDataFolder);
 
@@ -111,8 +111,8 @@ public class PlayTimePlugin extends JavaPlugin {
         return sqliteStartupBackupPending.compareAndSet(true, false);
     }
 
-    private boolean hasExistingPluginData() {
-        File[] entries = getDataFolder().listFiles();
+    static boolean containsExistingPluginData(File dataFolder) {
+        File[] entries = dataFolder.listFiles();
         return entries != null && entries.length > 0;
     }
 
