@@ -87,19 +87,25 @@ public final class ConfigMigrator {
             YamlConfiguration defaults = loadDefaults();
             int existingVersion = config.getInt("config-version", 0);
             List<String> repaired = repairConfig(config, defaults);
+            boolean valueRepairs = !repaired.isEmpty();
             if (existingVersion < CURRENT_CONFIG_VERSION) {
                 config.set("config-version", CURRENT_CONFIG_VERSION);
                 repaired.add("config-version");
             }
 
             if (!repaired.isEmpty()) {
-                if (!backedUp) {
+                if (valueRepairs && !backedUp) {
                     replaceFile(configFile.toPath(), broken.toPath());
                     backedUp = true;
                 }
                 saveAtomically(config, configFile);
-                plugin.getLogger().warning("Repaired config.yml values using defaults: "
-                        + String.join(", ", repaired));
+                if (valueRepairs) {
+                    plugin.getLogger().warning("Repaired config.yml values using defaults: "
+                            + String.join(", ", repaired));
+                } else {
+                    plugin.getLogger().info("Updated config.yml version from " + existingVersion
+                            + " to " + CURRENT_CONFIG_VERSION + ".");
+                }
             }
 
             plugin.reloadConfig();
@@ -332,7 +338,9 @@ public final class ConfigMigrator {
 
     private static void saveAtomically(YamlConfiguration config, File target) throws IOException {
         Path targetPath = target.toPath();
-        Path temporary = targetPath.resolveSibling(target.getName() + ".repair.tmp");
+        Path backupDirectory = targetPath.getParent().resolve("backups");
+        Files.createDirectories(backupDirectory);
+        Path temporary = backupDirectory.resolve(BROKEN_NAME + ".tmp.repair");
         Files.deleteIfExists(temporary);
         try {
             config.save(temporary.toFile());
