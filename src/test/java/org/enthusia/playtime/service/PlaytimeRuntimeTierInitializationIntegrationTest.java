@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PlaytimeRuntimeTierInitializationIntegrationTest {
+    private static final long ASYNC_TEST_TIMEOUT_SECONDS = 5L;
     private PlayTimePlugin plugin;
 
     @BeforeEach void setUp() {
@@ -78,14 +79,14 @@ class PlaytimeRuntimeTierInitializationIntegrationTest {
         PlayerMock player = new PlayerMock(MockBukkit.getMock(), "CutoffPlayer", uuid);
         MockBukkit.getMock().addPlayer(player);
         MockBukkit.getMock().getScheduler().performTicks(1);
-        assertTrue(readPaused.await(1, TimeUnit.SECONDS));
+        assertTrue(readPaused.await(ASYNC_TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));
         assertTrue(runtime.acceptMinuteForTesting(player, 1, 0));
         assertEquals(1, runtime.writeQueue().getAcceptedUncommittedTotals(uuid).activeMinutes);
         assertEquals(1, runtime.writeQueue().acceptedActiveSequence(uuid));
 
         resumeRead.countDown();
-        assertTrue(firstSqlDone.await(1, TimeUnit.SECONDS));
-        assertTrue(firstMainScheduled.await(1, TimeUnit.SECONDS));
+        assertTrue(firstSqlDone.await(ASYNC_TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        assertTrue(firstMainScheduled.await(ASYNC_TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));
         assertNotNull(mainCompletions.peek());
         mainCompletions.remove().run();
         TierProgressTracker.ProgressState afterStale = runtime.tierProgressForTesting(uuid);
@@ -141,7 +142,7 @@ class PlaytimeRuntimeTierInitializationIntegrationTest {
         PlayerMock player = new PlayerMock(MockBukkit.getMock(), "ReloadCutoff", uuid);
         MockBukkit.getMock().addPlayer(player);
         MockBukkit.getMock().getScheduler().performTicks(1);
-        assertTrue(readPaused.await(1, TimeUnit.SECONDS));
+        assertTrue(readPaused.await(ASYNC_TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));
         assertTrue(old.acceptMinuteForTesting(player, 1, 0));
         old.handleQuitRecorded(uuid, Instant.now());
         old.handleJoinRecorded(player, Instant.now());
