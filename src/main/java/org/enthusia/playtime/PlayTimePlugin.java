@@ -17,7 +17,9 @@ import org.enthusia.playtime.skin.HeadCacheListener;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 import org.enthusia.playtime.util.AsyncWriteQueue;
 
+import java.io.File;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.function.Consumer;
 
@@ -29,6 +31,8 @@ public class PlayTimePlugin extends JavaPlugin {
     private static volatile Consumer<ReloadStage> reloadProbe = ignored -> { };
 
     private final Object runtimeLock = new Object();
+    private final AtomicBoolean sqliteStartupBackupPending = new AtomicBoolean(false);
+    private volatile boolean allowInitialSqliteCreation;
     private volatile Optional<PlaytimeRuntime> activeRuntime = Optional.empty();
     private Optional<PlaytimePlaceholderExpansion> placeholderExpansion = Optional.empty();
     private PlaceholderLifecycle placeholderLifecycle = new PlaceholderLifecycle() {
@@ -53,6 +57,10 @@ public class PlayTimePlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        boolean existingConfig = new File(getDataFolder(), "config.yml").isFile();
+        this.allowInitialSqliteCreation = !existingConfig;
+        this.sqliteStartupBackupPending.set(existingConfig);
+
         ConfigMigrator migrator = new ConfigMigrator(this);
         migrator.migrateConfig();
 
@@ -60,10 +68,12 @@ public class PlayTimePlugin extends JavaPlugin {
         registerAdapters();
 
         if (!reloadPluginRuntime(null)) {
+            this.allowInitialSqliteCreation = false;
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
 
+        this.allowInitialSqliteCreation = false;
         refreshPlaceholderExpansion();
 
         getLogger().info("EnthusiaPlaytime enabled.");
@@ -71,6 +81,8 @@ public class PlayTimePlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        this.allowInitialSqliteCreation = false;
+        this.sqliteStartupBackupPending.set(false);
         placeholderExpansion.ifPresent(PlaytimePlaceholderExpansion::unregister);
         placeholderExpansion = Optional.empty();
 
@@ -88,6 +100,14 @@ public class PlayTimePlugin extends JavaPlugin {
 
     public boolean reloadPluginRuntime() {
         return reloadPluginRuntime("reload");
+    }
+
+    public boolean mayCreateInitialSqliteDatabase() {
+        return allowInitialSqliteCreation;
+    }
+
+    public boolean claimSqliteStartupBackup() {
+        return sqliteStartupBackupPending.compareAndSet(true, false);
     }
 
     private boolean reloadPluginRuntime(String reason) {
