@@ -45,7 +45,10 @@ final class SqliteStorageSafety {
                 throw new SQLException("SQLite quick_check failed: " + detail);
             }
         }
+        validateRequiredSchema(connection);
+    }
 
+    static void validateRequiredSchema(Connection connection) throws SQLException {
         try (Statement statement = connection.createStatement();
              ResultSet result = statement.executeQuery(
                      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='" + REQUIRED_TABLE + "'")) {
