@@ -124,9 +124,7 @@ public class PlayTimePlugin extends JavaPlugin {
                 }
                 for (File backup : backups) {
                     String name = backup.getName();
-                    if (!name.equals("config.yml.last-good")
-                            && !name.equals("config.yml.broken")
-                            && !name.startsWith("config.yml.last-good.tmp")
+                    if (!name.equals("config.yml.broken")
                             && !name.startsWith("config.yml.broken.tmp")) {
                         return true;
                     }
