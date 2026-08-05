@@ -57,19 +57,9 @@ public class PlayTimePlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        File dataFolder = getDataFolder();
-        boolean establishedDataFolder = containsExistingPluginData(dataFolder);
-        if (establishedDataFolder && !new File(dataFolder, "config.yml").isFile()) {
-            getLogger().severe("Established EnthusiaPlaytime data is present but config.yml is missing. "
-                    + "Refusing to create replacement settings; restore config.yml before starting.");
-            getServer().getPluginManager().disablePlugin(this);
-            return;
-        }
-        this.allowInitialSqliteCreation = !establishedDataFolder;
-        this.sqliteStartupBackupPending.set(establishedDataFolder);
-
-        ConfigMigrator migrator = new ConfigMigrator(this);
-        migrator.migrateConfig();
+        boolean establishedStorage = containsEstablishedStorageData(getDataFolder());
+        this.allowInitialSqliteCreation = !establishedStorage;
+        this.sqliteStartupBackupPending.set(establishedStorage);
 
         this.bedrockSupport = new BedrockSupport(this);
         registerAdapters();
@@ -118,9 +108,32 @@ public class PlayTimePlugin extends JavaPlugin {
         return sqliteStartupBackupPending.compareAndSet(true, false);
     }
 
-    static boolean containsExistingPluginData(File dataFolder) {
+    static boolean containsEstablishedStorageData(File dataFolder) {
         File[] entries = dataFolder.listFiles();
-        return entries != null && entries.length > 0;
+        if (entries == null) {
+            return false;
+        }
+        for (File entry : entries) {
+            if (entry.getName().equals("config.yml")) {
+                return true;
+            }
+            if (entry.isDirectory() && entry.getName().equals("backups")) {
+                File[] backups = entry.listFiles();
+                if (backups == null) {
+                    continue;
+                }
+                for (File backup : backups) {
+                    String name = backup.getName();
+                    if (!name.equals("config.yml.broken")
+                            && !name.startsWith("config.yml.broken.tmp")) {
+                        return true;
+                    }
+                }
+                continue;
+            }
+            return true;
+        }
+        return false;
     }
 
     private boolean reloadPluginRuntime(String reason) {
@@ -131,13 +144,14 @@ public class PlayTimePlugin extends JavaPlugin {
 
     private boolean reloadPluginRuntimeLocked(String reason) {
         PlaytimeConfig config;
+        ConfigMigrator configMigrator = new ConfigMigrator(this);
         try {
-            reloadConfig();
-            new ConfigMigrator(this).migrateConfig();
+            configMigrator.migrateConfig();
             config = PlaytimeConfig.load(this);
             reloadProbe.accept(ReloadStage.CONFIG_LOADED);
         } catch (Exception exception) {
-            getLogger().log(Level.SEVERE, "Failed to parse playtime config. Existing runtime was left running.", exception);
+            getLogger().log(Level.SEVERE,
+                    "Failed to recover or parse playtime config. Existing runtime was left running.", exception);
             return false;
         }
 
@@ -176,6 +190,7 @@ public class PlayTimePlugin extends JavaPlugin {
             }
             this.activeRuntime = Optional.of(newRuntime);
             reloadProbe.accept(ReloadStage.CANDIDATE_PUBLISHED);
+            configMigrator.markCurrentConfigGood();
             if (oldRuntime != null) {
                 try {
                     oldRuntime.close(true);
