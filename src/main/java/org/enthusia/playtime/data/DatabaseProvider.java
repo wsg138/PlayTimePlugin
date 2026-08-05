@@ -188,14 +188,17 @@ public final class DatabaseProvider {
         if (!sqliteExistedBeforeOpen) {
             return;
         }
+        boolean createStartupBackup = plugin instanceof PlayTimePlugin playTimePlugin
+                && playTimePlugin.claimSqliteStartupBackup();
         try (Connection connection = dataSource.getConnection()) {
-            SqliteStorageSafety.validateEstablishedDatabase(connection);
-            if (plugin instanceof PlayTimePlugin playTimePlugin
-                    && playTimePlugin.claimSqliteStartupBackup()) {
+            if (createStartupBackup) {
+                SqliteStorageSafety.validateEstablishedDatabase(connection);
                 File backup = SqliteStorageSafety.replaceRollingBackup(
                         connection, sqliteFile, plugin.getDataFolder());
                 plugin.getLogger().info("Verified SQLite database " + sqliteFile.getAbsolutePath()
                         + " and replaced rolling startup backup " + backup.getAbsolutePath() + ".");
+            } else {
+                SqliteStorageSafety.validateRequiredSchema(connection);
             }
         } catch (SQLException failure) {
             throw new DatabaseInitializationException(failure);
