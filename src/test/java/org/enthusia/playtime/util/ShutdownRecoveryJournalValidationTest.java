@@ -8,6 +8,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -20,32 +21,24 @@ class ShutdownRecoveryJournalValidationTest {
     @Test
     void malformedJournalStopsRecoveryAndRemainsUntouched() throws Exception {
         String malformed = "format: 3\ncreatedAt: 1\nbatches: [\n";
-        Path journalFile = temporaryDirectory.resolve("shutdown-recovery.yml");
-        Files.writeString(journalFile, malformed);
+        Path journalFile = writeJournal(malformed);
 
-        ShutdownRecoveryJournal journal = journal();
-        AsyncWriteQueue queue = queue();
-
-        assertThrows(IllegalStateException.class, () -> journal.restoreInto(queue));
+        assertThrows(IllegalStateException.class, () -> journal().restoreInto(queue()));
         assertTrue(Files.exists(journalFile));
-        assertTrue(Files.readString(journalFile).equals(malformed));
+        assertEquals(malformed, Files.readString(journalFile));
     }
 
     @Test
     void unsupportedFormatStopsRecoveryAndRemainsUntouched() throws Exception {
-        Path journalFile = temporaryDirectory.resolve("shutdown-recovery.yml");
-        Files.writeString(journalFile, "format: 99\ncreatedAt: 1\nbatches: []\n");
+        Path journalFile = writeJournal("format: 99\ncreatedAt: 1\nbatches: []\n");
 
-        ShutdownRecoveryJournal journal = journal();
-
-        assertThrows(IllegalStateException.class, () -> journal.restoreInto(queue()));
+        assertThrows(IllegalStateException.class, () -> journal().restoreInto(queue()));
         assertTrue(Files.exists(journalFile));
     }
 
     @Test
     void missingBatchIdStopsRecoveryInsteadOfInventingOne() throws Exception {
-        Path journalFile = temporaryDirectory.resolve("shutdown-recovery.yml");
-        Files.writeString(journalFile, """
+        Path journalFile = writeJournal("""
                 format: 3
                 createdAt: 1
                 batches:
@@ -58,16 +51,13 @@ class ShutdownRecoveryJournalValidationTest {
                     joins: []
                 """);
 
-        ShutdownRecoveryJournal journal = journal();
-
-        assertThrows(IllegalStateException.class, () -> journal.restoreInto(queue()));
+        assertThrows(IllegalStateException.class, () -> journal().restoreInto(queue()));
         assertTrue(Files.exists(journalFile));
     }
 
     @Test
     void partialInvalidEntryStopsWholeRecovery() throws Exception {
-        Path journalFile = temporaryDirectory.resolve("shutdown-recovery.yml");
-        Files.writeString(journalFile, """
+        Path journalFile = writeJournal("""
                 format: 3
                 createdAt: 1
                 batches:
@@ -81,10 +71,66 @@ class ShutdownRecoveryJournalValidationTest {
                     joins: []
                 """);
 
-        ShutdownRecoveryJournal journal = journal();
-
-        assertThrows(IllegalStateException.class, () -> journal.restoreInto(queue()));
+        assertThrows(IllegalStateException.class, () -> journal().restoreInto(queue()));
         assertTrue(Files.exists(journalFile));
+    }
+
+    @Test
+    void legacyJournalRejectsScalarMinutesSection() throws Exception {
+        Path journalFile = writeJournal("""
+                format: 2
+                createdAt: 1
+                batchId: 00000000-0000-0000-0000-000000000010
+                aggregationTime: 1
+                minutes: broken
+                profiles: {}
+                joins: []
+                """);
+
+        assertThrows(IllegalStateException.class, () -> journal().restoreInto(queue()));
+        assertTrue(Files.exists(journalFile));
+    }
+
+    @Test
+    void legacyJournalRejectsWrongJoinType() throws Exception {
+        Path journalFile = writeJournal("""
+                format: 2
+                createdAt: 1
+                batchId: 00000000-0000-0000-0000-000000000010
+                aggregationTime: 1
+                minutes: {}
+                profiles: {}
+                joins: broken
+                """);
+
+        assertThrows(IllegalStateException.class, () -> journal().restoreInto(queue()));
+        assertTrue(Files.exists(journalFile));
+    }
+
+    @Test
+    void fractionalMinuteValuesAreRejectedInsteadOfTruncated() throws Exception {
+        Path journalFile = writeJournal("""
+                format: 3
+                createdAt: 1
+                batches:
+                  - batchId: 00000000-0000-0000-0000-000000000010
+                    aggregationTime: 1
+                    minutes:
+                      00000000-0000-0000-0000-000000000001:
+                        active: 1.5
+                        afk: 0
+                    profiles: {}
+                    joins: []
+                """);
+
+        assertThrows(IllegalStateException.class, () -> journal().restoreInto(queue()));
+        assertTrue(Files.exists(journalFile));
+    }
+
+    private Path writeJournal(String content) throws Exception {
+        Path journalFile = temporaryDirectory.resolve("shutdown-recovery.yml");
+        Files.writeString(journalFile, content);
+        return journalFile;
     }
 
     private ShutdownRecoveryJournal journal() {
