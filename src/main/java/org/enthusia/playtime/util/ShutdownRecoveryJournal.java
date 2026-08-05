@@ -1,5 +1,6 @@
 package org.enthusia.playtime.util;
 
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.WriteBatch;
@@ -9,6 +10,7 @@ import org.enthusia.playtime.data.model.PlayerProfile;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
@@ -48,7 +50,8 @@ public final class ShutdownRecoveryJournal {
             entry.put("batchId", batch.batchId().toString());
             entry.put("aggregationTime", batch.aggregationTime().toEpochMilli());
             Map<String, Object> minutes = new LinkedHashMap<>();
-            batch.minutes().forEach((uuid, delta) -> minutes.put(uuid.toString(), Map.of("active", delta.activeMinutes(), "afk", delta.afkMinutes())));
+            batch.minutes().forEach((uuid, delta) -> minutes.put(uuid.toString(),
+                    Map.of("active", delta.activeMinutes(), "afk", delta.afkMinutes())));
             entry.put("minutes", minutes);
             Map<String, Object> profiles = new LinkedHashMap<>();
             batch.profiles().forEach((uuid, profile) -> {
@@ -67,18 +70,23 @@ public final class ShutdownRecoveryJournal {
             batches.add(entry);
         }
         yaml.set("batches", batches);
+        File temporary = new File(file.getParentFile(), file.getName() + ".tmp");
         try {
             File parent = file.getParentFile();
             if (parent != null) parent.mkdirs();
-            File temporary = new File(file.getParentFile(), file.getName() + ".tmp");
             yaml.save(temporary);
             try {
                 Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING,
                         StandardCopyOption.ATOMIC_MOVE);
-            } catch (IOException unsupportedAtomicMove) {
+            } catch (AtomicMoveNotSupportedException unsupportedAtomicMove) {
                 Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException failure) {
+            try {
+                Files.deleteIfExists(temporary.toPath());
+            } catch (IOException cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
             throw new IllegalStateException("Failed to write shutdown recovery journal", failure);
         }
     }
@@ -93,7 +101,7 @@ public final class ShutdownRecoveryJournal {
         }
 
         int format = yaml.getInt("format", -1);
-        Instant createdAt = Instant.ofEpochMilli(requiredLong(yaml.get("createdAt"), "createdAt"));
+        Instant createdAt = Instant.ofEpochMilli(requiredNonNegativeLong(yaml.get("createdAt"), "createdAt"));
         List<WriteBatch> batches = new ArrayList<>();
         if (format == 2) {
             batches.add(readBatch(yaml, "", createdAt));
@@ -184,8 +192,9 @@ public final class ShutdownRecoveryJournal {
 
     private WriteBatch readBatch(YamlConfiguration yaml, String prefix, Instant fallbackAggregationTime) {
         Map<UUID, MinuteDelta> minutes = new LinkedHashMap<>();
-        if (yaml.isConfigurationSection(prefix + "minutes")) {
-            for (String key : yaml.getConfigurationSection(prefix + "minutes").getKeys(false)) {
+        ConfigurationSection minuteSection = optionalSection(yaml, prefix + "minutes");
+        if (minuteSection != null) {
+            for (String key : minuteSection.getKeys(false)) {
                 UUID uuid = requiredUuid(key, prefix + "minutes UUID");
                 long active = requiredNonNegativeLong(yaml.get(prefix + "minutes." + key + ".active"),
                         prefix + "minutes." + key + ".active");
@@ -194,9 +203,11 @@ public final class ShutdownRecoveryJournal {
                 minutes.put(uuid, new MinuteDelta(active, afk));
             }
         }
+
         Map<UUID, PlayerProfile> profiles = new LinkedHashMap<>();
-        if (yaml.isConfigurationSection(prefix + "profiles")) {
-            for (String key : yaml.getConfigurationSection(prefix + "profiles").getKeys(false)) {
+        ConfigurationSection profileSection = optionalSection(yaml, prefix + "profiles");
+        if (profileSection != null) {
+            for (String key : profileSection.getKeys(false)) {
                 UUID uuid = requiredUuid(key, prefix + "profiles UUID");
                 profiles.put(uuid, new PlayerProfile(uuid, yaml.getString(prefix + "profiles." + key + ".username"),
                         yaml.getString(prefix + "profiles." + key + ".displayName"),
@@ -204,8 +215,13 @@ public final class ShutdownRecoveryJournal {
                                 prefix + "profiles." + key + ".seenAt"))));
             }
         }
+
         List<JoinRecord> joins = new ArrayList<>();
-        List<?> rawJoins = yaml.getList(prefix + "joins", List.of());
+        Object joinValue = yaml.get(prefix + "joins");
+        if (joinValue != null && !(joinValue instanceof List<?>)) {
+            throw invalid(prefix + "joins is not a list");
+        }
+        List<?> rawJoins = joinValue instanceof List<?> list ? list : List.of();
         for (int index = 0; index < rawJoins.size(); index++) {
             Object value = rawJoins.get(index);
             if (!(value instanceof Map<?, ?> join)) {
@@ -223,6 +239,18 @@ public final class ShutdownRecoveryJournal {
                 Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
     }
 
+    private ConfigurationSection optionalSection(YamlConfiguration yaml, String path) {
+        Object value = yaml.get(path);
+        if (value == null) {
+            return null;
+        }
+        ConfigurationSection section = yaml.getConfigurationSection(path);
+        if (section == null) {
+            throw invalid(path + " is not a map");
+        }
+        return section;
+    }
+
     private UUID requiredUuid(String value, String field) {
         try {
             return UUID.fromString(value);
@@ -234,6 +262,10 @@ public final class ShutdownRecoveryJournal {
     private long requiredLong(Object value, String field) {
         if (!(value instanceof Number number)) {
             throw invalid(field + " is missing or not numeric");
+        }
+        if ((number instanceof Float || number instanceof Double)
+                && (!Double.isFinite(number.doubleValue()) || number.doubleValue() != Math.rint(number.doubleValue()))) {
+            throw invalid(field + " is not an integer");
         }
         return number.longValue();
     }
@@ -255,7 +287,10 @@ public final class ShutdownRecoveryJournal {
     }
 
     private void deleteAfterDurableFlush() {
-        try { Files.deleteIfExists(file.toPath()); }
-        catch (IOException failure) { throw new IllegalStateException("Failed to delete settled shutdown recovery journal", failure); }
+        try {
+            Files.deleteIfExists(file.toPath());
+        } catch (IOException failure) {
+            throw new IllegalStateException("Failed to delete settled shutdown recovery journal", failure);
+        }
     }
 }
