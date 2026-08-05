@@ -2,21 +2,77 @@ package org.enthusia.playtime.util;
 
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.PlaytimeRepository;
+import org.enthusia.playtime.data.RecoveryApplyResult;
+import org.enthusia.playtime.data.WriteBatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.ArgumentCaptor;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ShutdownRecoveryJournalValidationTest {
     @TempDir
     Path temporaryDirectory;
+
+    @Test
+    void validLegacyFormatTwoRestoresContentsAndDeletesAfterDurableFlush() throws Exception {
+        UUID batchId = UUID.fromString("00000000-0000-0000-0000-000000000010");
+        UUID minutePlayer = UUID.fromString("00000000-0000-0000-0000-000000000001");
+        UUID profilePlayer = UUID.fromString("00000000-0000-0000-0000-000000000002");
+        UUID joinPlayer = UUID.fromString("00000000-0000-0000-0000-000000000003");
+        Path journalFile = writeJournal("""
+                format: 2
+                createdAt: 1000
+                batchId: 00000000-0000-0000-0000-000000000010
+                aggregationTime: 2000
+                minutes:
+                  00000000-0000-0000-0000-000000000001:
+                    active: 3
+                    afk: 2
+                profiles:
+                  00000000-0000-0000-0000-000000000002:
+                    username: Profile
+                    displayName: Display
+                    seenAt: 3000
+                joins:
+                  - uuid: 00000000-0000-0000-0000-000000000003
+                    joinedAt: 4000
+                """);
+        PlaytimeRepository repository = mock(PlaytimeRepository.class);
+        when(repository.applyWriteBatch(any())).thenReturn(RecoveryApplyResult.APPLIED);
+        AsyncWriteQueue queue = queue(repository);
+
+        journal().restoreInto(queue);
+        assertTrue(Files.exists(journalFile));
+        assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, queue.flushNow());
+
+        ArgumentCaptor<WriteBatch> captor = ArgumentCaptor.forClass(WriteBatch.class);
+        verify(repository, times(1)).applyWriteBatch(captor.capture());
+        WriteBatch restored = captor.getValue();
+        assertEquals(batchId, restored.batchId());
+        assertEquals(Instant.ofEpochMilli(2000), restored.aggregationTime());
+        assertEquals(3L, restored.minutes().get(minutePlayer).activeMinutes());
+        assertEquals(2L, restored.minutes().get(minutePlayer).afkMinutes());
+        assertEquals("Profile", restored.profiles().get(profilePlayer).username());
+        assertEquals("Display", restored.profiles().get(profilePlayer).displayName());
+        assertEquals(Instant.ofEpochMilli(3000), restored.profiles().get(profilePlayer).seenAt());
+        assertEquals(joinPlayer, restored.joins().getFirst().uuid());
+        assertEquals(Instant.ofEpochMilli(4000), restored.joins().getFirst().joinedAt());
+        assertFalse(Files.exists(journalFile));
+    }
 
     @Test
     void malformedJournalStopsRecoveryAndRemainsUntouched() throws Exception {
@@ -140,8 +196,11 @@ class ShutdownRecoveryJournalValidationTest {
     }
 
     private AsyncWriteQueue queue() {
+        return queue(mock(PlaytimeRepository.class));
+    }
+
+    private AsyncWriteQueue queue(PlaytimeRepository repository) {
         PlayTimePlugin plugin = mock(PlayTimePlugin.class);
-        PlaytimeRepository repository = mock(PlaytimeRepository.class);
         return new AsyncWriteQueue(plugin, repository, new PerformanceCounters(), 20L,
                 new AsyncWriteQueue.QueueScheduler() {
                     @Override
