@@ -25,7 +25,7 @@ public final class DatabaseProvider {
     private final JavaPlugin plugin;
     private final PlaytimeConfig config;
     private final Object lock = new Object();
-    private HikariDataSource dataSource;
+    private volatile HikariDataSource dataSource;
     private SqlDialect dialect;
     private StorageType storageType;
     private File sqliteFile;
@@ -41,6 +41,7 @@ public final class DatabaseProvider {
     public void init(StorageType type) {
         this.storageType = type;
         this.dialect = SqlDialect.fromStorageType(type);
+        SqliteCandidateCheck sqliteCheck = SqliteCandidateCheck.NONE;
 
         if (type == StorageType.SQLITE) {
             this.sqliteFile = new File(plugin.getDataFolder(), config.getSqliteFile()).getAbsoluteFile();
@@ -48,15 +49,19 @@ public final class DatabaseProvider {
                     && playTimePlugin.mayCreateInitialSqliteDatabase();
             this.sqliteExistedBeforeOpen = SqliteStorageSafety.prepareDatabasePath(
                     sqliteFile, sqliteCreationAllowed);
+            if (sqliteExistedBeforeOpen) {
+                boolean createStartupBackup = plugin instanceof PlayTimePlugin playTimePlugin
+                        && playTimePlugin.claimSqliteStartupBackup();
+                sqliteCheck = createStartupBackup
+                        ? SqliteCandidateCheck.FULL_WITH_BACKUP
+                        : SqliteCandidateCheck.SCHEMA;
+            }
         }
 
         synchronized (lock) {
             try {
-                rebuildDataSource();
-                if (type == StorageType.SQLITE) {
-                    sqliteCreationAllowed = false;
-                    validateAndBackupEstablishedSqlite();
-                }
+                rebuildDataSource(sqliteCheck);
+                sqliteCreationAllowed = false;
                 if (countedOpen.compareAndSet(false, true)) OPEN_PROVIDERS.incrementAndGet();
             } catch (LinkageError failure) {
                 // sqlite-jdbc loads JNI methods while the pool opens. Convert linkage failures into
@@ -67,7 +72,11 @@ public final class DatabaseProvider {
     }
 
     public Connection getConnection() throws SQLException {
-        return dataSource.getConnection();
+        HikariDataSource current = dataSource;
+        if (current == null) {
+            throw new SQLException("Database provider is not initialized");
+        }
+        return current.getConnection();
     }
 
     public boolean reopenIfSqliteDbMoved(SQLException ex) {
@@ -84,10 +93,7 @@ public final class DatabaseProvider {
             try {
                 sqliteCreationAllowed = false;
                 SqliteStorageSafety.prepareDatabasePath(sqliteFile, false);
-                rebuildDataSource();
-                try (Connection connection = dataSource.getConnection()) {
-                    SqliteStorageSafety.validateEstablishedDatabase(connection);
-                }
+                rebuildDataSource(SqliteCandidateCheck.FULL);
                 return true;
             } catch (Exception failure) {
                 if (log.isLoggable(Level.SEVERE)) {
@@ -104,8 +110,10 @@ public final class DatabaseProvider {
 
     public void shutdown() {
         synchronized (lock) {
-            if (dataSource != null) {
-                dataSource.close();
+            HikariDataSource current = dataSource;
+            dataSource = null;
+            if (current != null) {
+                current.close();
             }
             if (countedOpen.compareAndSet(true, false)) OPEN_PROVIDERS.decrementAndGet();
         }
@@ -115,12 +123,13 @@ public final class DatabaseProvider {
         return OPEN_PROVIDERS.get();
     }
 
-    private void rebuildDataSource() {
+    private void rebuildDataSource(SqliteCandidateCheck sqliteCheck) {
         HikariDataSource candidate = null;
         RuntimeException failure = null;
         try {
             candidate = createDataSource();
             validateConnection(candidate);
+            validateSqliteCandidate(candidate, sqliteCheck);
             HikariDataSource previous = this.dataSource;
             this.dataSource = candidate;
             candidate = null;
@@ -184,21 +193,21 @@ public final class DatabaseProvider {
         return new HikariDataSource(hikariConfig);
     }
 
-    private void validateAndBackupEstablishedSqlite() {
-        if (!sqliteExistedBeforeOpen) {
+    private void validateSqliteCandidate(HikariDataSource candidate, SqliteCandidateCheck check) {
+        if (check == SqliteCandidateCheck.NONE) {
             return;
         }
-        boolean createStartupBackup = plugin instanceof PlayTimePlugin playTimePlugin
-                && playTimePlugin.claimSqliteStartupBackup();
-        try (Connection connection = dataSource.getConnection()) {
-            if (createStartupBackup) {
-                SqliteStorageSafety.validateEstablishedDatabase(connection);
+        try (Connection connection = candidate.getConnection()) {
+            if (check == SqliteCandidateCheck.SCHEMA) {
+                SqliteStorageSafety.validateRequiredSchema(connection);
+                return;
+            }
+            SqliteStorageSafety.validateEstablishedDatabase(connection);
+            if (check == SqliteCandidateCheck.FULL_WITH_BACKUP) {
                 File backup = SqliteStorageSafety.replaceRollingBackup(
                         connection, sqliteFile, plugin.getDataFolder());
                 plugin.getLogger().info("Verified SQLite database " + sqliteFile.getAbsolutePath()
                         + " and replaced rolling startup backup " + backup.getAbsolutePath() + ".");
-            } else {
-                SqliteStorageSafety.validateRequiredSchema(connection);
             }
         } catch (SQLException failure) {
             throw new DatabaseInitializationException(failure);
@@ -238,6 +247,13 @@ public final class DatabaseProvider {
         }
         int code = exception.getErrorCode();
         return code == SQLITE_READONLY_DBMOVED || code == SQLITE_READONLY_DIRECTORY_MOVED;
+    }
+
+    private enum SqliteCandidateCheck {
+        NONE,
+        SCHEMA,
+        FULL,
+        FULL_WITH_BACKUP
     }
 
     private static final class DatabaseInitializationException extends RuntimeException {
