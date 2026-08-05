@@ -115,7 +115,7 @@ public class PlayTimePlugin extends JavaPlugin {
         }
         for (File entry : entries) {
             if (entry.getName().equals("config.yml")) {
-                continue;
+                return true;
             }
             if (entry.isDirectory() && entry.getName().equals("backups")) {
                 File[] backups = entry.listFiles();
