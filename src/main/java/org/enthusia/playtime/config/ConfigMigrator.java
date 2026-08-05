@@ -199,14 +199,31 @@ public final class ConfigMigrator {
             return false;
         }
         for (File entry : entries) {
-            if (!entry.getName().equals("config.yml")) {
-                return true;
+            if (entry.getName().equals("config.yml")) {
+                continue;
             }
+            if (entry.isDirectory() && entry.getName().equals("backups")) {
+                File[] backups = entry.listFiles();
+                if (backups == null) {
+                    continue;
+                }
+                for (File backup : backups) {
+                    String name = backup.getName();
+                    if (!name.equals(LAST_GOOD_NAME)
+                            && !name.equals(BROKEN_NAME)
+                            && !name.startsWith(LAST_GOOD_NAME + ".tmp")
+                            && !name.startsWith(BROKEN_NAME + ".tmp")) {
+                        return true;
+                    }
+                }
+                continue;
+            }
+            return true;
         }
         return false;
     }
 
-    static YamlConfiguration loadStrict(File file) throws Exception {
+    public static YamlConfiguration loadStrict(File file) throws Exception {
         YamlConfiguration configuration = new YamlConfiguration();
         configuration.load(file);
         return configuration;
