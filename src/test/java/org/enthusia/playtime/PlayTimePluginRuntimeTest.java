@@ -53,11 +53,18 @@ class PlayTimePluginRuntimeTest {
     }
 
     @Test
-    void databaseBackupStillMarksInstallationAsEstablished(@TempDir Path dataFolder) throws Exception {
+    void lastGoodConfigProvesInstallationPreviouslyStarted(@TempDir Path dataFolder) throws Exception {
         Path backups = Files.createDirectories(dataFolder.resolve("backups"));
-        Files.writeString(backups.resolve("config.yml.last-good"), "storage:\n  type: sqlite\n");
+        Files.writeString(backups.resolve("config.yml.broken"), "malformed: [\n");
         assertFalse(PlayTimePlugin.containsEstablishedStorageData(dataFolder.toFile()));
 
+        Files.writeString(backups.resolve("config.yml.last-good"), "storage:\n  type: sqlite\n");
+        assertTrue(PlayTimePlugin.containsEstablishedStorageData(dataFolder.toFile()));
+    }
+
+    @Test
+    void databaseBackupMarksInstallationAsEstablished(@TempDir Path dataFolder) throws Exception {
+        Path backups = Files.createDirectories(dataFolder.resolve("backups"));
         Files.writeString(backups.resolve("playtime.db.last-good"), "database backup");
         assertTrue(PlayTimePlugin.containsEstablishedStorageData(dataFolder.toFile()));
     }
