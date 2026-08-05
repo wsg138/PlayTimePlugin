@@ -40,8 +40,8 @@ final class SqliteStorageSafety {
     static void validateEstablishedDatabase(Connection connection) throws SQLException {
         try (Statement statement = connection.createStatement();
              ResultSet result = statement.executeQuery("PRAGMA quick_check")) {
-            if (!result.next() || !"ok".equalsIgnoreCase(result.getString(1))) {
-                String detail = result.isClosed() ? "no result" : result.getString(1);
+            String detail = result.next() ? result.getString(1) : "no result";
+            if (!"ok".equalsIgnoreCase(detail)) {
                 throw new SQLException("SQLite quick_check failed: " + detail);
             }
         }
@@ -73,13 +73,13 @@ final class SqliteStorageSafety {
                 Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
             }
             return target.toFile();
-        } catch (IOException exception) {
+        } catch (IOException | SQLException failure) {
             try {
                 Files.deleteIfExists(temporary);
             } catch (IOException cleanupFailure) {
-                exception.addSuppressed(cleanupFailure);
+                failure.addSuppressed(cleanupFailure);
             }
-            throw new SQLException("Failed to replace rolling SQLite backup", exception);
+            throw new SQLException("Failed to replace rolling SQLite backup", failure);
         }
     }
 }
