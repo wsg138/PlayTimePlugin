@@ -57,9 +57,9 @@ public class PlayTimePlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        boolean existingConfig = new File(getDataFolder(), "config.yml").isFile();
-        this.allowInitialSqliteCreation = !existingConfig;
-        this.sqliteStartupBackupPending.set(existingConfig);
+        boolean establishedDataFolder = hasExistingPluginData();
+        this.allowInitialSqliteCreation = !establishedDataFolder;
+        this.sqliteStartupBackupPending.set(establishedDataFolder);
 
         ConfigMigrator migrator = new ConfigMigrator(this);
         migrator.migrateConfig();
@@ -109,6 +109,11 @@ public class PlayTimePlugin extends JavaPlugin {
 
     public boolean claimSqliteStartupBackup() {
         return sqliteStartupBackupPending.compareAndSet(true, false);
+    }
+
+    private boolean hasExistingPluginData() {
+        File[] entries = getDataFolder().listFiles();
+        return entries != null && entries.length > 0;
     }
 
     private boolean reloadPluginRuntime(String reason) {
