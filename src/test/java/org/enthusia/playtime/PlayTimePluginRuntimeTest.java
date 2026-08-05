@@ -42,22 +42,23 @@ class PlayTimePluginRuntimeTest {
     }
 
     @Test
-    void detectsEstablishedStorageButAllowsConfigOnlyFirstInstall(@TempDir Path dataFolder) throws Exception {
+    void anyExistingConfigPreservesTheEstablishedDatabaseGuard(@TempDir Path dataFolder) throws Exception {
         assertFalse(PlayTimePlugin.containsEstablishedStorageData(dataFolder.toFile()));
 
         Files.writeString(dataFolder.resolve("config.yml"), "storage:\n  type: sqlite\n");
-        assertFalse(PlayTimePlugin.containsEstablishedStorageData(dataFolder.toFile()));
-
-        Files.writeString(dataFolder.resolve("legacy-custom.sqlite"), "existing data");
         assertTrue(PlayTimePlugin.containsEstablishedStorageData(dataFolder.toFile()));
+    }
+
+    @Test
+    void brokenConfigCopyAloneDoesNotPretendAFirstInstallCompleted(@TempDir Path dataFolder) throws Exception {
+        Path backups = Files.createDirectories(dataFolder.resolve("backups"));
+        Files.writeString(backups.resolve("config.yml.broken"), "malformed: [\n");
+        assertFalse(PlayTimePlugin.containsEstablishedStorageData(dataFolder.toFile()));
     }
 
     @Test
     void lastGoodConfigProvesInstallationPreviouslyStarted(@TempDir Path dataFolder) throws Exception {
         Path backups = Files.createDirectories(dataFolder.resolve("backups"));
-        Files.writeString(backups.resolve("config.yml.broken"), "malformed: [\n");
-        assertFalse(PlayTimePlugin.containsEstablishedStorageData(dataFolder.toFile()));
-
         Files.writeString(backups.resolve("config.yml.last-good"), "storage:\n  type: sqlite\n");
         assertTrue(PlayTimePlugin.containsEstablishedStorageData(dataFolder.toFile()));
     }
