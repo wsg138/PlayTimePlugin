@@ -74,6 +74,7 @@ public class PlayTimePlugin extends JavaPlugin {
         }
 
         this.allowInitialSqliteCreation = false;
+        this.sqliteStartupBackupPending.set(false);
         refreshPlaceholderExpansion();
 
         getLogger().info("EnthusiaPlaytime enabled.");
