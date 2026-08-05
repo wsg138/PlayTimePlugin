@@ -97,7 +97,7 @@ public final class ConfigMigrator {
                     replaceFile(configFile.toPath(), broken.toPath());
                     backedUp = true;
                 }
-                config.save(configFile);
+                saveAtomically(config, configFile);
                 plugin.getLogger().warning("Repaired config.yml values using defaults: "
                         + String.join(", ", repaired));
             }
@@ -330,18 +330,36 @@ public final class ConfigMigrator {
         }
     }
 
+    private static void saveAtomically(YamlConfiguration config, File target) throws IOException {
+        Path targetPath = target.toPath();
+        Path temporary = targetPath.resolveSibling(target.getName() + ".repair.tmp");
+        Files.deleteIfExists(temporary);
+        try {
+            config.save(temporary.toFile());
+            moveReplacing(temporary, targetPath);
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
     private static void replaceFile(Path source, Path target) throws IOException {
         Files.createDirectories(target.getParent());
         Path temporary = target.resolveSibling(target.getFileName() + ".tmp");
         Files.deleteIfExists(temporary);
         Files.copy(source, temporary, StandardCopyOption.REPLACE_EXISTING);
         try {
-            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING,
-                    StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException unsupported) {
-            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            moveReplacing(temporary, target);
         } finally {
             Files.deleteIfExists(temporary);
+        }
+    }
+
+    private static void moveReplacing(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException unsupported) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
