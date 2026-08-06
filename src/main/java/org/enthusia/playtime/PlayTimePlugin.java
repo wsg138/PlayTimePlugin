@@ -201,7 +201,9 @@ public class PlayTimePlugin extends JavaPlugin {
             }
             try {
                 reloadProbe.accept(ReloadStage.PLACEHOLDER_REFRESH);
-                refreshPlaceholderExpansion(reason != null);
+                // The expansion reads plugin.runtime() on every request, so replacing it only creates
+                // a brief unavailable window for proxy bridges without refreshing any cached config.
+                refreshPlaceholderExpansion();
             } catch (RuntimeException integrationFailure) {
                 getLogger().log(Level.WARNING,
                         "New playtime runtime is active, but PlaceholderAPI refresh failed.", integrationFailure);
