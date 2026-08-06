@@ -48,7 +48,7 @@ public final class PlaytimeServiceImpl implements PlaytimeService {
 
     @Override
     public ActivityState getLiveState(UUID uuid) {
-        return tracker.getState(uuid, System.currentTimeMillis());
+        return tracker.peekState(uuid, System.currentTimeMillis());
     }
 
     @Override

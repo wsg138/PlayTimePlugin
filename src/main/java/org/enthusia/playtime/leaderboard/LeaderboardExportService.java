@@ -5,6 +5,7 @@ import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.data.model.PublicLeaderboardEntry;
 import org.enthusia.playtime.util.PerformanceCounters;
+import org.enthusia.playtime.util.PluginPaths;
 import org.enthusia.playtime.util.TimeFormats;
 
 import java.io.IOException;
@@ -38,11 +39,16 @@ public final class LeaderboardExportService {
         this.repository = repository;
         this.config = config;
         this.counters = counters;
-        this.outputDirectory = plugin.getDataFolder().toPath().resolve(config.directory()).normalize();
+        this.outputDirectory = PluginPaths.resolveInside(plugin.getDataFolder().toPath(),
+                config.directory(), "leaderboards.export.directory");
         this.r2Uploader = new CloudflareR2Uploader(plugin, config.r2(), counters);
     }
 
     public void exportAll() {
+        exportAll(true);
+    }
+
+    public void exportAll(boolean uploadRemote) {
         if (!config.enabled()) {
             return;
         }
@@ -71,7 +77,9 @@ public final class LeaderboardExportService {
             appendInlineField(index, "range", EXPORT_RANGE.toLowerCase(Locale.ROOT));
             index.append("}\n%s]\n}\n".formatted(indent(1)));
             writeAtomic(outputDirectory.resolve("index.json"), index.toString());
-            r2Uploader.uploadFiles(outputDirectory, List.of("index.json", fileName));
+            if (uploadRemote) {
+                r2Uploader.uploadFiles(outputDirectory, List.of("index.json", fileName));
+            }
             counters.leaderboardExports.increment();
         } catch (Exception exception) {
             plugin.getLogger().warning("Failed to export public playtime leaderboards: " + exception.getMessage());

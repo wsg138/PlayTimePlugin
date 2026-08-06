@@ -258,12 +258,14 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        int offset = (request.page() - 1) * CONSOLE_PAGE_SIZE;
-        List<LeaderboardEntry> rows = runtime.readService().getLeaderboard(request.metric().toUpperCase(Locale.ROOT), request.range().toUpperCase(Locale.ROOT), CONSOLE_PAGE_SIZE, offset);
+        var result = runtime.readService().getLeaderboardPage(
+                request.metric().toUpperCase(Locale.ROOT), request.range().toUpperCase(Locale.ROOT),
+                request.page(), CONSOLE_PAGE_SIZE);
+        List<LeaderboardEntry> rows = result.rows();
         if (rows.isEmpty()) {
             send(sender, runtime.readService().isLoading()
                     ? ChatColor.YELLOW + "Leaderboard cache is refreshing. Try again in a moment."
-                    : ChatColor.RED + "No leaderboard data for that metric/range yet.");
+                    : ChatColor.RED + "That leaderboard page does not exist.");
             return;
         }
 
@@ -294,6 +296,11 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
         if (args.length >= FOURTH_ARG_COUNT) {
             page = parseTopPage(sender, args[3]);
             if (page < FIRST_PAGE) {
+                return null;
+            }
+            if (page > runtime.readService().maxLeaderboardPages()) {
+                send(sender, ChatColor.RED + "Page must be between 1 and "
+                        + runtime.readService().maxLeaderboardPages() + ".");
                 return null;
             }
         }

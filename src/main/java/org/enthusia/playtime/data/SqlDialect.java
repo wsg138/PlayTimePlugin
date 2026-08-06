@@ -259,15 +259,15 @@ public enum SqlDialect {
                 INSERT INTO lifetime_agg (player_uuid, first_join, last_join, last_seen, active_minutes, afk_minutes, total_minutes)
                 VALUES (?, ?, ?, ?, 0, 0, 0)
                 ON CONFLICT(player_uuid) DO UPDATE SET
-                  last_join = excluded.last_join,
-                  last_seen = excluded.last_seen;
+                  last_join = CASE WHEN last_join < excluded.last_join THEN excluded.last_join ELSE last_join END,
+                  last_seen = CASE WHEN last_seen IS NULL OR last_seen < excluded.last_seen THEN excluded.last_seen ELSE last_seen END;
                 """;
             case MYSQL -> """
                 INSERT INTO lifetime_agg (player_uuid, first_join, last_join, last_seen, active_minutes, afk_minutes, total_minutes)
                 VALUES (?, ?, ?, ?, 0, 0, 0)
                 ON DUPLICATE KEY UPDATE
-                  last_join = VALUES(last_join),
-                  last_seen = VALUES(last_seen);
+                  last_join = GREATEST(last_join, VALUES(last_join)),
+                  last_seen = GREATEST(COALESCE(last_seen, VALUES(last_seen)), VALUES(last_seen));
                 """;
         };
     }
@@ -325,8 +325,8 @@ public enum SqlDialect {
                 ON CONFLICT(player_uuid) DO UPDATE SET
                   username = excluded.username,
                   display_name = excluded.display_name,
-                  last_seen = excluded.last_seen,
-                  updated_at = excluded.updated_at;
+                  last_seen = CASE WHEN last_seen < excluded.last_seen THEN excluded.last_seen ELSE last_seen END,
+                  updated_at = CASE WHEN updated_at < excluded.updated_at THEN excluded.updated_at ELSE updated_at END;
                 """;
             case MYSQL -> """
                 INSERT INTO player_profiles (player_uuid, username, display_name, first_seen, last_seen, updated_at)
@@ -334,8 +334,8 @@ public enum SqlDialect {
                 ON DUPLICATE KEY UPDATE
                   username = VALUES(username),
                   display_name = VALUES(display_name),
-                  last_seen = VALUES(last_seen),
-                  updated_at = VALUES(updated_at);
+                  last_seen = GREATEST(last_seen, VALUES(last_seen)),
+                  updated_at = GREATEST(updated_at, VALUES(updated_at));
                 """;
         };
     }

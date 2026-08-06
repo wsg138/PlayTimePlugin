@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -78,6 +79,7 @@ class AsyncWriteQueueOwnershipRaceTest {
         f.scheduler.immediate.removeFirst().run();
         verify(f.repository, times(1)).batchRecordJoins(anyList());
         verify(f.repository, times(1)).batchUpsertPlayerProfiles(anyList());
+        assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, f.queue.completeHandoff());
 
         Fixture blocked = new Fixture();
         blocked.queue.start();
@@ -99,6 +101,36 @@ class AsyncWriteQueueOwnershipRaceTest {
         prepare.join();
         assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, handoff.get());
         verify(blocked.repository, times(1)).batchRecordMinutes(anyMap(), any());
+        assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, blocked.queue.completeHandoff());
+    }
+
+
+    @Test
+    void effectiveTierReadCannotDoubleCountAfterSqlBeforeLedgerFinalization() throws Exception {
+        Fixture f = new Fixture();
+        UUID player = UUID.randomUUID();
+        CountDownLatch reachedFinalizationGap = new CountDownLatch(1);
+        CountDownLatch allowFinalization = new CountDownLatch(1);
+        AsyncWriteQueue.setBeforeMinuteLedgerFinalizationProbeForTesting(() -> {
+            reachedFinalizationGap.countDown();
+            await(allowFinalization);
+        });
+        try {
+            f.queue.enqueueMinute(player, 1, 0);
+            CompletableFuture<Void> flush = CompletableFuture.runAsync(f.queue::flushNow);
+            assertTrue(reachedFinalizationGap.await(1, TimeUnit.SECONDS));
+
+            assertTrue(f.queue.readEffectiveActiveSnapshot(player, () -> 1L).isEmpty(),
+                    "durable SQL must not be combined with the same still-owned minute");
+
+            allowFinalization.countDown();
+            flush.get(1, TimeUnit.SECONDS);
+            assertEquals(1L, f.queue.readEffectiveActiveSnapshot(player, () -> 1L)
+                    .orElseThrow().activeMinutes());
+        } finally {
+            allowFinalization.countDown();
+            AsyncWriteQueue.setBeforeMinuteLedgerFinalizationProbeForTesting(null);
+        }
     }
 
     @Test

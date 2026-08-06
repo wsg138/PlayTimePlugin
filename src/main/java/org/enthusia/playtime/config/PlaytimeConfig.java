@@ -133,6 +133,8 @@ public final class PlaytimeConfig {
                 stringValue(cfg, List.of("leaderboards.default-metric"), "total").toUpperCase(Locale.ROOT),
                 stringValue(cfg, List.of("leaderboards.default-range"), "all").toUpperCase(Locale.ROOT),
                 Math.max(5, intValue(cfg, List.of("leaderboards.cache-ttl-seconds"), 30)),
+                Math.max(1, Math.min(10_000, intValue(cfg, List.of("leaderboards.max-pages"), 100))),
+                Math.max(16, Math.min(4096, intValue(cfg, List.of("leaderboards.cache-max-entries"), 512))),
                 new LeaderboardExport(
                         booleanValue(cfg, List.of("leaderboards.export.enabled"), true),
                         stringValue(cfg, List.of("leaderboards.export.directory"), "public-leaderboards"),
@@ -161,8 +163,8 @@ public final class PlaytimeConfig {
                 stringValue(cfg, List.of("gui.filler-material"), "GRAY_STAINED_GLASS_PANE"),
                 new BedrockGui(
                         booleanValue(cfg, List.of("gui.bedrock.enabled"), true),
-                        Math.max(3, intValue(cfg, List.of("gui.bedrock.main-menu-rows"), 5)),
-                        Math.max(3, intValue(cfg, List.of("gui.bedrock.leaderboard-rows"), 6))
+                        Math.max(3, Math.min(6, intValue(cfg, List.of("gui.bedrock.main-menu-rows"), 5))),
+                        Math.max(3, Math.min(6, intValue(cfg, List.of("gui.bedrock.leaderboard-rows"), 6)))
                 )
         );
 
@@ -407,7 +409,8 @@ public final class PlaytimeConfig {
     public record Ping(boolean enabled, String sound, float volume, float pitch) {
     }
 
-    public record Leaderboards(String defaultMetric, String defaultRange, int cacheTtlSeconds, LeaderboardExport export) {
+    public record Leaderboards(String defaultMetric, String defaultRange, int cacheTtlSeconds,
+                               int maxPages, int cacheMaxEntries, LeaderboardExport export) {
     }
 
     public record LeaderboardExport(boolean enabled,

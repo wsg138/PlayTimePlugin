@@ -130,6 +130,8 @@ leaderboards:
 
   # Cached leaderboard results are reused by placeholder lookups and GUI reads.
   cache-ttl-seconds: 30
+  max-pages: 100
+  cache-max-entries: 512
 
   export:
     # Writes one website-safe JSON snapshot under the plugin data folder:

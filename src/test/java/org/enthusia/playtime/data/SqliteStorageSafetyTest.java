@@ -60,7 +60,7 @@ class SqliteStorageSafetyTest {
     }
 
     @Test
-    void populatedDatabaseSurvivesSingleRollingBackupReplacement() throws Exception {
+    void populatedDatabaseKeepsCurrentAndPriorRollingBackups() throws Exception {
         File database = temporaryDirectory.resolve("playtime.db").toFile();
         createPopulatedDatabase(database, 120L, 125L);
         int providersBefore = DatabaseProvider.openProviderCountForTesting();
@@ -92,8 +92,22 @@ class SqliteStorageSafetyTest {
         assertEquals(providersBefore, DatabaseProvider.openProviderCountForTesting());
 
         try (var files = Files.list(temporaryDirectory.resolve("backups"))) {
-            assertEquals(1L, files.filter(Files::isRegularFile).count());
+            assertEquals(2L, files.filter(Files::isRegularFile).count());
         }
+    }
+
+
+    @Test
+    void sqlitePathCannotEscapePluginDataFolder() {
+        PlayTimePlugin plugin = mock(PlayTimePlugin.class);
+        when(plugin.getDataFolder()).thenReturn(temporaryDirectory.toFile());
+        when(plugin.getLogger()).thenReturn(Logger.getAnonymousLogger());
+        PlaytimeConfig config = mock(PlaytimeConfig.class);
+        when(config.getSqliteFile()).thenReturn("../outside.db");
+        DatabaseProvider provider = new DatabaseProvider(plugin, config);
+
+        assertThrows(IllegalArgumentException.class, () -> provider.init(StorageType.SQLITE));
+        assertFalse(temporaryDirectory.getParent().resolve("outside.db").toFile().exists());
     }
 
     private DatabaseProvider providerFor(File dataFolder) {
@@ -111,7 +125,13 @@ class SqliteStorageSafetyTest {
     private void createPopulatedDatabase(File database, long activeMinutes, long totalMinutes) throws Exception {
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database.getAbsolutePath());
              Statement statement = connection.createStatement()) {
+            statement.execute(SqlDialect.SQLITE.dailyAggCreateTable());
+            statement.execute(SqlDialect.SQLITE.hourlyAggCreateTable());
             statement.execute(SqlDialect.SQLITE.lifetimeAggCreateTable());
+            statement.execute(SqlDialect.SQLITE.joinsLogCreateTable());
+            statement.execute(SqlDialect.SQLITE.playerProfilesCreateTable());
+            statement.execute(SqlDialect.SQLITE.playerSkinProfilesCreateTable());
+            statement.execute(SqlDialect.SQLITE.appliedBatchesCreateTable());
             statement.execute("INSERT INTO lifetime_agg (player_uuid, first_join, last_join, last_seen, "
                     + "active_minutes, afk_minutes, total_minutes) VALUES ("
                     + "'player-one', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
