@@ -78,7 +78,7 @@ public final class PlaytimeRepository {
                 statement.execute(dialect.lifetimeAggIndexes());
                 statement.execute(dialect.joinsLogIndexes());
                 statement.execute(dialect.playerProfilesIndexes());
-                tryAddLastSeenColumn(statement);
+                ensureLastSeenColumn(connection, statement);
             }
             return null;
         });
@@ -1095,23 +1095,27 @@ public final class PlaytimeRepository {
         return value == null || value.isBlank() ? null : value;
     }
 
-    private void tryAddLastSeenColumn(Statement statement) {
-        boolean columnExists = false;
+    private void ensureLastSeenColumn(Connection connection, Statement statement) {
+        boolean columnExists;
         try {
-            statement.execute(dialect.lifetimeAggAddLastSeenColumn());
-            columnExists = true;
+            columnExists = columnExists(connection, "lifetime_agg", "last_seen");
         } catch (SQLException exception) {
-            String message = exception.getMessage();
-            if (message == null) {
-                return;
-            }
-            String normalized = message.toLowerCase(Locale.ROOT);
-            if (normalized.contains("duplicate column")
-                    || normalized.contains("already exists")
-                    || normalized.contains("duplicate")) {
+            plugin.getLogger().warning("Failed to inspect lifetime_agg.last_seen metadata; falling back to the legacy migration check: "
+                    + exception.getMessage());
+            columnExists = false;
+        }
+
+        if (!columnExists) {
+            try {
+                statement.execute(dialect.lifetimeAggAddLastSeenColumn());
                 columnExists = true;
-            } else {
-                plugin.getLogger().warning("Failed while ensuring lifetime_agg.last_seen exists: " + exception.getMessage());
+            } catch (SQLException exception) {
+                if (isDuplicateColumn(exception)) {
+                    columnExists = true;
+                } else {
+                    plugin.getLogger().warning("Failed while ensuring lifetime_agg.last_seen exists: "
+                            + exception.getMessage());
+                }
             }
         }
 
@@ -1124,6 +1128,46 @@ public final class PlaytimeRepository {
         } catch (SQLException exception) {
             plugin.getLogger().warning("Failed while backfilling lifetime_agg.last_seen: " + exception.getMessage());
         }
+    }
+
+    static boolean columnExists(Connection connection, String tableName, String columnName) throws SQLException {
+        java.sql.DatabaseMetaData metadata = connection.getMetaData();
+        String catalog = connection.getCatalog();
+        String searchEscape = metadata.getSearchStringEscape();
+        String[] tableNames = {tableName, tableName.toUpperCase(Locale.ROOT), tableName.toLowerCase(Locale.ROOT)};
+        String[] columnNames = {columnName, columnName.toUpperCase(Locale.ROOT), columnName.toLowerCase(Locale.ROOT)};
+        for (String table : tableNames) {
+            String tablePattern = escapeMetadataPattern(table, searchEscape);
+            for (String column : columnNames) {
+                String columnPattern = escapeMetadataPattern(column, searchEscape);
+                try (ResultSet columns = metadata.getColumns(catalog, null, tablePattern, columnPattern)) {
+                    if (columns.next()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static String escapeMetadataPattern(String value, String searchEscape) {
+        if (searchEscape == null || searchEscape.isEmpty()) {
+            return value;
+        }
+        return value.replace(searchEscape, searchEscape + searchEscape)
+                .replace("_", searchEscape + "_")
+                .replace("%", searchEscape + "%");
+    }
+
+    private boolean isDuplicateColumn(SQLException exception) {
+        String message = exception.getMessage();
+        if (message == null) {
+            return false;
+        }
+        String normalized = message.toLowerCase(Locale.ROOT);
+        return normalized.contains("duplicate column")
+                || normalized.contains("already exists")
+                || normalized.contains("duplicate");
     }
 
     private DateRange dateRangeFor(String range, Instant now) {
