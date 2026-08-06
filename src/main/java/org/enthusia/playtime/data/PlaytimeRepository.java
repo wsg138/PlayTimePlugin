@@ -1133,11 +1133,14 @@ public final class PlaytimeRepository {
     static boolean columnExists(Connection connection, String tableName, String columnName) throws SQLException {
         java.sql.DatabaseMetaData metadata = connection.getMetaData();
         String catalog = connection.getCatalog();
+        String searchEscape = metadata.getSearchStringEscape();
         String[] tableNames = {tableName, tableName.toUpperCase(Locale.ROOT), tableName.toLowerCase(Locale.ROOT)};
         String[] columnNames = {columnName, columnName.toUpperCase(Locale.ROOT), columnName.toLowerCase(Locale.ROOT)};
         for (String table : tableNames) {
+            String tablePattern = escapeMetadataPattern(table, searchEscape);
             for (String column : columnNames) {
-                try (ResultSet columns = metadata.getColumns(catalog, null, table, column)) {
+                String columnPattern = escapeMetadataPattern(column, searchEscape);
+                try (ResultSet columns = metadata.getColumns(catalog, null, tablePattern, columnPattern)) {
                     if (columns.next()) {
                         return true;
                     }
@@ -1145,6 +1148,15 @@ public final class PlaytimeRepository {
             }
         }
         return false;
+    }
+
+    private static String escapeMetadataPattern(String value, String searchEscape) {
+        if (searchEscape == null || searchEscape.isEmpty()) {
+            return value;
+        }
+        return value.replace(searchEscape, searchEscape + searchEscape)
+                .replace("_", searchEscape + "_")
+                .replace("%", searchEscape + "%");
     }
 
     private boolean isDuplicateColumn(SQLException exception) {

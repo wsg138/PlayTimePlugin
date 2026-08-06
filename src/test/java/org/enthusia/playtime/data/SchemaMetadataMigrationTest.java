@@ -4,7 +4,9 @@ import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
+import java.sql.DriverManager;
 import java.sql.ResultSet;
+import java.sql.Statement;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -39,5 +41,15 @@ class SchemaMetadataMigrationTest {
         when(columns.next()).thenReturn(false);
 
         assertFalse(PlaytimeRepository.columnExists(connection, "lifetime_agg", "last_seen"));
+    }
+
+    @Test
+    void wildcardSimilarColumnDoesNotCountAsLastSeen() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE lifetime_agg (lastXseen TIMESTAMP)");
+
+            assertFalse(PlaytimeRepository.columnExists(connection, "lifetime_agg", "last_seen"));
+        }
     }
 }
