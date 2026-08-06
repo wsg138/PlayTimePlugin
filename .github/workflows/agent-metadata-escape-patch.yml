@@ -1,0 +1,120 @@
+name: Agent metadata escape patch
+
+on:
+  push:
+    branches:
+      - agent/placeholder-reload-mariadb-migration
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[agent-metadata-escaped]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Escape JDBC metadata patterns and add regression coverage
+        shell: python
+        run: |
+          from pathlib import Path
+
+          repository_path = Path("src/main/java/org/enthusia/playtime/data/PlaytimeRepository.java")
+          source = repository_path.read_text()
+          old = '''    static boolean columnExists(Connection connection, String tableName, String columnName) throws SQLException {
+                  java.sql.DatabaseMetaData metadata = connection.getMetaData();
+                  String catalog = connection.getCatalog();
+                  String[] tableNames = {tableName, tableName.toUpperCase(Locale.ROOT), tableName.toLowerCase(Locale.ROOT)};
+                  String[] columnNames = {columnName, columnName.toUpperCase(Locale.ROOT), columnName.toLowerCase(Locale.ROOT)};
+                  for (String table : tableNames) {
+                      for (String column : columnNames) {
+                          try (ResultSet columns = metadata.getColumns(catalog, null, table, column)) {
+                              if (columns.next()) {
+                                  return true;
+                              }
+                          }
+                      }
+                  }
+                  return false;
+              }
+          '''
+          new = '''    static boolean columnExists(Connection connection, String tableName, String columnName) throws SQLException {
+                  java.sql.DatabaseMetaData metadata = connection.getMetaData();
+                  String catalog = connection.getCatalog();
+                  String searchEscape = metadata.getSearchStringEscape();
+                  String[] tableNames = {tableName, tableName.toUpperCase(Locale.ROOT), tableName.toLowerCase(Locale.ROOT)};
+                  String[] columnNames = {columnName, columnName.toUpperCase(Locale.ROOT), columnName.toLowerCase(Locale.ROOT)};
+                  for (String table : tableNames) {
+                      String tablePattern = escapeMetadataPattern(table, searchEscape);
+                      for (String column : columnNames) {
+                          String columnPattern = escapeMetadataPattern(column, searchEscape);
+                          try (ResultSet columns = metadata.getColumns(catalog, null, tablePattern, columnPattern)) {
+                              if (columns.next()) {
+                                  return true;
+                              }
+                          }
+                      }
+                  }
+                  return false;
+              }
+
+              private static String escapeMetadataPattern(String value, String searchEscape) {
+                  if (searchEscape == null || searchEscape.isEmpty()) {
+                      return value;
+                  }
+                  return value.replace(searchEscape, searchEscape + searchEscape)
+                          .replace("_", searchEscape + "_")
+                          .replace("%", searchEscape + "%");
+              }
+          '''
+          if old not in source:
+              raise SystemExit("Expected columnExists implementation was not found")
+          repository_path.write_text(source.replace(old, new, 1))
+
+          test_path = Path("src/test/java/org/enthusia/playtime/data/SchemaMetadataMigrationTest.java")
+          test_source = test_path.read_text()
+          test_source = test_source.replace(
+              "import java.sql.DatabaseMetaData;\nimport java.sql.ResultSet;",
+              "import java.sql.DatabaseMetaData;\nimport java.sql.DriverManager;\nimport java.sql.ResultSet;\nimport java.sql.Statement;",
+              1,
+          )
+          marker = '''    @Test
+              void reportsMissingColumnAfterCheckingIdentifierCaseVariants() throws Exception {
+                  Connection connection = mock(Connection.class);
+                  DatabaseMetaData metadata = mock(DatabaseMetaData.class);
+                  ResultSet columns = mock(ResultSet.class);
+                  when(connection.getMetaData()).thenReturn(metadata);
+                  when(connection.getCatalog()).thenReturn(null);
+                  when(metadata.getColumns(isNull(), isNull(), anyString(), anyString())).thenReturn(columns);
+                  when(columns.next()).thenReturn(false);
+
+                  assertFalse(PlaytimeRepository.columnExists(connection, "lifetime_agg", "last_seen"));
+              }
+          '''
+          addition = marker + '''
+              @Test
+              void wildcardSimilarColumnDoesNotCountAsLastSeen() throws Exception {
+                  try (Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+                       Statement statement = connection.createStatement()) {
+                      statement.execute("CREATE TABLE lifetime_agg (lastXseen TIMESTAMP)");
+
+                      assertFalse(PlaytimeRepository.columnExists(connection, "lifetime_agg", "last_seen"));
+                  }
+              }
+          '''
+          if marker not in test_source:
+              raise SystemExit("Expected schema metadata test marker was not found")
+          test_path.write_text(test_source.replace(marker, addition, 1))
+
+          Path(".github/workflows/agent-metadata-escape-patch.yml").unlink()
+
+      - name: Commit JDBC metadata escape fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Escape JDBC metadata patterns [agent-metadata-escaped]"
+          git push
