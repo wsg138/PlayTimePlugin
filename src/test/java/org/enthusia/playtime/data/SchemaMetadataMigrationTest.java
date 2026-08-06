@@ -52,4 +52,14 @@ class SchemaMetadataMigrationTest {
             assertFalse(PlaytimeRepository.columnExists(connection, "lifetime_agg", "last_seen"));
         }
     }
+
+    @Test
+    void exactLastSeenColumnIsDetectedWithEscapedMetadataPatterns() throws Exception {
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE lifetime_agg (last_seen TIMESTAMP)");
+
+            assertTrue(PlaytimeRepository.columnExists(connection, "lifetime_agg", "last_seen"));
+        }
+    }
 }
