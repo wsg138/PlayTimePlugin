@@ -30,7 +30,7 @@ public final class JoinLogListener implements Listener {
     public void onQuit(PlayerQuitEvent event) {
         PlaytimeRuntime runtime = plugin.runtime();
         if (runtime != null) {
-            runtime.handleQuitRecorded(event.getPlayer().getUniqueId(), Instant.now());
+            runtime.handleQuitRecorded(event.getPlayer(), Instant.now());
         }
     }
 }

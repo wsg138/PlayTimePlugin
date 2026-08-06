@@ -6,6 +6,7 @@ import org.bukkit.scheduler.BukkitTask;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.data.WriteBatch;
+import org.enthusia.playtime.data.WriteBatch.MinuteBucket;
 import org.enthusia.playtime.data.PlaytimeRepository.JoinRecord;
 import org.enthusia.playtime.data.model.MinuteDelta;
 import org.enthusia.playtime.data.model.PlayerProfile;
@@ -33,11 +34,14 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private static final long WAIT_SLEEP_MILLIS = 10L;
     private static final java.util.concurrent.atomic.AtomicInteger ACTIVE_QUEUES =
             new java.util.concurrent.atomic.AtomicInteger();
+    private static volatile Runnable beforeMinuteLedgerFinalizationProbe = () -> { };
 
     private final PlayTimePlugin plugin;
     private final PlaytimeRepository repository;
     private final PerformanceCounters counters;
     private final ConcurrentHashMap<UUID, MinuteDelta> pendingMinutes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<MinuteBucket, MinuteDelta> pendingMinuteBuckets = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<UUID, Instant> pendingLastSeen = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, MinuteDelta> acceptedUncommittedMinutes = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<UUID, AtomicLong> acceptedActiveSequences = new ConcurrentHashMap<>();
     private final Object minuteLedgerLock = new Object();
@@ -102,10 +106,15 @@ public final class AsyncWriteQueue implements AutoCloseable {
     }
 
     public EnqueueResult enqueueMinute(UUID uuid, int activeMinutes, int afkMinutes) {
+        return enqueueMinute(uuid, activeMinutes, afkMinutes, Instant.now());
+    }
+
+    public EnqueueResult enqueueMinute(UUID uuid, int activeMinutes, int afkMinutes, Instant creditedAt) {
         MinuteDelta delta = new MinuteDelta(activeMinutes, afkMinutes);
         if (delta.totalMinutes() < MIN_TOTAL_MINUTES) {
             return EnqueueResult.ACCEPTED;
         }
+        MinuteBucket bucket = new MinuteBucket(uuid, creditedAt);
         synchronized (lifecycleLock) {
             EnqueueResult result = enqueueResult();
             if (result != EnqueueResult.ACCEPTED) {
@@ -114,6 +123,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
             synchronized (writeOwnershipLock) {
                 synchronized (minuteLedgerLock) {
                     pendingMinutes.merge(uuid, delta, MinuteDelta::plus);
+                    pendingMinuteBuckets.merge(bucket, delta, MinuteDelta::plus);
                     acceptedUncommittedMinutes.merge(uuid, delta, MinuteDelta::plus);
                     if (delta.activeMinutes() > 0L) {
                         acceptedActiveSequences.computeIfAbsent(uuid, ignored -> new AtomicLong()).addAndGet(delta.activeMinutes());
@@ -124,6 +134,29 @@ public final class AsyncWriteQueue implements AutoCloseable {
         }
         counters.minuteDeltasQueued.increment();
         return EnqueueResult.ACCEPTED;
+    }
+
+    public EnqueueResult enqueueLastSeen(UUID uuid, Instant seenAt) {
+        synchronized (lifecycleLock) {
+            EnqueueResult result = enqueueResult();
+            if (result != EnqueueResult.ACCEPTED) return result;
+            synchronized (writeOwnershipLock) {
+                pendingLastSeen.merge(uuid, seenAt, (current, candidate) ->
+                        candidate.isAfter(current) ? candidate : current);
+            }
+        }
+        scheduleImmediateFlush();
+        return EnqueueResult.ACCEPTED;
+    }
+
+    public void enqueueLastSeenForShutdown(UUID uuid, Instant seenAt) {
+        synchronized (lifecycleLock) {
+            if (state == QueueState.CLOSED) return;
+            synchronized (writeOwnershipLock) {
+                pendingLastSeen.merge(uuid, seenAt, (current, candidate) ->
+                        candidate.isAfter(current) ? candidate : current);
+            }
+        }
     }
 
     public EnqueueResult enqueueJoin(UUID uuid, Instant joinedAt) {
@@ -278,17 +311,20 @@ public final class AsyncWriteQueue implements AutoCloseable {
             minuteCommitInProgress.set(true);
             try {
                 repository.applyWriteBatch(batch);
-            } finally {
-                minuteCommitInProgress.set(false);
-            }
-            synchronized (writeOwnershipLock) {
-                if (activeWriteBatch == batch) {
-                    synchronized (minuteLedgerLock) {
-                        confirmMinuteBatch(batch.minutes());
+                beforeMinuteLedgerFinalizationProbe.run();
+                synchronized (writeOwnershipLock) {
+                    if (activeWriteBatch == batch) {
+                        synchronized (minuteLedgerLock) {
+                            confirmMinuteBatch(batch.minutes());
+                            activeWriteBatch = null;
+                            minuteCommitGeneration.incrementAndGet();
+                        }
                     }
-                    activeWriteBatch = null;
-                    minuteCommitGeneration.incrementAndGet();
                 }
+            } finally {
+                // Keep the guard active through ledger finalization so readers can
+                // never observe durable SQL plus the same still-owned delta.
+                minuteCommitInProgress.set(false);
             }
             counters.flushBatches.increment();
             processed++;
@@ -319,14 +355,20 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private WriteBatch obtainActiveWriteBatch() {
         synchronized (writeOwnershipLock) {
             if (activeWriteBatch != null) return activeWriteBatch;
-            if (pendingMinutes.isEmpty() && pendingProfiles.isEmpty() && pendingJoins.isEmpty()) return null;
+            if (pendingMinutes.isEmpty() && pendingProfiles.isEmpty() && pendingJoins.isEmpty()
+                    && pendingMinuteBuckets.isEmpty() && pendingLastSeen.isEmpty()) return null;
             Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>(pendingMinutes);
+            Map<MinuteBucket, MinuteDelta> minuteBuckets = new ConcurrentHashMap<>(pendingMinuteBuckets);
             Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>(pendingProfiles);
+            Map<UUID, Instant> lastSeen = new ConcurrentHashMap<>(pendingLastSeen);
             List<JoinRecord> joins = new ArrayList<>(pendingJoins);
             pendingMinutes.keySet().removeAll(minutes.keySet());
+            pendingMinuteBuckets.keySet().removeAll(minuteBuckets.keySet());
             pendingProfiles.keySet().removeAll(profiles.keySet());
+            pendingLastSeen.keySet().removeAll(lastSeen.keySet());
             pendingJoins.removeAll(joins);
-            activeWriteBatch = new WriteBatch(UUID.randomUUID(), Instant.now(), Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
+            activeWriteBatch = new WriteBatch(UUID.randomUUID(), Instant.now(), Map.copyOf(minutes),
+                    Map.copyOf(profiles), List.copyOf(joins), Map.copyOf(minuteBuckets), Map.copyOf(lastSeen));
             return activeWriteBatch;
         }
     }
@@ -487,14 +529,20 @@ public final class AsyncWriteQueue implements AutoCloseable {
             List<WriteBatch> batches = new ArrayList<>(pendingRecoveryBatches);
             if (activeWriteBatch != null) batches.add(activeWriteBatch);
             batches.addAll(retainedShutdownBatches);
-            if (!pendingMinutes.isEmpty() || !pendingProfiles.isEmpty() || !pendingJoins.isEmpty()) {
+            if (!pendingMinutes.isEmpty() || !pendingProfiles.isEmpty() || !pendingJoins.isEmpty()
+                    || !pendingMinuteBuckets.isEmpty() || !pendingLastSeen.isEmpty()) {
                 Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>(pendingMinutes);
+                Map<MinuteBucket, MinuteDelta> minuteBuckets = new ConcurrentHashMap<>(pendingMinuteBuckets);
                 Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>(pendingProfiles);
+                Map<UUID, Instant> lastSeen = new ConcurrentHashMap<>(pendingLastSeen);
                 List<JoinRecord> joins = new ArrayList<>(pendingJoins);
                 pendingMinutes.keySet().removeAll(minutes.keySet());
+                pendingMinuteBuckets.keySet().removeAll(minuteBuckets.keySet());
                 pendingProfiles.keySet().removeAll(profiles.keySet());
+                pendingLastSeen.keySet().removeAll(lastSeen.keySet());
                 pendingJoins.removeAll(joins);
-                WriteBatch retained = new WriteBatch(UUID.randomUUID(), Instant.now(), Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
+                WriteBatch retained = new WriteBatch(UUID.randomUUID(), Instant.now(), Map.copyOf(minutes),
+                        Map.copyOf(profiles), List.copyOf(joins), Map.copyOf(minuteBuckets), Map.copyOf(lastSeen));
                 retainedShutdownBatches.addLast(retained);
                 batches.add(retained);
             }
@@ -514,7 +562,8 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private boolean hasOutstandingWork() {
         synchronized (writeOwnershipLock) {
             return activeWriteBatch != null || !pendingRecoveryBatches.isEmpty() || !retainedShutdownBatches.isEmpty()
-                    || !pendingMinutes.isEmpty() || !pendingProfiles.isEmpty() || !pendingJoins.isEmpty();
+                    || !pendingMinutes.isEmpty() || !pendingProfiles.isEmpty() || !pendingJoins.isEmpty()
+                    || !pendingMinuteBuckets.isEmpty() || !pendingLastSeen.isEmpty();
         }
     }
 
@@ -536,20 +585,21 @@ public final class AsyncWriteQueue implements AutoCloseable {
         synchronized (writeOwnershipLock) {
             int batchMinutes = activeWriteBatch == null ? 0 : activeWriteBatch.minutes().size();
             int batchJoins = activeWriteBatch == null ? 0 : activeWriteBatch.joins().size();
-            int batchProfiles = activeWriteBatch == null ? 0 : activeWriteBatch.profiles().size();
+            int batchProfiles = activeWriteBatch == null ? 0
+                    : activeWriteBatch.profiles().size() + activeWriteBatch.lastSeen().size();
             for (WriteBatch recovery : pendingRecoveryBatches) {
                 batchMinutes += recovery.minutes().size();
                 batchJoins += recovery.joins().size();
-                batchProfiles += recovery.profiles().size();
+                batchProfiles += recovery.profiles().size() + recovery.lastSeen().size();
             }
             for (WriteBatch retained : retainedShutdownBatches) {
                 batchMinutes += retained.minutes().size();
                 batchJoins += retained.joins().size();
-                batchProfiles += retained.profiles().size();
+                batchProfiles += retained.profiles().size() + retained.lastSeen().size();
             }
             return new OutstandingWork(pendingMinutes.size() + batchMinutes,
                     pendingJoins.size() + batchJoins,
-                    pendingProfiles.size() + batchProfiles);
+                    pendingProfiles.size() + pendingLastSeen.size() + batchProfiles);
         }
     }
 
@@ -568,6 +618,10 @@ public final class AsyncWriteQueue implements AutoCloseable {
 
     public static int activeQueueCountForTesting() {
         return ACTIVE_QUEUES.get();
+    }
+
+    static void setBeforeMinuteLedgerFinalizationProbeForTesting(Runnable probe) {
+        beforeMinuteLedgerFinalizationProbe = probe == null ? () -> { } : probe;
     }
 
     interface QueueScheduler {

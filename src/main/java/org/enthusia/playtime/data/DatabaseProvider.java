@@ -5,6 +5,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.config.PlaytimeConfig;
+import org.enthusia.playtime.util.PluginPaths;
 import org.sqlite.SQLiteException;
 
 import javax.sql.DataSource;
@@ -44,7 +45,8 @@ public final class DatabaseProvider {
         SqliteCandidateCheck sqliteCheck = SqliteCandidateCheck.NONE;
 
         if (type == StorageType.SQLITE) {
-            this.sqliteFile = new File(plugin.getDataFolder(), config.getSqliteFile()).getAbsoluteFile();
+            this.sqliteFile = PluginPaths.resolveInside(plugin.getDataFolder().toPath(),
+                    config.getSqliteFile(), "storage.sqlite.file").toFile();
             this.sqliteCreationAllowed = plugin instanceof PlayTimePlugin playTimePlugin
                     && playTimePlugin.mayCreateInitialSqliteDatabase();
             this.sqliteExistedBeforeOpen = SqliteStorageSafety.prepareDatabasePath(

@@ -11,9 +11,14 @@ import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.service.PlaytimeReadService;
 
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 public final class PlanHook implements AutoCloseable {
+
+    private static final Set<PlayTimePlugin> LISTENER_REGISTERED = ConcurrentHashMap.newKeySet();
+    private static final ConcurrentHashMap<PlayTimePlugin, PlanHook> ACTIVE_HOOKS = new ConcurrentHashMap<>();
 
     private final PlayTimePlugin plugin;
     private final PlaytimeRepository repository;
@@ -22,7 +27,6 @@ public final class PlanHook implements AutoCloseable {
     private final PlaytimeConfig config;
 
     private Optional<DataExtension> extension = Optional.empty();
-    private boolean enableListenerRegistered;
     private volatile boolean closed;
     private volatile boolean registrationWarningLogged;
 
@@ -40,6 +44,7 @@ public final class PlanHook implements AutoCloseable {
 
     public void hook() {
         closed = false;
+        ACTIVE_HOOKS.put(plugin, this);
         if (!config.isPlanIntegrationEnabled()) {
             return;
         }
@@ -48,11 +53,11 @@ public final class PlanHook implements AutoCloseable {
         }
 
         try {
+            listenForPlanReloads();
             if (!hasRequiredCapabilities()) {
                 plugin.getLogger().info("Plan is installed, but required DataExtension capabilities are unavailable.");
                 return;
             }
-            listenForPlanReloads();
             registerDataExtension();
         } catch (NoClassDefFoundError ignored) {
             // Plan is optional and not present on this server.
@@ -66,6 +71,11 @@ public final class PlanHook implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
+        ACTIVE_HOOKS.remove(plugin, this);
+        unregisterExtension();
+    }
+
+    private void unregisterExtension() {
         DataExtension currentExtension = extension.orElse(null);
         if (currentExtension == null) {
             return;
@@ -82,7 +92,10 @@ public final class PlanHook implements AutoCloseable {
     }
 
     private void registerDataExtension() {
-        close();
+        unregisterExtension();
+        if (closed || ACTIVE_HOOKS.get(plugin) != this) {
+            return;
+        }
         DataExtension newExtension = new PlaytimePlanExtension(repository, readService, sessionManager);
         ExtensionService.getInstance().register(newExtension);
         extension = Optional.of(newExtension);
@@ -91,19 +104,28 @@ public final class PlanHook implements AutoCloseable {
     }
 
     private void listenForPlanReloads() {
-        if (enableListenerRegistered) {
+        if (!LISTENER_REGISTERED.add(plugin)) {
             return;
         }
-        enableListenerRegistered = true;
-        CapabilityService.getInstance().registerEnableListener(isPlanEnabled -> {
-            if (isPlanEnabled && !closed && config.isPlanIntegrationEnabled()) {
-                try {
-                    registerDataExtension();
-                } catch (Exception exception) {
-                    logRegistrationWarning("Failed to re-register Plan analytics integration after Plan reload.", exception);
+        try {
+            CapabilityService.getInstance().registerEnableListener(isPlanEnabled -> {
+                PlanHook current = ACTIVE_HOOKS.get(plugin);
+                if (isPlanEnabled && current != null && !current.closed
+                        && current.config.isPlanIntegrationEnabled()) {
+                    try {
+                        if (current.hasRequiredCapabilities()) {
+                            current.registerDataExtension();
+                        }
+                    } catch (Exception exception) {
+                        current.logRegistrationWarning(
+                                "Failed to re-register Plan analytics integration after Plan reload.", exception);
+                    }
                 }
-            }
-        });
+            });
+        } catch (NoClassDefFoundError | RuntimeException failure) {
+            LISTENER_REGISTERED.remove(plugin);
+            throw failure;
+        }
     }
 
     private boolean hasRequiredCapabilities() {

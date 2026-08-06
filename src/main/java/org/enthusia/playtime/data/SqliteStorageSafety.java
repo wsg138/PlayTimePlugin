@@ -6,13 +6,18 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.List;
 
 final class SqliteStorageSafety {
-    private static final String REQUIRED_TABLE = "lifetime_agg";
+    private static final List<String> REQUIRED_TABLES = List.of(
+            "daily_agg", "hourly_agg", "lifetime_agg", "joins_log",
+            "player_profiles", "player_skin_profiles", "playtime_applied_batches");
     private static final String BACKUP_SUFFIX = ".last-good";
+    private static final int RETAINED_BACKUPS = 3;
 
     private SqliteStorageSafety() {
     }
@@ -49,11 +54,15 @@ final class SqliteStorageSafety {
     }
 
     static void validateRequiredSchema(Connection connection) throws SQLException {
-        try (Statement statement = connection.createStatement();
-             ResultSet result = statement.executeQuery(
-                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='" + REQUIRED_TABLE + "'")) {
-            if (!result.next()) {
-                throw new SQLException("Established SQLite database is missing required table " + REQUIRED_TABLE);
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")) {
+            for (String table : REQUIRED_TABLES) {
+                statement.setString(1, table);
+                try (ResultSet result = statement.executeQuery()) {
+                    if (!result.next()) {
+                        throw new SQLException("Established SQLite database is missing required table " + table);
+                    }
+                }
             }
         }
     }
@@ -69,12 +78,8 @@ final class SqliteStorageSafety {
             try (Statement statement = connection.createStatement()) {
                 statement.execute("VACUUM INTO '" + escapedPath + "'");
             }
-            try {
-                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE);
-            } catch (IOException unsupportedAtomicMove) {
-                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
-            }
+            rotateBackups(target);
+            moveReplacing(temporary, target);
             return target.toFile();
         } catch (IOException | SQLException failure) {
             try {
@@ -83,6 +88,28 @@ final class SqliteStorageSafety {
                 failure.addSuppressed(cleanupFailure);
             }
             throw new SQLException("Failed to replace rolling SQLite backup", failure);
+        }
+    }
+
+    private static void rotateBackups(Path target) throws IOException {
+        for (int index = RETAINED_BACKUPS - 1; index >= 1; index--) {
+            Path source = target.resolveSibling(target.getFileName() + "." + index);
+            Path destination = target.resolveSibling(target.getFileName() + "." + (index + 1));
+            if (Files.exists(source)) {
+                moveReplacing(source, destination);
+            }
+        }
+        if (Files.exists(target)) {
+            moveReplacing(target, target.resolveSibling(target.getFileName() + ".1"));
+        }
+    }
+
+    private static void moveReplacing(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException unsupportedAtomicMove) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 }

@@ -162,4 +162,32 @@ class ShutdownRecoveryJournalTest {
         assertEquals(second.aggregationTime(), restoredSecond.aggregationTime());
         assertFalse(temp.resolve("shutdown-recovery.yml").toFile().exists());
     }
+    @Test
+    void synchronousReplayKeepsJournalUntilEveryBatchIsDurablySettled() throws Exception {
+        PlayTimePlugin plugin = mock(PlayTimePlugin.class);
+        when(plugin.getDataFolder()).thenReturn(temp.toFile());
+        when(plugin.getLogger()).thenReturn(java.util.logging.Logger.getAnonymousLogger());
+        WriteBatch first = new WriteBatch(UUID.randomUUID(), Instant.ofEpochSecond(10),
+                java.util.Map.of(UUID.randomUUID(), new MinuteDelta(2, 0)),
+                java.util.Map.of(), java.util.List.of());
+        WriteBatch second = new WriteBatch(UUID.randomUUID(), Instant.ofEpochSecond(20),
+                java.util.Map.of(UUID.randomUUID(), new MinuteDelta(3, 0)),
+                java.util.Map.of(), java.util.List.of());
+        ShutdownRecoveryJournal journal = new ShutdownRecoveryJournal(plugin);
+        journal.write(new AsyncWriteQueue.RecoveryJournalSnapshot(java.util.List.of(first, second)));
+
+        PlaytimeRepository repository = mock(PlaytimeRepository.class);
+        when(repository.applyWriteBatch(any(WriteBatch.class)))
+                .thenReturn(RecoveryApplyResult.APPLIED)
+                .thenThrow(new java.sql.SQLException("injected second-batch failure"));
+
+        assertThrows(IllegalStateException.class, () -> journal.replaySynchronously(repository));
+        assertTrue(journal.fileForLogging().isFile());
+        reset(repository);
+        when(repository.applyWriteBatch(any(WriteBatch.class)))
+                .thenReturn(RecoveryApplyResult.ALREADY_APPLIED, RecoveryApplyResult.APPLIED);
+        assertEquals(2, journal.replaySynchronously(repository));
+        assertFalse(journal.fileForLogging().exists());
+    }
+
 }

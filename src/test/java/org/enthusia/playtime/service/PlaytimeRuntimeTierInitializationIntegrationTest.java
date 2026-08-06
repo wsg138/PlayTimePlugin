@@ -6,6 +6,9 @@ import org.enthusia.playtime.data.RecoveryApplyResult;
 import org.enthusia.playtime.data.WriteBatch;
 import org.enthusia.playtime.util.AsyncWriteQueue;
 import org.enthusia.playtime.util.TierProgressTracker;
+import org.enthusia.playtime.util.ShutdownRecoveryJournal;
+import org.enthusia.playtime.data.model.PlayerProfile;
+import org.enthusia.playtime.data.PlaytimeRepository.JoinRecord;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -105,7 +108,6 @@ class PlaytimeRuntimeTierInitializationIntegrationTest {
         assertNotNull(progress);
         assertTrue(progress.initialized());
         assertEquals(60, progress.activeMinutes());
-        assertEquals(0, runtime.writeQueue().getAcceptedUncommittedTotals(uuid).activeMinutes);
         assertEquals(1, announcements.get());
     }
 
@@ -169,5 +171,41 @@ class PlaytimeRuntimeTierInitializationIntegrationTest {
             Thread.currentThread().interrupt();
             throw new AssertionError(exception);
         }
+    }
+
+    @Test
+    void startupRecoverySettlesBeforeKnownPlayerAndTierInitialization() throws Exception {
+        UUID uuid = UUID.randomUUID();
+        Instant recoveredAt = Instant.parse("2026-08-06T12:00:00Z");
+        WriteBatch recovered = new WriteBatch(UUID.randomUUID(), recoveredAt,
+                Map.of(uuid, new MinuteDelta(60, 0)),
+                Map.of(uuid, new PlayerProfile(uuid, "RecoveredPlayer", null, recoveredAt)),
+                java.util.List.of(new JoinRecord(uuid, recoveredAt)));
+        ShutdownRecoveryJournal journal = new ShutdownRecoveryJournal(plugin);
+        journal.write(new AsyncWriteQueue.RecoveryJournalSnapshot(java.util.List.of(recovered)));
+
+        assertTrue(plugin.reloadPluginRuntime());
+        PlaytimeRuntime runtime = plugin.runtime();
+        assertFalse(journal.fileForLogging().exists());
+        assertTrue(runtime.isKnownPlayer(uuid));
+        assertEquals(60L, runtime.repository().getLifetime(uuid).orElseThrow().activeMinutes);
+
+        ConcurrentLinkedQueue<Runnable> mainCompletions = new ConcurrentLinkedQueue<>();
+        PlaytimeRuntime.setTierMainExecutorForTesting(mainCompletions::add);
+
+        runtime.performTierInitializationReadForTesting(uuid, true);
+        Runnable completion = mainCompletions.poll();
+        assertNotNull(completion);
+        completion.run();
+
+        TierProgressTracker.ProgressState progress = runtime.tierProgressForTesting(uuid);
+        assertNotNull(progress);
+        assertTrue(progress.initialized());
+        assertEquals(60L, progress.activeMinutes());
+
+        PlayerMock player = new PlayerMock(MockBukkit.getMock(), "RecoveredPlayer", uuid);
+        assertFalse(runtime.handleJoinRecorded(player, recoveredAt.plusSeconds(1)));
+        assertFalse(runtime.consumeJoinDecision(uuid).firstKnownJoin());
+        assertTrue(mainCompletions.isEmpty(), "already-initialized recovered tier must not schedule another read");
     }
 }

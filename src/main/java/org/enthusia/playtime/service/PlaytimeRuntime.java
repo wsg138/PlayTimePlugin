@@ -32,12 +32,16 @@ import org.bukkit.ChatColor;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 
 public final class PlaytimeRuntime implements AutoCloseable {
     enum CloseStage {
@@ -76,9 +80,11 @@ public final class PlaytimeRuntime implements AutoCloseable {
     private final ShutdownRecoveryJournal recoveryJournal;
     private final AtomicBoolean tierProgressHandedOff = new AtomicBoolean(false);
     private final AtomicBoolean handoffPrepared = new AtomicBoolean(false);
-    private final Map<UUID, Integer> suspiciousStreakMinutes = new ConcurrentHashMap<>();
-    private final Map<UUID, Long> processedSuspicionResetMarkers = new ConcurrentHashMap<>();
+    private final PlaytimeAccrualTracker accrualTracker;
+    private final LongSupplier monotonicNanos;
     private final Map<UUID, JoinDecision> recentJoinDecisions = new ConcurrentHashMap<>();
+    private final Set<UUID> knownPlayers;
+    private final AtomicInteger knownPlayerCount;
     private final Map<UUID, Integer> tierInitializationRetries = new ConcurrentHashMap<>();
     private final TierProgressTracker tierProgress;
 
@@ -106,22 +112,30 @@ public final class PlaytimeRuntime implements AutoCloseable {
             PlaytimeRepository allocatedRepository = new PlaytimeRepository(plugin, allocatedDatabase, config);
             probe(CreationStage.REPOSITORY_CREATED);
             allocatedRepository.initSchema();
+            ShutdownRecoveryJournal allocatedRecoveryJournal = new ShutdownRecoveryJournal(plugin);
+            allocatedRecoveryJournal.replaySynchronously(allocatedRepository);
+            Set<UUID> allocatedKnownPlayers = ConcurrentHashMap.newKeySet();
+            allocatedKnownPlayers.addAll(allocatedRepository.loadKnownPlayerIdsStrict());
             probe(CreationStage.SCHEMA_INITIALIZED);
             SessionManager allocatedSessions = new SessionManager(
                     previousState == null ? Map.of() : previousState.sessionStarts());
             ActivityTracker allocatedActivities = new ActivityTracker(config, allocatedSessions,
-                    previousState == null ? Map.of() : previousState.activitySnapshots(), performanceCounters);
+                    previousState == null ? Map.of() : previousState.activitySnapshots(),
+                    previousState == null ? Map.of() : previousState.suspiciousResetMarkers(),
+                    performanceCounters);
             TierProgressTracker allocatedTierProgress = new TierProgressTracker(config.numerals().catalog(),
                     previousState == null ? Map.of() : previousState.tierProgress());
+            PlaytimeAccrualTracker allocatedAccrualTracker = new PlaytimeAccrualTracker(
+                    config.sampling().suspicion().maxCountedConsecutiveMinutes(),
+                    previousState == null ? Map.of() : previousState.accrualSnapshots());
             allocatedHeadCache = new HeadCache(plugin, performanceCounters, allocatedRepository);
             probe(CreationStage.HEAD_CACHE_CREATED);
             AsyncWriteQueue allocatedQueue = new AsyncWriteQueue(
                     plugin, allocatedRepository, performanceCounters, config.getFlushIntervalTicks());
             probe(CreationStage.WRITE_QUEUE_CREATED);
-            ShutdownRecoveryJournal allocatedRecoveryJournal = new ShutdownRecoveryJournal(plugin);
-            allocatedRecoveryJournal.restoreInto(allocatedQueue);
             PlaytimeReadService allocatedReads = new PlaytimeReadService(plugin, allocatedRepository,
-                    allocatedQueue, performanceCounters, config.leaderboards().cacheTtlSeconds());
+                    allocatedQueue, performanceCounters, config.leaderboards().cacheTtlSeconds(),
+                    config.leaderboards().maxPages(), config.leaderboards().cacheMaxEntries());
             probe(CreationStage.READ_SERVICE_CREATED);
             LeaderboardExportService allocatedExport = new LeaderboardExportService(
                     plugin, allocatedRepository, config.leaderboards().export(), performanceCounters);
@@ -131,9 +145,13 @@ public final class PlaytimeRuntime implements AutoCloseable {
 
             this.databaseProvider = allocatedDatabase;
             this.playtimeRepository = allocatedRepository;
+            this.knownPlayers = allocatedKnownPlayers;
+            this.knownPlayerCount = new AtomicInteger(allocatedKnownPlayers.size());
             this.sessions = allocatedSessions;
             this.activities = allocatedActivities;
             this.tierProgress = allocatedTierProgress;
+            this.accrualTracker = allocatedAccrualTracker;
+            this.monotonicNanos = System::nanoTime;
             this.playerHeadCache = allocatedHeadCache;
             this.storageQueue = allocatedQueue;
             this.recoveryJournal = allocatedRecoveryJournal;
@@ -154,7 +172,9 @@ public final class PlaytimeRuntime implements AutoCloseable {
             candidate.activate();
             return candidate;
         } catch (Exception | Error failure) {
-            candidate.close(false);
+            // A replacement candidate does not own transferred accrual until the old
+            // runtime handoff commits. Fresh startup candidates still own their state.
+            candidate.close(previousState != null);
             throw failure;
         }
     }
@@ -171,8 +191,11 @@ public final class PlaytimeRuntime implements AutoCloseable {
         probe(CreationStage.SERVICE_REGISTERED);
 
         long nowMillis = System.currentTimeMillis();
+        long nowNanos = monotonicNanos.getAsLong();
         for (Player player : Bukkit.getOnlinePlayers()) {
             activities.bootstrapPlayer(player, nowMillis);
+            accrualTracker.connect(player.getUniqueId(), nowNanos,
+                    activities.getSuspiciousResetMarker(player.getUniqueId()));
             playerHeadCache.updateHead(player);
             logRejectedWrite("bootstrap profile", player.getUniqueId(),
                     storageQueue.enqueuePlayerProfile(profileFor(player, Instant.now())));
@@ -272,16 +295,21 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     public boolean isKnownPlayer(UUID uuid) {
-        return playtimeRepository.hasLifetimeRecord(uuid);
+        return knownPlayers.contains(uuid);
     }
 
     public boolean handleJoinRecorded(Player player, Instant joinedAt) {
         UUID uuid = player.getUniqueId();
-        boolean firstKnownJoin = !playtimeRepository.hasLifetimeRecord(uuid);
-        int uniqueNumber = firstKnownJoin ? playtimeRepository.countKnownPlayers() + 1 : 0;
+        accrualTracker.connect(uuid, monotonicNanos.getAsLong(), joinedAt, activities.getSuspiciousResetMarker(uuid));
+        boolean firstKnownJoin = knownPlayers.add(uuid);
+        int uniqueNumber = firstKnownJoin ? knownPlayerCount.incrementAndGet() : 0;
         AsyncWriteQueue.EnqueueResult ownership = storageQueue.enqueueJoinWithProfile(
                 uuid, joinedAt, profileFor(player, joinedAt));
         if (!owns(ownership)) {
+            if (firstKnownJoin) {
+                knownPlayers.remove(uuid);
+                knownPlayerCount.decrementAndGet();
+            }
             logRejectedWrite("join/profile", uuid, ownership);
             return false;
         }
@@ -295,16 +323,35 @@ public final class PlaytimeRuntime implements AutoCloseable {
     public JoinDecision consumeJoinDecision(UUID uuid) {
         JoinDecision decision = recentJoinDecisions.remove(uuid);
         if (decision == null || System.currentTimeMillis() - decision.createdAtMillis() > 30_000L) {
-            return new JoinDecision(!isKnownPlayer(uuid), playtimeRepository.countKnownPlayers() + 1, System.currentTimeMillis());
+            return new JoinDecision(false, 0, System.currentTimeMillis());
         }
         return decision;
     }
 
-    public void handleQuitRecorded(UUID uuid, Instant quitAt) {
-        resetSuspiciousTracking(uuid);
+    public void handleQuitRecorded(Player player, Instant quitAt) {
+        UUID uuid = player.getUniqueId();
+        processAccrualResult(player, accrualTracker.disconnect(uuid, monotonicNanos.getAsLong(), quitAt));
         recentJoinDecisions.remove(uuid);
         tierProgress.disconnect(uuid);
-        playtimeRepository.recordLastSeenAsync(plugin, uuid, quitAt);
+        logRejectedWrite("last_seen", uuid, storageQueue.enqueueLastSeen(uuid, quitAt));
+        if (accrualTracker.removeIfEmpty(uuid)) {
+            activities.forgetSuspiciousResetMarker(uuid);
+        }
+    }
+
+    void handleQuitRecorded(UUID uuid, Instant quitAt) {
+        Player player = Bukkit.getPlayer(uuid);
+        if (player != null) {
+            handleQuitRecorded(player, quitAt);
+            return;
+        }
+        recentJoinDecisions.remove(uuid);
+        tierProgress.disconnect(uuid);
+        logRejectedWrite("last_seen", uuid, storageQueue.enqueueLastSeen(uuid, quitAt));
+        accrualTracker.disconnect(uuid, monotonicNanos.getAsLong(), quitAt);
+        if (accrualTracker.removeIfEmpty(uuid)) {
+            activities.forgetSuspiciousResetMarker(uuid);
+        }
     }
 
     public void noteHead(Player player) {
@@ -323,7 +370,9 @@ public final class PlaytimeRuntime implements AutoCloseable {
         return new HandoffPreparation(result, new RuntimeState(
                 new HashMap<>(sessions.snapshot()),
                 new HashMap<>(activities.snapshot()),
-                tierProgress.snapshot()
+                tierProgress.snapshot(),
+                accrualTracker.snapshot(),
+                activities.suspiciousResetMarkerSnapshot()
         ));
     }
 
@@ -358,7 +407,8 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     private void startMinuteTickTask() {
-        minuteTickTask = Bukkit.getScheduler().runTaskTimer(plugin, this::runMinuteTick, 20L * 60L, 20L * 60L);
+        long period = Math.max(1L, runtimeConfig.sampling().tickInterval());
+        minuteTickTask = Bukkit.getScheduler().runTaskTimer(plugin, this::runMinuteTick, period, period);
     }
 
     private void startJoinPurgeTask() {
@@ -475,46 +525,79 @@ public final class PlaytimeRuntime implements AutoCloseable {
     }
 
     private void runMinuteTick() {
-        long nowMillis = System.currentTimeMillis();
+        Instant now = Instant.now();
+        long nowMillis = now.toEpochMilli();
+        long nowNanos = monotonicNanos.getAsLong();
         cleanupDisconnectedTierProgress();
 
         for (Player player : Bukkit.getOnlinePlayers()) {
-            ActivityState state = activities.getState(player.getUniqueId(), nowMillis);
-            int suspiciousStreak = updateSuspiciousStreak(player.getUniqueId(), state);
-            MinuteCredit credit = minuteCredit(state);
+            UUID uuid = player.getUniqueId();
+            ActivityState state = activities.getState(uuid, nowMillis);
+            PlaytimeAccrualTracker.AccrualResult result = accrualTracker.sample(
+                    uuid, nowNanos, now, state, activities.getSuspiciousResetMarker(uuid));
+            processAccrualResult(player, result);
+        }
+    }
 
-            PlayerPlaytimeTickEvent event = new PlayerPlaytimeTickEvent(player, state, credit.activeMinutes(), credit.afkMinutes());
-            Bukkit.getPluginManager().callEvent(event);
-            if (event.isCancelled()) {
-                continue;
-            }
-
-            logSuspiciousThreshold(player, state, suspiciousStreak);
-
-            if (event.getActiveMinutes() <= 0 && event.getAfkMinutes() <= 0) {
-                continue;
-            }
-
-            acceptMinute(player, event.getActiveMinutes(), event.getAfkMinutes());
+    private void processAccrualResult(Player player, PlaytimeAccrualTracker.AccrualResult result) {
+        if (result.completedMinutes() <= 0) {
+            return;
+        }
+        PlayerPlaytimeTickEvent event = new PlayerPlaytimeTickEvent(
+                player, result.state(), result.activeMinutes(), result.afkMinutes());
+        Bukkit.getPluginManager().callEvent(event);
+        if (event.isCancelled()) {
+            return;
+        }
+        if (result.thresholdCrossed() && runtimeConfig.debug().enabled()
+                && runtimeConfig.debug().logSuspicious()) {
+            plugin.getLogger().info("Suspicious activity threshold exceeded for " + player.getName()
+                    + "; further suspicious time is not credited until legitimate activity resumes.");
+        }
+        if (event.getActiveMinutes() > 0 || event.getAfkMinutes() > 0) {
+            acceptMinuteCredits(player,
+                    result.reallocate(event.getActiveMinutes(), event.getAfkMinutes()));
         }
     }
 
     boolean acceptMinuteForTesting(Player player, int activeMinutes, int afkMinutes) {
-        return acceptMinute(player, activeMinutes, afkMinutes);
+        return acceptMinuteCredits(player, List.of(new PlaytimeAccrualTracker.MinuteCredit(
+                Instant.now(), activeMinutes, afkMinutes)));
     }
 
-    private boolean acceptMinute(Player player, int activeMinutes, int afkMinutes) {
-        AsyncWriteQueue.EnqueueResult ownership = storageQueue.enqueueMinute(
-                player.getUniqueId(), activeMinutes, afkMinutes);
-        if (!owns(ownership)) {
-            logRejectedWrite("minute", player.getUniqueId(), ownership);
-            return false;
+    private boolean acceptMinuteCredits(Player player,
+                                        List<PlaytimeAccrualTracker.MinuteCredit> credits) {
+        UUID uuid = player.getUniqueId();
+        int acceptedActiveMinutes = 0;
+        boolean acceptedAny = false;
+        for (PlaytimeAccrualTracker.MinuteCredit credit : credits) {
+            if (credit.activeMinutes() <= 0 && credit.afkMinutes() <= 0) {
+                continue;
+            }
+            AsyncWriteQueue.EnqueueResult ownership = storageQueue.enqueueMinute(
+                    uuid, credit.activeMinutes(), credit.afkMinutes(), credit.creditedAt());
+            if (!owns(ownership)) {
+                logRejectedWrite("minute", uuid, ownership);
+                if (acceptedAny) {
+                    applyAcceptedMinutes(player, uuid, acceptedActiveMinutes);
+                }
+                return false;
+            }
+            acceptedAny = true;
+            acceptedActiveMinutes += credit.activeMinutes();
         }
-        TierProgressTracker.ActiveUpdate update =
-                tierProgress.acceptActiveMinutes(player.getUniqueId(), Math.max(0, activeMinutes));
-        announceTierAdvance(player, update.reachedTier());
-        reads.invalidatePlayer(player.getUniqueId());
+        if (!acceptedAny) {
+            return true;
+        }
+        applyAcceptedMinutes(player, uuid, acceptedActiveMinutes);
         return true;
+    }
+
+    private void applyAcceptedMinutes(Player player, UUID uuid, int acceptedActiveMinutes) {
+        TierProgressTracker.ActiveUpdate update =
+                tierProgress.acceptActiveMinutes(uuid, acceptedActiveMinutes);
+        announceTierAdvance(player, update.reachedTier());
+        reads.invalidatePlayer(uuid);
     }
 
     TierProgressTracker.ProgressState tierProgressForTesting(UUID uuid) {
@@ -639,45 +722,6 @@ public final class PlaytimeRuntime implements AutoCloseable {
         Bukkit.broadcastMessage(ChatColor.translateAlternateColorCodes('&', message));
     }
 
-    private MinuteCredit minuteCredit(ActivityState state) {
-        return switch (state) {
-            case ACTIVE -> new MinuteCredit(1, 0);
-            case IDLE, AFK, SUSPICIOUS -> new MinuteCredit(0, 1);
-            default -> new MinuteCredit(0, 0);
-        };
-    }
-
-    private void logSuspiciousThreshold(Player player, ActivityState state, int suspiciousStreak) {
-        if (!runtimeConfig.debug().enabled() || !runtimeConfig.debug().logSuspicious()) {
-            return;
-        }
-        if (state != ActivityState.SUSPICIOUS || suspiciousStreak != runtimeConfig.sampling().suspicion().maxCountedConsecutiveMinutes()) {
-            return;
-        }
-        plugin.getLogger().info("Suspicious activity threshold reached for " + player.getName()
-                + "; suspicious minutes are being counted as AFK until the player returns to a non-suspicious state.");
-    }
-
-    private int updateSuspiciousStreak(UUID uuid, ActivityState state) {
-        if (state != ActivityState.SUSPICIOUS) {
-            resetSuspiciousTracking(uuid);
-            return 0;
-        }
-        long resetMarker = activities.getSuspiciousResetMarker(uuid);
-        Long processedMarker = processedSuspicionResetMarkers.get(uuid);
-        if (processedMarker == null || resetMarker > processedMarker) {
-            processedSuspicionResetMarkers.put(uuid, resetMarker);
-            suspiciousStreakMinutes.put(uuid, 1);
-            return 1;
-        }
-        return suspiciousStreakMinutes.merge(uuid, 1, Integer::sum);
-    }
-
-    public void resetSuspiciousTracking(UUID uuid) {
-        suspiciousStreakMinutes.remove(uuid);
-        processedSuspicionResetMarkers.remove(uuid);
-    }
-
     @Override
     public void close() {
         close(false);
@@ -693,7 +737,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         cleanup(CloseStage.LISTENERS, () -> HandlerList.unregisterAll(activities));
         cleanup(CloseStage.HEAD_CACHE, playerHeadCache::close);
         cleanup(CloseStage.QUEUE_AND_EXPORT, () -> {
-            persistOnlinePlayersForShutdown();
+            persistOnlinePlayersForShutdown(reloadClose);
             closeStorageAndExport(reloadClose);
         });
         if (!databaseCloseDeferred.get()) {
@@ -765,16 +809,15 @@ public final class PlaytimeRuntime implements AutoCloseable {
         HandlerList.unregisterAll(activities);
     }
 
-    private void persistOnlinePlayersForShutdown() {
+    private void persistOnlinePlayersForShutdown(boolean reloadClose) {
         Instant now = Instant.now();
+        long nowNanos = monotonicNanos.getAsLong();
         for (Player player : Bukkit.getOnlinePlayers()) {
-            try {
-                playtimeRepository.recordLastSeen(player.getUniqueId(), now);
-                storageQueue.enqueuePlayerProfileForShutdown(profileFor(player, now));
-            } catch (Exception exception) {
-                plugin.getLogger().log(Level.WARNING, "Failed to persist last seen during shutdown for " + player.getName(), exception);
+            if (!reloadClose && !tierProgressHandedOff.get()) {
+                processAccrualResult(player, accrualTracker.disconnect(player.getUniqueId(), nowNanos, now));
             }
-            resetSuspiciousTracking(player.getUniqueId());
+            storageQueue.enqueuePlayerProfileForShutdown(profileFor(player, now));
+            storageQueue.enqueueLastSeenForShutdown(player.getUniqueId(), now);
         }
     }
 
@@ -797,7 +840,9 @@ public final class PlaytimeRuntime implements AutoCloseable {
                 ? runtimeConfig.leaderboards().export().runOnReloadClose()
                 : runtimeConfig.leaderboards().export().runOnDisable();
         if (exportOnClose) {
-            exportService.exportAll();
+            // Shutdown may run on the server thread. Keep the local export but never
+            // perform blocking R2 network work during disable/reload.
+            exportService.exportAll(false);
         }
         return result;
     }
@@ -863,16 +908,27 @@ public final class PlaytimeRuntime implements AutoCloseable {
 
     public record RuntimeState(Map<UUID, Long> sessionStarts,
                                Map<UUID, ActivityTracker.ActivitySnapshot> activitySnapshots,
-                               Map<UUID, TierProgressTracker.ProgressState> tierProgress) {
+                               Map<UUID, TierProgressTracker.ProgressState> tierProgress,
+                               Map<UUID, PlaytimeAccrualTracker.Snapshot> accrualSnapshots,
+                               Map<UUID, Long> suspiciousResetMarkers) {
+        public RuntimeState(Map<UUID, Long> sessionStarts,
+                            Map<UUID, ActivityTracker.ActivitySnapshot> activitySnapshots,
+                            Map<UUID, TierProgressTracker.ProgressState> tierProgress) {
+            this(sessionStarts, activitySnapshots, tierProgress, Map.of(), Map.of());
+        }
+
+        public RuntimeState(Map<UUID, Long> sessionStarts,
+                            Map<UUID, ActivityTracker.ActivitySnapshot> activitySnapshots,
+                            Map<UUID, TierProgressTracker.ProgressState> tierProgress,
+                            Map<UUID, PlaytimeAccrualTracker.Snapshot> accrualSnapshots) {
+            this(sessionStarts, activitySnapshots, tierProgress, accrualSnapshots, Map.of());
+        }
     }
 
     public record HandoffPreparation(AsyncWriteQueue.TransitionResult result, RuntimeState state) {
     }
 
     public record JoinDecision(boolean firstKnownJoin, int uniqueNumber, long createdAtMillis) {
-    }
-
-    private record MinuteCredit(int activeMinutes, int afkMinutes) {
     }
 
     private static final class TierInitializationReadException extends RuntimeException {

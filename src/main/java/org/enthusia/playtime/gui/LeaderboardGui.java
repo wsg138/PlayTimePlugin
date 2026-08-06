@@ -31,6 +31,14 @@ public final class LeaderboardGui implements PlaytimeGui {
     private static final String RANGE_7D = "7D";
     private static final String RANGE_30D = "30D";
     private static final String RANGE_ALL = "ALL";
+    private static final int FIRST_PAGE = 1;
+    private static final int SLOT_RANGE_TODAY = 0;
+    private static final int SLOT_RANGE_7D = 1;
+    private static final int SLOT_RANGE_30D = 2;
+    private static final int SLOT_RANGE_ALL = 3;
+    private static final int SLOT_METRIC_ACTIVE = 5;
+    private static final int SLOT_METRIC_TOTAL = 6;
+    private static final int SLOT_METRIC_AFK = 7;
 
     private final PlayTimePlugin plugin;
     private final Player viewer;
@@ -39,27 +47,36 @@ public final class LeaderboardGui implements PlaytimeGui {
     private String metric;
     private String range;
     private int page;
-
-    private static final int SLOT_RANGE_TODAY = 1;
-    private static final int SLOT_RANGE_30D = 7;
-    private static final int SLOT_RANGE_7D = 10;
-    private static final int SLOT_METRIC_ACTIVE = 12;
-    private static final int SLOT_METRIC_TOTAL = 13;
-    private static final int SLOT_METRIC_AFK = 14;
-    private static final int SLOT_RANGE_ALL = 16;
-    private static final int SLOT_PREV_PAGE = 45;
-    private static final int SLOT_BACK = 48;
-    private static final int SLOT_SELF = 49;
-    private static final int SLOT_CLOSE = 50;
-    private static final int SLOT_NEXT_PAGE = 53;
+    private boolean hasNextPage;
+    private final int rows;
+    private final boolean bedrockLayout;
+    private final int slotPrevPage;
+    private final int slotBack;
+    private final int slotSelf;
+    private final int slotClose;
+    private final int slotNextPage;
 
     public LeaderboardGui(PlayTimePlugin plugin, Player viewer, String metric, String range, int page) {
         this.plugin = plugin;
         this.viewer = viewer;
         this.metric = normalizeMetric(metric);
         this.range = normalizeRange(range);
-        this.page = Math.max(1, page);
-        this.inventory = Bukkit.createInventory(new PlaytimeGuiHolder(this), 54, ChatColor.DARK_AQUA + "Playtime Leaderboard");
+        PlaytimeRuntime runtime = plugin.runtime();
+        boolean bedrock = runtime != null && plugin.getBedrockSupport() != null
+                && plugin.getBedrockSupport().isBedrock(viewer)
+                && runtime.config().gui().bedrock().enabled();
+        this.bedrockLayout = bedrock;
+        this.rows = bedrock ? runtime.config().gui().bedrock().leaderboardRows() : 6;
+        int footer = (rows - 1) * 9;
+        this.slotPrevPage = footer;
+        this.slotBack = footer + 3;
+        this.slotSelf = footer + 4;
+        this.slotClose = footer + 5;
+        this.slotNextPage = footer + 8;
+        int maxPage = runtime == null ? FIRST_PAGE : runtime.readService().maxLeaderboardPages();
+        this.page = Math.max(FIRST_PAGE, Math.min(page, maxPage));
+        this.inventory = Bukkit.createInventory(new PlaytimeGuiHolder(this), rows * 9,
+                ChatColor.DARK_AQUA + "Playtime Leaderboard");
         render();
     }
 
@@ -71,11 +88,13 @@ public final class LeaderboardGui implements PlaytimeGui {
         List<Integer> entrySlots = buildEntrySlots();
         int pageSize = entrySlots.size();
         PlaytimeRuntime runtime = plugin.runtime();
-        List<LeaderboardEntry> entries = runtime == null
-                ? List.of()
-                : runtime.readService().getLeaderboard(metric, range, pageSize, (page - 1) * pageSize);
+        org.enthusia.playtime.service.PlaytimeReadService.LeaderboardPage result = runtime == null
+                ? new org.enthusia.playtime.service.PlaytimeReadService.LeaderboardPage(List.of(), false)
+                : runtime.readService().getLeaderboardPage(metric, range, page, pageSize);
+        List<LeaderboardEntry> entries = result.rows();
+        hasNextPage = result.hasNext();
         if (runtime != null && entries.isEmpty()
-                && runtime.readService().isLeaderboardLoading(metric, range, pageSize, (page - 1) * pageSize)) {
+                && runtime.readService().isLeaderboardPageLoading(metric, range, page, pageSize)) {
             runtime.counters().guiLoadingRenders.increment();
             inventory.setItem(entrySlots.get(0), loadingItem());
             scheduleRefresh();
@@ -91,7 +110,7 @@ public final class LeaderboardGui implements PlaytimeGui {
         }
 
         renderFooter();
-        inventory.setItem(SLOT_SELF, selfItem(selfEntry));
+        inventory.setItem(slotSelf, selfItem(selfEntry));
     }
 
     private void renderControls() {
@@ -105,10 +124,16 @@ public final class LeaderboardGui implements PlaytimeGui {
     }
 
     private void renderFooter() {
-        inventory.setItem(SLOT_PREV_PAGE, namedItem(Material.ARROW, ChatColor.YELLOW + "Previous page (" + Math.max(page - 1, 1) + ")"));
-        inventory.setItem(SLOT_NEXT_PAGE, namedItem(Material.ARROW, ChatColor.YELLOW + "Next page (" + (page + 1) + ")"));
-        inventory.setItem(SLOT_BACK, namedItem(Material.OAK_DOOR, ChatColor.AQUA + "Back to main menu"));
-        inventory.setItem(SLOT_CLOSE, namedItem(Material.BARRIER, ChatColor.RED + "Close"));
+        if (page > FIRST_PAGE) {
+            inventory.setItem(slotPrevPage, namedItem(Material.ARROW,
+                    ChatColor.YELLOW + "Previous page (" + (page - 1) + ")"));
+        }
+        if (hasNextPage) {
+            inventory.setItem(slotNextPage, namedItem(Material.ARROW,
+                    ChatColor.YELLOW + "Next page (" + (page + 1) + ")"));
+        }
+        inventory.setItem(slotBack, namedItem(Material.OAK_DOOR, ChatColor.AQUA + "Back to main menu"));
+        inventory.setItem(slotClose, namedItem(Material.BARRIER, ChatColor.RED + "Close"));
     }
 
     private ItemStack namedItem(Material material, String displayName) {
@@ -121,8 +146,7 @@ public final class LeaderboardGui implements PlaytimeGui {
 
     private void fillBackground() {
         PlaytimeRuntime runtime = plugin.runtime();
-        boolean bedrock = runtime != null && plugin.getBedrockSupport() != null && plugin.getBedrockSupport().isBedrock(viewer);
-        if (bedrock) {
+        if (bedrockLayout) {
             return;
         }
 
@@ -184,8 +208,8 @@ public final class LeaderboardGui implements PlaytimeGui {
 
     private List<Integer> buildEntrySlots() {
         List<Integer> slots = new ArrayList<>();
-        for (int row = 2; row <= 4; row++) {
-            for (int col = 1; col <= 7; col++) {
+        for (int row = 1; row < rows - 1; row++) {
+            for (int col = 0; col < 9; col++) {
                 slots.add(row * 9 + col);
             }
         }
@@ -339,21 +363,17 @@ public final class LeaderboardGui implements PlaytimeGui {
     @Override
     public void handleClick(InventoryClickEvent event) {
         int slot = event.getRawSlot();
-        switch (slot) {
-            case SLOT_PREV_PAGE -> previousPage();
-            case SLOT_NEXT_PAGE -> nextPage();
-            case SLOT_BACK -> new PlaytimeMainGui(plugin, viewer).open();
-            case SLOT_CLOSE -> viewer.closeInventory();
-            case SLOT_METRIC_ACTIVE -> selectMetric(METRIC_ACTIVE);
-            case SLOT_METRIC_TOTAL -> selectMetric(METRIC_TOTAL);
-            case SLOT_METRIC_AFK -> selectMetric(METRIC_AFK);
-            case SLOT_RANGE_TODAY -> selectRange(RANGE_TODAY);
-            case SLOT_RANGE_7D -> selectRange(RANGE_7D);
-            case SLOT_RANGE_30D -> selectRange(RANGE_30D);
-            case SLOT_RANGE_ALL -> selectRange(RANGE_ALL);
-            default -> {
-            }
-        }
+        if (slot == slotPrevPage) previousPage();
+        else if (slot == slotNextPage) nextPage();
+        else if (slot == slotBack) new PlaytimeMainGui(plugin, viewer).open();
+        else if (slot == slotClose) viewer.closeInventory();
+        else if (slot == SLOT_METRIC_ACTIVE) selectMetric(METRIC_ACTIVE);
+        else if (slot == SLOT_METRIC_TOTAL) selectMetric(METRIC_TOTAL);
+        else if (slot == SLOT_METRIC_AFK) selectMetric(METRIC_AFK);
+        else if (slot == SLOT_RANGE_TODAY) selectRange(RANGE_TODAY);
+        else if (slot == SLOT_RANGE_7D) selectRange(RANGE_7D);
+        else if (slot == SLOT_RANGE_30D) selectRange(RANGE_30D);
+        else if (slot == SLOT_RANGE_ALL) selectRange(RANGE_ALL);
     }
 
     private void previousPage() {
@@ -365,6 +385,10 @@ public final class LeaderboardGui implements PlaytimeGui {
     }
 
     private void nextPage() {
+        PlaytimeRuntime runtime = plugin.runtime();
+        if (!hasNextPage || runtime == null || page >= runtime.readService().maxLeaderboardPages()) {
+            return;
+        }
         page++;
         render();
     }

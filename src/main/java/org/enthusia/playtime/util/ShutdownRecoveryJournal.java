@@ -4,7 +4,10 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.data.WriteBatch;
+import org.enthusia.playtime.data.PlaytimeRepository;
+import org.enthusia.playtime.data.RecoveryApplyResult;
 import org.enthusia.playtime.data.PlaytimeRepository.JoinRecord;
+import org.enthusia.playtime.data.WriteBatch.MinuteBucket;
 import org.enthusia.playtime.data.model.MinuteDelta;
 import org.enthusia.playtime.data.model.PlayerProfile;
 
@@ -13,16 +16,25 @@ import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 /** Compact crash-recovery ownership record used only when shutdown cannot settle a closed queue. */
 public final class ShutdownRecoveryJournal {
-    private static final int FORMAT_VERSION = 3;
+    private static final int FORMAT_VERSION = 4;
+    private static final String UUID_KEY = "uuid";
+    private static final String ACTIVE_KEY = "active";
+    private static final String AFK_KEY = "afk";
+    private static final String ACTIVE_FIELD_SUFFIX = ".active";
+    private static final String AFK_FIELD_SUFFIX = ".afk";
+    private static final String MINUTE_BUCKET_PATH = ".minuteBuckets[";
+    private static final String MINUTES_FIELD_PREFIX = "minutes.";
     private final File file;
 
     public ShutdownRecoveryJournal(PlayTimePlugin plugin) {
@@ -39,36 +51,42 @@ public final class ShutdownRecoveryJournal {
         queue.restoreRecoverySnapshot(snapshot, this::deleteAfterDurableFlush);
     }
 
+    /**
+     * Applies a retained journal before runtime-owned indexes and tier ledgers are created.
+     * The journal remains untouched unless every exact-once batch is durably settled.
+     */
+    public int replaySynchronously(PlaytimeRepository repository) {
+        if (!file.isFile()) {
+            return 0;
+        }
+        AsyncWriteQueue.RecoveryJournalSnapshot snapshot = read();
+        int settled = 0;
+        try {
+            for (WriteBatch batch : snapshot.batches()) {
+                RecoveryApplyResult result = repository.applyWriteBatch(batch);
+                if (result != RecoveryApplyResult.APPLIED
+                        && result != RecoveryApplyResult.ALREADY_APPLIED) {
+                    throw new IllegalStateException("Recovery repository returned no durable result");
+                }
+                settled++;
+            }
+        } catch (SQLException failure) {
+            throw new IllegalStateException(
+                    "Failed to settle shutdown recovery journal; leaving it untouched for retry.",
+                    failure);
+        }
+        deleteAfterDurableFlush();
+        return settled;
+    }
+
     public void write(AsyncWriteQueue.RecoveryJournalSnapshot snapshot) {
         if (snapshot == null || snapshot.isEmpty()) return;
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.set("format", FORMAT_VERSION);
         yaml.set("createdAt", Instant.now().toEpochMilli());
-        List<Map<String, Object>> batches = new ArrayList<>();
-        for (WriteBatch batch : snapshot.batches()) {
-            Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("batchId", batch.batchId().toString());
-            entry.put("aggregationTime", batch.aggregationTime().toEpochMilli());
-            Map<String, Object> minutes = new LinkedHashMap<>();
-            batch.minutes().forEach((uuid, delta) -> minutes.put(uuid.toString(),
-                    Map.of("active", delta.activeMinutes(), "afk", delta.afkMinutes())));
-            entry.put("minutes", minutes);
-            Map<String, Object> profiles = new LinkedHashMap<>();
-            batch.profiles().forEach((uuid, profile) -> {
-                Map<String, Object> values = new LinkedHashMap<>();
-                values.put("username", profile.username());
-                values.put("displayName", profile.displayName());
-                values.put("seenAt", profile.seenAt().toEpochMilli());
-                profiles.put(uuid.toString(), values);
-            });
-            entry.put("profiles", profiles);
-            List<Map<String, Object>> joins = new ArrayList<>();
-            for (JoinRecord join : batch.joins()) {
-                joins.add(Map.of("uuid", join.uuid().toString(), "joinedAt", join.joinedAt().toEpochMilli()));
-            }
-            entry.put("joins", joins);
-            batches.add(entry);
-        }
+        List<Map<String, Object>> batches = snapshot.batches().stream()
+                .map(this::serializeBatch)
+                .toList();
         yaml.set("batches", batches);
         File temporary = new File(file.getParentFile(), file.getName() + ".tmp");
         try {
@@ -91,6 +109,47 @@ public final class ShutdownRecoveryJournal {
         }
     }
 
+    private Map<String, Object> serializeBatch(WriteBatch batch) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("batchId", batch.batchId().toString());
+        entry.put("aggregationTime", batch.aggregationTime().toEpochMilli());
+        Map<String, Object> minutes = new ConcurrentHashMap<>();
+        batch.minutes().forEach((uuid, delta) -> minutes.put(uuid.toString(),
+                Map.of(ACTIVE_KEY, delta.activeMinutes(), AFK_KEY, delta.afkMinutes())));
+        entry.put("minutes", minutes);
+        entry.put("minuteBuckets", batch.minuteBuckets().entrySet().stream()
+                .map(this::serializeMinuteBucket)
+                .toList());
+        Map<String, Object> lastSeen = new ConcurrentHashMap<>();
+        batch.lastSeen().forEach((uuid, instant) -> lastSeen.put(uuid.toString(), instant.toEpochMilli()));
+        entry.put("lastSeen", lastSeen);
+        Map<String, Object> profiles = new LinkedHashMap<>();
+        batch.profiles().forEach((uuid, profile) -> profiles.put(uuid.toString(), serializeProfile(profile)));
+        entry.put("profiles", profiles);
+        entry.put("joins", batch.joins().stream().map(this::serializeJoin).toList());
+        return entry;
+    }
+
+    private Map<String, Object> serializeMinuteBucket(Map.Entry<MinuteBucket, MinuteDelta> entry) {
+        MinuteBucket bucket = entry.getKey();
+        MinuteDelta delta = entry.getValue();
+        return Map.of(UUID_KEY, bucket.uuid().toString(),
+                "hourStart", bucket.hourStart().toEpochMilli(),
+                ACTIVE_KEY, delta.activeMinutes(), AFK_KEY, delta.afkMinutes());
+    }
+
+    private Map<String, Object> serializeProfile(PlayerProfile profile) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("username", profile.username());
+        values.put("displayName", profile.displayName());
+        values.put("seenAt", profile.seenAt().toEpochMilli());
+        return values;
+    }
+
+    private Map<String, Object> serializeJoin(JoinRecord join) {
+        return Map.of(UUID_KEY, join.uuid().toString(), "joinedAt", join.joinedAt().toEpochMilli());
+    }
+
     private AsyncWriteQueue.RecoveryJournalSnapshot read() {
         YamlConfiguration yaml = new YamlConfiguration();
         try {
@@ -105,10 +164,10 @@ public final class ShutdownRecoveryJournal {
         List<WriteBatch> batches = new ArrayList<>();
         if (format == 2) {
             batches.add(readBatch(yaml, "", createdAt));
-        } else if (format == FORMAT_VERSION) {
+        } else if (format == 3 || format == FORMAT_VERSION) {
             List<?> rawBatches = yaml.getList("batches");
             if (rawBatches == null || rawBatches.isEmpty()) {
-                throw invalid("Format 3 recovery journal has no batches");
+                throw invalid("Recovery journal has no batches");
             }
             for (int index = 0; index < rawBatches.size(); index++) {
                 Object value = rawBatches.get(index);
@@ -129,7 +188,7 @@ public final class ShutdownRecoveryJournal {
 
     private WriteBatch readBatchMap(Map<?, ?> entry, Instant fallbackAggregationTime, int batchIndex) {
         String prefix = "batches[" + batchIndex + "]";
-        Map<UUID, MinuteDelta> minutes = new LinkedHashMap<>();
+        Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>();
         Object minuteObject = entry.get("minutes");
         if (minuteObject != null) {
             if (!(minuteObject instanceof Map<?, ?> entries)) {
@@ -140,13 +199,13 @@ public final class ShutdownRecoveryJournal {
                 if (!(minute.getValue() instanceof Map<?, ?> values)) {
                     throw invalid(prefix + ".minutes." + uuid + " is not a map");
                 }
-                long active = requiredNonNegativeLong(values.get("active"), prefix + ".minutes." + uuid + ".active");
-                long afk = requiredNonNegativeLong(values.get("afk"), prefix + ".minutes." + uuid + ".afk");
+                long active = requiredNonNegativeLong(values.get(ACTIVE_KEY), prefix + ".minutes." + uuid + ACTIVE_FIELD_SUFFIX);
+                long afk = requiredNonNegativeLong(values.get(AFK_KEY), prefix + ".minutes." + uuid + AFK_FIELD_SUFFIX);
                 minutes.put(uuid, new MinuteDelta(active, afk));
             }
         }
 
-        Map<UUID, PlayerProfile> profiles = new LinkedHashMap<>();
+        Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>();
         Object profileObject = entry.get("profiles");
         if (profileObject != null) {
             if (!(profileObject instanceof Map<?, ?> entries)) {
@@ -175,7 +234,7 @@ public final class ShutdownRecoveryJournal {
                 if (!(value instanceof Map<?, ?> join)) {
                     throw invalid(prefix + ".joins[" + joinIndex + "] is not a map");
                 }
-                UUID uuid = requiredUuid(nullableString(join.get("uuid")),
+                UUID uuid = requiredUuid(nullableString(join.get(UUID_KEY)),
                         prefix + ".joins[" + joinIndex + "].uuid");
                 joins.add(new JoinRecord(uuid, Instant.ofEpochMilli(requiredNonNegativeLong(join.get("joinedAt"),
                         prefix + ".joins[" + joinIndex + "].joinedAt"))));
@@ -186,25 +245,67 @@ public final class ShutdownRecoveryJournal {
         Instant aggregationTime = entry.containsKey("aggregationTime")
                 ? Instant.ofEpochMilli(requiredNonNegativeLong(entry.get("aggregationTime"), prefix + ".aggregationTime"))
                 : fallbackAggregationTime;
-        return new WriteBatch(batchId, aggregationTime,
-                Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
+        Map<MinuteBucket, MinuteDelta> minuteBuckets = new ConcurrentHashMap<>();
+        Object bucketObject = entry.get("minuteBuckets");
+        if (bucketObject != null) {
+            if (!(bucketObject instanceof List<?> bucketEntries)) {
+                throw invalid(prefix + ".minuteBuckets is not a list");
+            }
+            for (int bucketIndex = 0; bucketIndex < bucketEntries.size(); bucketIndex++) {
+                Object value = bucketEntries.get(bucketIndex);
+                if (!(value instanceof Map<?, ?> bucket)) {
+                    throw invalid(prefix + MINUTE_BUCKET_PATH + bucketIndex + "] is not a map");
+                }
+                Map.Entry<MinuteBucket, MinuteDelta> parsed = readMinuteBucket(bucket, prefix, bucketIndex);
+                minuteBuckets.merge(parsed.getKey(), parsed.getValue(), MinuteDelta::plus);
+            }
+        }
+        Map<UUID, Instant> lastSeen = new ConcurrentHashMap<>();
+        Object lastSeenObject = entry.get("lastSeen");
+        if (lastSeenObject != null) {
+            if (!(lastSeenObject instanceof Map<?, ?> entries)) {
+                throw invalid(prefix + ".lastSeen is not a map");
+            }
+            for (Map.Entry<?, ?> seen : entries.entrySet()) {
+                UUID uuid = requiredUuid(String.valueOf(seen.getKey()), prefix + ".lastSeen UUID");
+                lastSeen.put(uuid, Instant.ofEpochMilli(requiredNonNegativeLong(seen.getValue(),
+                        prefix + ".lastSeen." + uuid)));
+            }
+        }
+        if (minuteBuckets.isEmpty() && lastSeen.isEmpty()) {
+            return new WriteBatch(batchId, aggregationTime,
+                    Map.copyOf(minutes), Map.copyOf(profiles), List.copyOf(joins));
+        }
+        return new WriteBatch(batchId, aggregationTime, Map.copyOf(minutes), Map.copyOf(profiles),
+                List.copyOf(joins), Map.copyOf(minuteBuckets), Map.copyOf(lastSeen));
+    }
+
+    private Map.Entry<MinuteBucket, MinuteDelta> readMinuteBucket(Map<?, ?> bucket,
+                                                                  String prefix, int bucketIndex) {
+        String path = prefix + MINUTE_BUCKET_PATH + bucketIndex + "]";
+        UUID uuid = requiredUuid(nullableString(bucket.get(UUID_KEY)), path + ".uuid");
+        Instant hourStart = Instant.ofEpochMilli(requiredNonNegativeLong(bucket.get("hourStart"),
+                path + ".hourStart"));
+        long active = requiredNonNegativeLong(bucket.get(ACTIVE_KEY), path + ACTIVE_FIELD_SUFFIX);
+        long afk = requiredNonNegativeLong(bucket.get(AFK_KEY), path + AFK_FIELD_SUFFIX);
+        return Map.entry(new MinuteBucket(uuid, hourStart), new MinuteDelta(active, afk));
     }
 
     private WriteBatch readBatch(YamlConfiguration yaml, String prefix, Instant fallbackAggregationTime) {
-        Map<UUID, MinuteDelta> minutes = new LinkedHashMap<>();
+        Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>();
         ConfigurationSection minuteSection = optionalSection(yaml, prefix + "minutes");
         if (minuteSection != null) {
             for (String key : minuteSection.getKeys(false)) {
                 UUID uuid = requiredUuid(key, prefix + "minutes UUID");
-                long active = requiredNonNegativeLong(yaml.get(prefix + "minutes." + key + ".active"),
-                        prefix + "minutes." + key + ".active");
-                long afk = requiredNonNegativeLong(yaml.get(prefix + "minutes." + key + ".afk"),
-                        prefix + "minutes." + key + ".afk");
+                long active = requiredNonNegativeLong(yaml.get(prefix + MINUTES_FIELD_PREFIX + key + ACTIVE_FIELD_SUFFIX),
+                        prefix + MINUTES_FIELD_PREFIX + key + ACTIVE_FIELD_SUFFIX);
+                long afk = requiredNonNegativeLong(yaml.get(prefix + MINUTES_FIELD_PREFIX + key + AFK_FIELD_SUFFIX),
+                        prefix + MINUTES_FIELD_PREFIX + key + AFK_FIELD_SUFFIX);
                 minutes.put(uuid, new MinuteDelta(active, afk));
             }
         }
 
-        Map<UUID, PlayerProfile> profiles = new LinkedHashMap<>();
+        Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>();
         ConfigurationSection profileSection = optionalSection(yaml, prefix + "profiles");
         if (profileSection != null) {
             for (String key : profileSection.getKeys(false)) {
@@ -227,7 +328,7 @@ public final class ShutdownRecoveryJournal {
             if (!(value instanceof Map<?, ?> join)) {
                 throw invalid(prefix + "joins[" + index + "] is not a map");
             }
-            UUID uuid = requiredUuid(nullableString(join.get("uuid")), prefix + "joins[" + index + "].uuid");
+            UUID uuid = requiredUuid(nullableString(join.get(UUID_KEY)), prefix + "joins[" + index + "].uuid");
             joins.add(new JoinRecord(uuid, Instant.ofEpochMilli(requiredNonNegativeLong(join.get("joinedAt"),
                     prefix + "joins[" + index + "].joinedAt"))));
         }

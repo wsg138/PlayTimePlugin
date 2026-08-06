@@ -59,6 +59,14 @@ public final class ActivityTracker implements Listener {
                            SessionManager sessionManager,
                            Map<UUID, ActivitySnapshot> initialState,
                            PerformanceCounters counters) {
+        this(config, sessionManager, initialState, Map.of(), counters);
+    }
+
+    public ActivityTracker(PlaytimeConfig config,
+                           SessionManager sessionManager,
+                           Map<UUID, ActivitySnapshot> initialState,
+                           Map<UUID, Long> initialSuspiciousResetMarkers,
+                           PerformanceCounters counters) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.counters = counters;
@@ -76,10 +84,23 @@ public final class ActivityTracker implements Listener {
         if (initialState != null) {
             initialState.forEach((uuid, snapshot) -> data.put(uuid, ActivityData.fromSnapshot(snapshot)));
         }
+        if (initialSuspiciousResetMarkers != null) {
+            suspiciousResetMarkers.putAll(initialSuspiciousResetMarkers);
+        }
     }
 
     public ActivityState getState(UUID uuid, long nowMillis) {
         ActivityData activityData = data.computeIfAbsent(uuid, ignored -> ActivityData.create(nowMillis));
+        return stateFor(activityData, nowMillis);
+    }
+
+    /** Read-only state lookup for public API callers. Unknown UUIDs are not retained. */
+    public ActivityState peekState(UUID uuid, long nowMillis) {
+        ActivityData activityData = data.get(uuid);
+        return activityData == null ? ActivityState.AFK : stateFor(activityData, nowMillis);
+    }
+
+    private ActivityState stateFor(ActivityData activityData, long nowMillis) {
         synchronized (activityData) {
             long sinceAny = nowMillis - activityData.lastGeneralActivity;
             if (sinceAny >= afkMillis) {
@@ -111,6 +132,10 @@ public final class ActivityTracker implements Listener {
         return Collections.unmodifiableMap(snapshot);
     }
 
+    public Map<UUID, Long> suspiciousResetMarkerSnapshot() {
+        return Collections.unmodifiableMap(new ConcurrentHashMap<>(suspiciousResetMarkers));
+    }
+
     public void bootstrapPlayer(Player player, long nowMillis) {
         ActivityData activityData = getOrCreate(player, nowMillis);
         synchronized (activityData) {
@@ -122,7 +147,7 @@ public final class ActivityTracker implements Listener {
                 activityData.lastNonClickActivity = nowMillis;
             }
         }
-        suspiciousResetMarkers.put(player.getUniqueId(), nowMillis);
+        suspiciousResetMarkers.putIfAbsent(player.getUniqueId(), nowMillis);
         sessionManager.handleJoin(player.getUniqueId(), nowMillis);
     }
 
@@ -137,6 +162,10 @@ public final class ActivityTracker implements Listener {
 
     public long getSuspiciousResetMarker(UUID uuid) {
         return suspiciousResetMarkers.getOrDefault(uuid, 0L);
+    }
+
+    public void forgetSuspiciousResetMarker(UUID uuid) {
+        suspiciousResetMarkers.remove(uuid);
     }
 
     private boolean isAutoclickerPattern(ActivityData data, long nowMillis) {
@@ -285,7 +314,7 @@ public final class ActivityTracker implements Listener {
             activityData.lastNonClickActivity = nowMillis;
             activityData.swingTimes.clear();
         }
-        suspiciousResetMarkers.put(player.getUniqueId(), nowMillis);
+        suspiciousResetMarkers.putIfAbsent(player.getUniqueId(), nowMillis);
         sessionManager.handleJoin(player.getUniqueId(), nowMillis);
     }
 
@@ -293,7 +322,8 @@ public final class ActivityTracker implements Listener {
     public void onQuit(PlayerQuitEvent event) {
         sessionManager.handleQuit(event.getPlayer().getUniqueId());
         data.remove(event.getPlayer().getUniqueId());
-        suspiciousResetMarkers.remove(event.getPlayer().getUniqueId());
+        // Keep the last legitimate-activity marker so reconnecting cannot reset a
+        // suspicious streak merely by cycling the connection.
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -314,7 +344,7 @@ public final class ActivityTracker implements Listener {
         ActivityData activityData = getOrCreate(player, nowMillis);
         synchronized (activityData) {
             if (!activityData.hasPosition) {
-                recordInitialPosition(activityData, to, nowMillis);
+                recordInitialPosition(player.getUniqueId(), activityData, to, nowMillis);
                 return;
             }
 
@@ -333,9 +363,9 @@ public final class ActivityTracker implements Listener {
 
             activityData.lastMovementMutation = nowMillis;
             if (moved) {
-                recordMovement(activityData, to, nowMillis);
+                recordMovement(player.getUniqueId(), activityData, to, nowMillis);
             } else if (rotated) {
-                recordRotationMovement(activityData, to, nowMillis, delta.rotationAmount());
+                recordRotationMovement(player.getUniqueId(), activityData, to, nowMillis, delta.rotationAmount());
             }
         }
     }
@@ -348,11 +378,12 @@ public final class ActivityTracker implements Listener {
                 && from.getPitch() == to.getPitch();
     }
 
-    private void recordInitialPosition(ActivityData activityData, Location to, long nowMillis) {
+    private void recordInitialPosition(UUID uuid, ActivityData activityData, Location to, long nowMillis) {
         updatePosition(activityData, to);
         activityData.lastGeneralActivity = nowMillis;
         activityData.lastNonClickActivity = nowMillis;
         counters.activityEventsAccepted.increment();
+        suspiciousResetMarkers.put(uuid, nowMillis);
     }
 
     private boolean isMovementThrottled(ActivityData activityData, long nowMillis) {
@@ -368,15 +399,17 @@ public final class ActivityTracker implements Listener {
         return new MovementDelta(dx * dx + dy * dy + dz * dz, dyaw, dpitch);
     }
 
-    private void recordMovement(ActivityData activityData, Location to, long nowMillis) {
+    private void recordMovement(UUID uuid, ActivityData activityData, Location to, long nowMillis) {
         updatePosition(activityData, to);
         activityData.lastGeneralActivity = nowMillis;
         activityData.lastNonClickActivity = nowMillis;
         activityData.swingTimes.clear();
         counters.activityEventsAccepted.increment();
+        suspiciousResetMarkers.put(uuid, nowMillis);
     }
 
-    private void recordRotationMovement(ActivityData activityData, Location to, long nowMillis, float rotationAmount) {
+    private void recordRotationMovement(UUID uuid, ActivityData activityData, Location to,
+                                      long nowMillis, float rotationAmount) {
         boolean wasAutoclicking = suspicionEnabled && isAutoclickerPattern(activityData, nowMillis);
         if (suspicionEnabled) {
             recordRotation(activityData, nowMillis, rotationAmount);
@@ -386,6 +419,7 @@ public final class ActivityTracker implements Listener {
             activityData.lastGeneralActivity = nowMillis;
             activityData.lastNonClickActivity = nowMillis;
             activityData.swingTimes.clear();
+            suspiciousResetMarkers.put(uuid, nowMillis);
         }
         counters.activityEventsAccepted.increment();
     }

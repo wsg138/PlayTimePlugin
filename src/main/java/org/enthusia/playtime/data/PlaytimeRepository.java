@@ -3,6 +3,7 @@ package org.enthusia.playtime.data;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.data.model.AdminServerStats;
+import org.enthusia.playtime.data.WriteBatch.MinuteBucket;
 import org.enthusia.playtime.data.model.LeaderboardEntry;
 import org.enthusia.playtime.data.model.MinuteDelta;
 import org.enthusia.playtime.data.model.PlayerProfile;
@@ -33,6 +34,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 public final class PlaytimeRepository {
     private static final String RANGE_ALL = "ALL";
@@ -49,6 +51,8 @@ public final class PlaytimeRepository {
     private static final String LOG_CONTEXT_SEPARATOR = "): ";
     private static final long NO_MINUTES = 0L;
     private static final int MAX_ROLLING_HOURS = 24 * 90;
+
+    private record DailyBucket(UUID uuid, String day) { }
 
     private final JavaPlugin plugin;
     private final DatabaseProvider provider;
@@ -81,6 +85,25 @@ public final class PlaytimeRepository {
                 ensureLastSeenColumn(connection, statement);
             }
             return null;
+        });
+    }
+
+    public java.util.Set<UUID> loadKnownPlayerIdsStrict() throws SQLException {
+        return withSqliteRetry(() -> {
+            java.util.Set<UUID> known = new java.util.HashSet<>();
+            try (Connection connection = provider.getConnection();
+                 PreparedStatement statement = connection.prepareStatement("SELECT player_uuid FROM lifetime_agg");
+                 ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    try {
+                        known.add(UUID.fromString(resultSet.getString(1)));
+                    } catch (IllegalArgumentException malformedUuid) {
+                        plugin.getLogger().warning("Ignoring malformed lifetime UUID while building known-player index: "
+                                + resultSet.getString(1));
+                    }
+                }
+            }
+            return java.util.Set.copyOf(known);
         });
     }
 
@@ -242,7 +265,8 @@ public final class PlaytimeRepository {
                     }
                     applyRecoveryJoins(connection, snapshot.joins());
                     applyRecoveryProfiles(connection, snapshot.profiles().values());
-                    applyRecoveryMinutes(connection, snapshot.minutes(), snapshot.aggregationTime());
+                    applyRecoveryLastSeen(connection, snapshot.lastSeen());
+                    applyRecoveryMinutes(connection, snapshot.minutes(), snapshot.minuteBuckets(), snapshot.aggregationTime());
                     connection.commit();
                     return RecoveryApplyResult.APPLIED;
                 } catch (SQLException failure) {
@@ -286,20 +310,94 @@ public final class PlaytimeRepository {
         }
     }
 
-    private void applyRecoveryMinutes(Connection connection, Map<UUID, MinuteDelta> deltas, Instant instant) throws SQLException {
+    private void applyRecoveryLastSeen(Connection connection, Map<UUID, Instant> lastSeen) throws SQLException {
+        if (lastSeen.isEmpty()) return;
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE lifetime_agg SET last_seen = CASE WHEN last_seen IS NULL OR last_seen < ? THEN ? ELSE last_seen END WHERE player_uuid = ?")) {
+            for (Map.Entry<UUID, Instant> entry : lastSeen.entrySet()) {
+                Timestamp timestamp = Timestamp.from(entry.getValue());
+                statement.setTimestamp(1, timestamp);
+                statement.setTimestamp(2, timestamp);
+                statement.setString(3, entry.getKey().toString());
+                statement.addBatch();
+            }
+            statement.executeBatch();
+        }
+    }
+
+    private void applyRecoveryMinutes(Connection connection, Map<UUID, MinuteDelta> deltas,
+                                      Map<MinuteBucket, MinuteDelta> recordedBuckets,
+                                      Instant fallbackInstant) throws SQLException {
         if (deltas.isEmpty()) return;
-        String day = LocalDate.ofInstant(instant, ZoneOffset.UTC).toString();
-        Timestamp hour = Timestamp.from(instant.truncatedTo(ChronoUnit.HOURS));
+        Map<MinuteBucket, MinuteDelta> buckets = recoveryBuckets(deltas, recordedBuckets, fallbackInstant);
+        Map<DailyBucket, MinuteDelta> dailyBuckets = aggregateDailyBuckets(buckets);
         try (PreparedStatement daily = connection.prepareStatement(dialect.dailyAggUpsert());
              PreparedStatement hourly = connection.prepareStatement(dialect.hourlyAggUpsert());
              PreparedStatement lifetime = connection.prepareStatement(dialect.lifetimeMinutesUpsert())) {
-            for (Map.Entry<UUID, MinuteDelta> entry : deltas.entrySet()) {
-                MinuteDelta delta = entry.getValue(); if (delta.totalMinutes() <= NO_MINUTES) continue;
-                daily.setString(1, entry.getKey().toString()); daily.setString(2, day); daily.setLong(3, delta.activeMinutes()); daily.setLong(4, delta.afkMinutes()); daily.setLong(5, delta.totalMinutes()); daily.addBatch();
-                hourly.setString(1, entry.getKey().toString()); hourly.setTimestamp(2, hour); hourly.setLong(3, delta.activeMinutes()); hourly.setLong(4, delta.afkMinutes()); hourly.setLong(5, delta.totalMinutes()); hourly.addBatch();
-                lifetime.setString(1, entry.getKey().toString()); lifetime.setLong(2, delta.activeMinutes()); lifetime.setLong(3, delta.afkMinutes()); lifetime.setLong(4, delta.totalMinutes()); lifetime.addBatch();
-            }
-            daily.executeBatch(); hourly.executeBatch(); lifetime.executeBatch();
+            addDailyRecoveryBatch(daily, dailyBuckets);
+            addHourlyRecoveryBatch(hourly, buckets);
+            addLifetimeRecoveryBatch(lifetime, deltas);
+            daily.executeBatch();
+            hourly.executeBatch();
+            lifetime.executeBatch();
+        }
+    }
+
+    private Map<MinuteBucket, MinuteDelta> recoveryBuckets(Map<UUID, MinuteDelta> deltas,
+                                                            Map<MinuteBucket, MinuteDelta> recordedBuckets,
+                                                            Instant fallbackInstant) {
+        if (!recordedBuckets.isEmpty()) return recordedBuckets;
+        Instant hour = fallbackInstant.truncatedTo(ChronoUnit.HOURS);
+        Map<MinuteBucket, MinuteDelta> fallback = new ConcurrentHashMap<>();
+        deltas.forEach((uuid, delta) -> fallback.put(new MinuteBucket(uuid, hour), delta));
+        return fallback;
+    }
+
+    private Map<DailyBucket, MinuteDelta> aggregateDailyBuckets(Map<MinuteBucket, MinuteDelta> buckets) {
+        return buckets.entrySet().stream().collect(Collectors.toConcurrentMap(
+                entry -> new DailyBucket(entry.getKey().uuid(),
+                        LocalDate.ofInstant(entry.getKey().hourStart(), ZoneOffset.UTC).toString()),
+                Map.Entry::getValue, MinuteDelta::plus));
+    }
+
+    private void addDailyRecoveryBatch(PreparedStatement statement,
+                                       Map<DailyBucket, MinuteDelta> buckets) throws SQLException {
+        for (Map.Entry<DailyBucket, MinuteDelta> entry : buckets.entrySet()) {
+            MinuteDelta delta = entry.getValue();
+            if (delta.totalMinutes() <= NO_MINUTES) continue;
+            statement.setString(1, entry.getKey().uuid().toString());
+            statement.setString(2, entry.getKey().day());
+            statement.setLong(3, delta.activeMinutes());
+            statement.setLong(4, delta.afkMinutes());
+            statement.setLong(5, delta.totalMinutes());
+            statement.addBatch();
+        }
+    }
+
+    private void addHourlyRecoveryBatch(PreparedStatement statement,
+                                        Map<MinuteBucket, MinuteDelta> buckets) throws SQLException {
+        for (Map.Entry<MinuteBucket, MinuteDelta> entry : buckets.entrySet()) {
+            MinuteDelta delta = entry.getValue();
+            if (delta.totalMinutes() <= NO_MINUTES) continue;
+            statement.setString(1, entry.getKey().uuid().toString());
+            statement.setTimestamp(2, Timestamp.from(entry.getKey().hourStart()));
+            statement.setLong(3, delta.activeMinutes());
+            statement.setLong(4, delta.afkMinutes());
+            statement.setLong(5, delta.totalMinutes());
+            statement.addBatch();
+        }
+    }
+
+    private void addLifetimeRecoveryBatch(PreparedStatement statement,
+                                          Map<UUID, MinuteDelta> deltas) throws SQLException {
+        for (Map.Entry<UUID, MinuteDelta> entry : deltas.entrySet()) {
+            MinuteDelta delta = entry.getValue();
+            if (delta.totalMinutes() <= NO_MINUTES) continue;
+            statement.setString(1, entry.getKey().toString());
+            statement.setLong(2, delta.activeMinutes());
+            statement.setLong(3, delta.afkMinutes());
+            statement.setLong(4, delta.totalMinutes());
+            statement.addBatch();
         }
     }
 
@@ -450,9 +548,11 @@ public final class PlaytimeRepository {
         withSqliteRetry(() -> {
             try (Connection connection = provider.getConnection();
                  PreparedStatement statement = connection.prepareStatement(
-                         "UPDATE lifetime_agg SET last_seen = ? WHERE player_uuid = ?")) {
-                statement.setTimestamp(1, Timestamp.from(seenAt));
-                statement.setString(2, uuid.toString());
+                         "UPDATE lifetime_agg SET last_seen = CASE WHEN last_seen IS NULL OR last_seen < ? THEN ? ELSE last_seen END WHERE player_uuid = ?")) {
+                Timestamp timestamp = Timestamp.from(seenAt);
+                statement.setTimestamp(1, timestamp);
+                statement.setTimestamp(2, timestamp);
+                statement.setString(3, uuid.toString());
                 statement.executeUpdate();
             }
             return null;
@@ -560,6 +660,8 @@ public final class PlaytimeRepository {
         List<LeaderboardEntry> leaderboard = new ArrayList<>();
         String metric = normalizeMetric(metricId);
         String range = normalizeRange(rangeId);
+        int safeLimit = Math.max(1, Math.min(limit, 100));
+        int safeOffset = Math.max(0, offset);
 
         String sql;
         if (range.equals(RANGE_ALL)) {
@@ -569,9 +671,9 @@ public final class PlaytimeRepository {
 
             try (Connection connection = provider.getConnection();
                  PreparedStatement statement = connection.prepareStatement(sql)) {
-                statement.setInt(1, limit);
-                statement.setInt(2, offset);
-                appendLeaderboardRows(leaderboard, statement, offset);
+                statement.setInt(1, safeLimit);
+                statement.setInt(2, safeOffset);
+                appendLeaderboardRows(leaderboard, statement, safeOffset);
             } catch (SQLException exception) {
                 plugin.getLogger().warning("Failed to load leaderboard (" + metric + ", " + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
             }
@@ -596,9 +698,9 @@ public final class PlaytimeRepository {
              PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, dateRange.start().toString());
             statement.setString(2, dateRange.end().toString());
-            statement.setInt(3, limit);
-            statement.setInt(4, offset);
-            appendLeaderboardRows(leaderboard, statement, offset);
+            statement.setInt(3, safeLimit);
+            statement.setInt(4, safeOffset);
+            appendLeaderboardRows(leaderboard, statement, safeOffset);
         } catch (SQLException exception) {
             plugin.getLogger().warning("Failed to load leaderboard (" + metric + ", " + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
         }
@@ -1095,38 +1197,26 @@ public final class PlaytimeRepository {
         return value == null || value.isBlank() ? null : value;
     }
 
-    private void ensureLastSeenColumn(Connection connection, Statement statement) {
-        boolean columnExists;
-        try {
-            columnExists = columnExists(connection, "lifetime_agg", "last_seen");
-        } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to inspect lifetime_agg.last_seen metadata; falling back to the legacy migration check: "
-                    + exception.getMessage());
-            columnExists = false;
-        }
-
+    private void ensureLastSeenColumn(Connection connection, Statement statement) throws SQLException {
+        boolean columnExists = columnExists(connection, "lifetime_agg", "last_seen");
         if (!columnExists) {
             try {
                 statement.execute(dialect.lifetimeAggAddLastSeenColumn());
-                columnExists = true;
             } catch (SQLException exception) {
-                if (isDuplicateColumn(exception)) {
-                    columnExists = true;
-                } else {
-                    plugin.getLogger().warning("Failed while ensuring lifetime_agg.last_seen exists: "
-                            + exception.getMessage());
+                if (!isDuplicateColumn(exception)) {
+                    throw new SQLException("Failed to add required lifetime_agg.last_seen column", exception);
                 }
             }
+            columnExists = columnExists(connection, "lifetime_agg", "last_seen");
         }
-
         if (!columnExists) {
-            return;
+            throw new SQLException("Required lifetime_agg.last_seen column is still absent after migration");
         }
-
         try {
             statement.executeUpdate(dialect.lifetimeAggBackfillLastSeenColumn());
         } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed while backfilling lifetime_agg.last_seen: " + exception.getMessage());
+            plugin.getLogger().warning("lifetime_agg.last_seen exists, but its legacy backfill failed: "
+                    + exception.getMessage());
         }
     }
 

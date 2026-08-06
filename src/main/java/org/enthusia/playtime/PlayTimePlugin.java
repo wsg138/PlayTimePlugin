@@ -233,7 +233,9 @@ public class PlayTimePlugin extends JavaPlugin {
             }
             if (newRuntime != null) {
                 try {
-                    newRuntime.close(false);
+                    // A pre-commit replacement borrowed the old runtime's accrual
+                    // snapshot; a fresh candidate owns its state and closes normally.
+                    newRuntime.close(oldRuntime != null);
                 } catch (Exception cleanupException) {
                     getLogger().log(Level.WARNING, "Failed to clean up replacement runtime after reload failure.", cleanupException);
                 }

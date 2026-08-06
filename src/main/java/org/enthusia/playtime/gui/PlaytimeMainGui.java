@@ -27,15 +27,28 @@ public final class PlaytimeMainGui implements PlaytimeGui {
     private final PlayTimePlugin plugin;
     private final Player viewer;
     private final Inventory inventory;
+    private final boolean bedrockLayout;
 
-    private static final int SLOT_STATS = 13;
-    private static final int SLOT_LEADERBOARD = 21;
-    private static final int SLOT_CLOSE = 23;
+    private final int slotStats;
+    private final int slotLeaderboard;
+    private final int slotClose;
 
     public PlaytimeMainGui(PlayTimePlugin plugin, Player viewer) {
         this.plugin = plugin;
         this.viewer = viewer;
-        this.inventory = Bukkit.createInventory(new PlaytimeGuiHolder(this), 27, ChatColor.DARK_AQUA + "Your Playtime");
+        PlaytimeRuntime runtime = plugin.runtime();
+        boolean bedrock = runtime != null && plugin.getBedrockSupport() != null
+                && plugin.getBedrockSupport().isBedrock(viewer)
+                && runtime.config().gui().bedrock().enabled();
+        this.bedrockLayout = bedrock;
+        int rows = bedrock ? runtime.config().gui().bedrock().mainMenuRows() : 3;
+        int middleRow = Math.max(0, (rows - 1) / 2);
+        int footer = (rows - 1) * 9;
+        this.slotStats = middleRow * 9 + 4;
+        this.slotLeaderboard = footer + 3;
+        this.slotClose = footer + 5;
+        this.inventory = Bukkit.createInventory(new PlaytimeGuiHolder(this), rows * 9,
+                ChatColor.DARK_AQUA + "Your Playtime");
         render();
     }
 
@@ -73,7 +86,7 @@ public final class PlaytimeMainGui implements PlaytimeGui {
         statsMeta.setLore(lore);
         statsMeta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         statsItem.setItemMeta(statsMeta);
-        inventory.setItem(SLOT_STATS, statsItem);
+        inventory.setItem(slotStats, statsItem);
 
         ItemStack leaderboard = new ItemStack(Material.BOOK);
         ItemMeta leaderboardMeta = leaderboard.getItemMeta();
@@ -85,19 +98,18 @@ public final class PlaytimeMainGui implements PlaytimeGui {
         ));
         leaderboardMeta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         leaderboard.setItemMeta(leaderboardMeta);
-        inventory.setItem(SLOT_LEADERBOARD, leaderboard);
+        inventory.setItem(slotLeaderboard, leaderboard);
 
         ItemStack close = new ItemStack(Material.BARRIER);
         ItemMeta closeMeta = close.getItemMeta();
         closeMeta.setDisplayName(ChatColor.RED + "Close");
         close.setItemMeta(closeMeta);
-        inventory.setItem(SLOT_CLOSE, close);
+        inventory.setItem(slotClose, close);
     }
 
     private void fillBackground() {
         PlaytimeRuntime runtime = plugin.runtime();
-        boolean bedrock = runtime != null && plugin.getBedrockSupport() != null && plugin.getBedrockSupport().isBedrock(viewer);
-        if (bedrock) {
+        if (bedrockLayout) {
             return;
         }
 
@@ -158,9 +170,9 @@ public final class PlaytimeMainGui implements PlaytimeGui {
     @Override
     public void handleClick(InventoryClickEvent event) {
         int slot = event.getRawSlot();
-        if (slot == SLOT_LEADERBOARD) {
+        if (slot == slotLeaderboard) {
             new LeaderboardGui(plugin, viewer, "TOTAL", "ALL", 1).open();
-        } else if (slot == SLOT_CLOSE) {
+        } else if (slot == slotClose) {
             viewer.closeInventory();
         }
     }
