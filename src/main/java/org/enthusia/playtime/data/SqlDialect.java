@@ -229,7 +229,9 @@ public enum SqlDialect {
         };
     }
 
+
     public String dailyAggUpsert() {
+        // params: player_uuid, day, active, afk, total
         return switch (this) {
             case SQLITE -> """
                 INSERT INTO daily_agg (player_uuid, day, active_minutes, afk_minutes, total_minutes)
@@ -251,6 +253,7 @@ public enum SqlDialect {
     }
 
     public String lifetimeJoinUpsert() {
+        // params: player_uuid, first_join, last_join, last_seen
         return switch (this) {
             case SQLITE -> """
                 INSERT INTO lifetime_agg (player_uuid, first_join, last_join, last_seen, active_minutes, afk_minutes, total_minutes)
@@ -270,6 +273,7 @@ public enum SqlDialect {
     }
 
     public String hourlyAggUpsert() {
+        // params: player_uuid, hour_start, active, afk, total
         return switch (this) {
             case SQLITE -> """
                 INSERT INTO hourly_agg (player_uuid, hour_start, active_minutes, afk_minutes, total_minutes)
@@ -291,6 +295,7 @@ public enum SqlDialect {
     }
 
     public String lifetimeMinutesUpsert() {
+        // params: player_uuid, active, afk, total
         return switch (this) {
             case SQLITE -> """
                 INSERT INTO lifetime_agg (player_uuid, first_join, last_join, last_seen, active_minutes, afk_minutes, total_minutes)
@@ -312,6 +317,7 @@ public enum SqlDialect {
     }
 
     public String playerProfileUpsert() {
+        // params: player_uuid, username, display_name, first_seen, last_seen, updated_at
         return switch (this) {
             case SQLITE -> """
                 INSERT INTO player_profiles (player_uuid, username, display_name, first_seen, last_seen, updated_at)
@@ -335,6 +341,7 @@ public enum SqlDialect {
     }
 
     public String playerSkinProfileUpsert() {
+        // params: player_uuid, texture_value, texture_signature, last_known_name, updated_at
         return switch (this) {
             case SQLITE -> """
                 INSERT INTO player_skin_profiles (player_uuid, texture_value, texture_signature, last_known_name, updated_at)
@@ -360,7 +367,7 @@ public enum SqlDialect {
     public String lifetimeAggAddLastSeenColumn() {
         return switch (this) {
             case SQLITE -> "ALTER TABLE lifetime_agg ADD COLUMN last_seen TIMESTAMP";
-            case MYSQL -> "ALTER TABLE lifetime_agg ADD COLUMN IF NOT EXISTS last_seen TIMESTAMP NULL";
+            case MYSQL -> "ALTER TABLE lifetime_agg ADD COLUMN last_seen TIMESTAMP NULL";
         };
     }
 
