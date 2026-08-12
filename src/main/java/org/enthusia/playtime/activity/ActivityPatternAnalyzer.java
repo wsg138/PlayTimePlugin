@@ -46,6 +46,7 @@ public final class ActivityPatternAnalyzer {
     private static final int VARIATION_MINIMUM_SAMPLES = 8;
     private static final int VARIATION_DISTINCT_SIGNATURES = 2;
     private static final double VARIATION_MINIMUM_CV = 0.10D;
+    private static final double VARIATION_MINIMUM_MEAN = 1.0E-9D;
 
     private final AdvancedDetectionSettings settings;
 
@@ -95,7 +96,7 @@ public final class ActivityPatternAnalyzer {
                                    CycleResult sequence) {
         double evidence = combinedEvidence(click, rotation, movement, sequence, clickOnlyRecently);
         boolean varied = evidence < VARIATION_MAX_EVIDENCE && convincingVariation(samples, nowMillis);
-        CycleResult dominant = strongerCycle(movement, sequence);
+        CycleResult dominant = sequence.score() >= movement.score() ? sequence : movement;
         return new Analysis(click.score(), movement.score(), rotation.score(), sequence.score(),
                 evidence, Math.max(movement.repetitions(), sequence.repetitions()),
                 dominant.cycleMillis(), varied, click.count(), rotation.count());
@@ -468,7 +469,7 @@ public final class ActivityPatternAnalyzer {
             return true;
         }
         double mean = distanceSum / count;
-        if (mean <= 0.0D) {
+        if (mean <= VARIATION_MINIMUM_MEAN) {
             return false;
         }
         double variance = Math.max(0.0D, distanceSquaredSum / count - mean * mean);
