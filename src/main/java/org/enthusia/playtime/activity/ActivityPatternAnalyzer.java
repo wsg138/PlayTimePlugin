@@ -1,7 +1,11 @@
 package org.enthusia.playtime.activity;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Pure, bounded behavioral analysis. It intentionally looks for recurrence across
@@ -11,8 +15,12 @@ import java.util.List;
  */
 public final class ActivityPatternAnalyzer {
     private static final double EPSILON = 1.0E-9D;
-    private static final double MIN_CLICK_INTERVAL_MILLIS = 75.0D;
     private static final int MAX_ANALYSIS_SAMPLES = 256;
+    private static final long HEARTBEAT_WINDOW_MILLIS = 300_000L;
+    private static final long HEARTBEAT_MIN_INTERVAL_MILLIS = 2_000L;
+    private static final long HEARTBEAT_MIN_SPAN_MILLIS = 60_000L;
+    private static final int HEARTBEAT_MIN_SAMPLES = 5;
+    private static final double HEARTBEAT_MAX_CV = 0.02D;
 
     private final AdvancedDetectionSettings settings;
 
@@ -36,9 +44,11 @@ public final class ActivityPatternAnalyzer {
         CycleResult movement = settings.movement().enabled()
                 ? movementRecurrence(bounded, nowMillis)
                 : CycleResult.NONE;
-        CycleResult sequence = settings.sequence().enabled()
-                ? sequenceRecurrence(bounded, nowMillis)
-                : CycleResult.NONE;
+        CycleResult sequence = CycleResult.NONE;
+        if (settings.sequence().enabled()) {
+            sequence = strongerCycle(sequenceRecurrence(bounded, nowMillis),
+                    heartbeatRecurrence(bounded, nowMillis));
+        }
 
         double evidence = combinedEvidence(click, rotation, movement, sequence, clickOnlyRecently);
         boolean varied = evidence < 0.30D && convincingVariation(bounded, nowMillis);
@@ -60,11 +70,6 @@ public final class ActivityPatternAnalyzer {
             return new Regularity(0.0D, times.size());
         }
         double cv = coefficientOfVariationOfIntervals(times);
-        double mean = meanInterval(times);
-        if (mean < MIN_CLICK_INTERVAL_MILLIS) {
-            // Packet/event duplication must never be interpreted as an impossibly fast macro.
-            return new Regularity(0.0D, times.size());
-        }
         return new Regularity(cvScore(cv, settings.click().maxCv()), times.size());
     }
 
@@ -123,6 +128,63 @@ public final class ActivityPatternAnalyzer {
                 0L, false);
     }
 
+    /**
+     * Detects low-frequency single-input keepalive macros that ordinary short-window
+     * cycle analysis intentionally ignores. Human chat/movement can be repetitive,
+     * so this requires five samples, at least a minute of span, intervals of at least
+     * two seconds, and extremely low timing variance.
+     */
+    private CycleResult heartbeatRecurrence(List<BehaviorSample> samples, long nowMillis) {
+        long cutoff = nowMillis - HEARTBEAT_WINDOW_MILLIS;
+        Map<Integer, List<Long>> timesBySignature = new HashMap<>();
+        for (BehaviorSample sample : samples) {
+            if (!sample.patternEligible() || sample.timestampMillis() < cutoff
+                    || !heartbeatEligible(sample)) {
+                continue;
+            }
+            int signature = normalizedActionSignature(sample);
+            if (signature == 0) {
+                continue;
+            }
+            timesBySignature.computeIfAbsent(signature, ignored -> new ArrayList<>())
+                    .add(sample.timestampMillis());
+        }
+
+        CycleResult best = CycleResult.NONE;
+        for (List<Long> times : timesBySignature.values()) {
+            if (times.size() < HEARTBEAT_MIN_SAMPLES) {
+                continue;
+            }
+            long span = times.get(times.size() - 1) - times.get(0);
+            double mean = meanInterval(times);
+            if (span < HEARTBEAT_MIN_SPAN_MILLIS || mean < HEARTBEAT_MIN_INTERVAL_MILLIS) {
+                continue;
+            }
+            double cv = coefficientOfVariationOfIntervals(times);
+            if (!Double.isFinite(cv) || cv > HEARTBEAT_MAX_CV) {
+                continue;
+            }
+            double score = 0.98D + 0.02D * (1.0D - cv / HEARTBEAT_MAX_CV);
+            CycleResult candidate = new CycleResult(clamp01(score), times.size(),
+                    Math.round(mean), 1);
+            best = strongerCycle(best, candidate);
+        }
+        return best;
+    }
+
+    private static boolean heartbeatEligible(BehaviorSample sample) {
+        return sample.has(BehaviorSample.COMMAND)
+                || sample.has(BehaviorSample.CHAT)
+                || sample.has(BehaviorSample.SWING)
+                || sample.has(BehaviorSample.JUMP)
+                || sample.hasMovement()
+                || sample.hasRotation();
+    }
+
+    private static CycleResult strongerCycle(CycleResult first, CycleResult second) {
+        return second.score() > first.score() ? second : first;
+    }
+
     private CycleResult bestCycle(List<BehaviorSample> samples,
                                   int minimumRepetitions,
                                   int maximumCycleSamples,
@@ -177,8 +239,7 @@ public final class ActivityPatternAnalyzer {
 
     private boolean cycleHasMeaningfulStructure(List<BehaviorSample> samples, int start,
                                                 int period, boolean movementOnly) {
-        int semanticKinds = 0;
-        int seenSemantic = 0;
+        Set<Integer> distinctSignatures = new HashSet<>();
         int directionChanges = 0;
         int meaningfulTurns = 0;
         double horizontalTotal = 0.0D;
@@ -186,9 +247,9 @@ public final class ActivityPatternAnalyzer {
         for (int index = 0; index < period; index++) {
             BehaviorSample current = samples.get(start + index);
             int semantic = normalizedActionSignature(current);
-            int newBits = semantic & ~seenSemantic;
-            semanticKinds += Integer.bitCount(newBits);
-            seenSemantic |= semantic;
+            if (semantic != 0) {
+                distinctSignatures.add(semantic);
+            }
             horizontalTotal += current.horizontalDistance();
             if (current.turnAmount() >= 15.0F) {
                 meaningfulTurns++;
@@ -209,7 +270,10 @@ public final class ActivityPatternAnalyzer {
             return directionChanges >= 2 || meaningfulTurns >= 2;
         }
 
-        if (semanticKinds >= 2) {
+        // Multiple Bukkit/Paper events can merge into one physical input sample. Count
+        // distinct sample signatures, not the number of set bits inside one sample, so
+        // held-use/build behavior does not look like a multi-action macro by itself.
+        if (distinctSignatures.size() >= 2) {
             return true;
         }
         // A pure movement sequence can still be meaningful if it traces a real cycle.
@@ -327,7 +391,7 @@ public final class ActivityPatternAnalyzer {
     private boolean convincingVariation(List<BehaviorSample> samples, long nowMillis) {
         long cutoff = nowMillis - 10_000L;
         int count = 0;
-        int semanticUnion = 0;
+        Set<Integer> distinctSignatures = new HashSet<>();
         double distanceSum = 0.0D;
         double distanceSquaredSum = 0.0D;
         for (BehaviorSample sample : samples) {
@@ -335,7 +399,10 @@ public final class ActivityPatternAnalyzer {
                 continue;
             }
             count++;
-            semanticUnion |= normalizedActionSignature(sample);
+            int signature = normalizedActionSignature(sample);
+            if (signature != 0) {
+                distinctSignatures.add(signature);
+            }
             double distance = sample.distance();
             distanceSum += distance;
             distanceSquaredSum += distance * distance;
@@ -343,7 +410,7 @@ public final class ActivityPatternAnalyzer {
         if (count < 8) {
             return false;
         }
-        if (Integer.bitCount(semanticUnion) >= 2) {
+        if (distinctSignatures.size() >= 2) {
             return true;
         }
         double mean = distanceSum / count;
