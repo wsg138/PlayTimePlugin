@@ -1,5 +1,7 @@
 package org.enthusia.playtime.activity;
 
+import io.papermc.paper.event.player.PlayerArmSwingEvent;
+import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
@@ -8,34 +10,50 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
-import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.event.player.PlayerVelocityEvent;
+import org.bukkit.plugin.Plugin;
 import org.enthusia.playtime.config.PlaytimeConfig;
+import org.enthusia.playtime.event.PlayerActivityStateChangeEvent;
 import org.enthusia.playtime.util.PerformanceCounters;
 
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Tracks observed player input and determines whether it should be trusted as
+ * genuine activity. SUSPICIOUS is deliberately an activity-confidence state, not
+ * an anti-cheat verdict.
+ */
 public final class ActivityTracker implements Listener {
     private static final long UNINITIALIZED_ACTIVITY_TIME = 0L;
-    private static final int MIN_AUTOMATION_INTERVAL_COUNT = 2;
-    private static final int MIN_AUTOMATION_VARIANCE_SAMPLES = 1;
-    private static final int MIN_ROTATION_SAMPLES = 4;
-    private static final double MIN_AUTOMATION_MEAN_MILLIS = 80.0D;
-    private static final double MIN_POSITIVE_MEAN = 0.0D;
+    private static final long ACTION_DEDUP_MILLIS = 75L;
+    private static final long EXTERNAL_VELOCITY_GRACE_MILLIS = 1_500L;
+    private static final double SERVER_CORRECTION_DISTANCE_SQUARED = 16.0D;
+    private static final double PURE_FALL_HORIZONTAL_SQUARED = 0.0025D;
+    private static final double FALLING_DELTA = -0.08D;
+    private static final double JUMP_DELTA = 0.15D;
+    private static final float HEAD_ROTATION_THRESHOLD = 2.0F;
+    private static final double AUTOMATION_EVIDENCE_THRESHOLD = 0.55D;
+    private static final float FULL_ROTATION_DEGREES = 360.0F;
+    private static final float HALF_ROTATION_DEGREES = 180.0F;
     private static final String HIDDEN_ACTION_BAR_MESSAGE = "";
 
     private final PlaytimeConfig config;
@@ -46,14 +64,12 @@ public final class ActivityTracker implements Listener {
     private final long idleMillis;
     private final long afkMillis;
     private final boolean suspicionEnabled;
-    private final boolean swingTrackingEnabled;
-    private final long suspicionWindowMillis;
     private final long nonClickGraceMillis;
-    private final int minSwings;
-    private final double maxCv;
     private final long movementThrottleMs;
     private final boolean countHeadRotation;
     private final double tinyMovementThreshold;
+    private final AdvancedDetectionSettings advanced;
+    private final ActivityPatternAnalyzer analyzer;
 
     public ActivityTracker(PlaytimeConfig config,
                            SessionManager sessionManager,
@@ -73,14 +89,12 @@ public final class ActivityTracker implements Listener {
         this.idleMillis = config.sampling().idleSeconds() * 1000L;
         this.afkMillis = config.sampling().afkSeconds() * 1000L;
         this.suspicionEnabled = config.sampling().suspicion().enabled();
-        this.swingTrackingEnabled = config.activity().suspiciousSwingTrackingEnabled();
-        this.suspicionWindowMillis = config.sampling().suspicion().windowSeconds() * 1000L;
         this.nonClickGraceMillis = config.sampling().suspicion().nonClickGraceSeconds() * 1000L;
-        this.minSwings = config.sampling().suspicion().minSwings();
-        this.maxCv = config.sampling().suspicion().maxCv();
         this.movementThrottleMs = config.activity().movementThrottleMs();
         this.countHeadRotation = config.activity().countHeadRotation();
         this.tinyMovementThreshold = config.activity().tinyMovementThreshold();
+        this.advanced = AdvancedDetectionSettings.load(config);
+        this.analyzer = new ActivityPatternAnalyzer(advanced);
         if (initialState != null) {
             initialState.forEach((uuid, snapshot) -> data.put(uuid, ActivityData.fromSnapshot(snapshot)));
         }
@@ -89,37 +103,141 @@ public final class ActivityTracker implements Listener {
         }
     }
 
+    /**
+     * Main-thread state sampling entry point. It publishes a Bukkit transition event
+     * exactly once when the effective state changes.
+     */
     public ActivityState getState(UUID uuid, long nowMillis) {
         ActivityData activityData = data.computeIfAbsent(uuid, ignored -> ActivityData.create(nowMillis));
-        return stateFor(activityData, nowMillis);
+        ActivityState state;
+        ActivityState oldState = null;
+        synchronized (activityData) {
+            state = stateFor(uuid, activityData, nowMillis);
+            if (Bukkit.isPrimaryThread() && activityData.online) {
+                if (activityData.publishedState == null) {
+                    activityData.publishedState = state;
+                } else if (activityData.publishedState != state) {
+                    oldState = activityData.publishedState;
+                    activityData.publishedState = state;
+                }
+            }
+        }
+        if (oldState != null) {
+            publishStateChange(uuid, oldState, state, nowMillis, activityData);
+        }
+        return state;
     }
 
-    /** Read-only state lookup for public API callers. Unknown UUIDs are not retained. */
+    /** Read-only live state lookup for public API callers. Unknown/offline UUIDs are AFK. */
     public ActivityState peekState(UUID uuid, long nowMillis) {
         ActivityData activityData = data.get(uuid);
-        return activityData == null ? ActivityState.AFK : stateFor(activityData, nowMillis);
-    }
-
-    private ActivityState stateFor(ActivityData activityData, long nowMillis) {
+        if (activityData == null) {
+            return ActivityState.AFK;
+        }
         synchronized (activityData) {
-            long sinceAny = nowMillis - activityData.lastGeneralActivity;
-            if (sinceAny >= afkMillis) {
+            if (!activityData.online) {
                 return ActivityState.AFK;
             }
-
-            long sinceNonClick = nowMillis - activityData.lastNonClickActivity;
-            if (suspicionEnabled
-                    && sinceNonClick >= nonClickGraceMillis
-                    && isAutoclickerPattern(activityData, nowMillis)) {
-                return ActivityState.SUSPICIOUS;
-            }
-
-            if (sinceAny >= idleMillis) {
-                return ActivityState.IDLE;
-            }
-
-            return ActivityState.ACTIVE;
+            return stateFor(uuid, activityData, nowMillis);
         }
+    }
+
+    private ActivityState stateFor(UUID uuid, ActivityData activityData, long nowMillis) {
+        analyzeIfDue(uuid, activityData, nowMillis);
+        long sinceAny = Math.max(0L, nowMillis - activityData.lastGeneralActivity);
+        if (sinceAny >= afkMillis) {
+            return ActivityState.AFK;
+        }
+        if (sinceAny >= idleMillis) {
+            return ActivityState.IDLE;
+        }
+        if (suspicionEnabled && activityData.suspicious) {
+            return ActivityState.SUSPICIOUS;
+        }
+        return ActivityState.ACTIVE;
+    }
+
+    private void analyzeIfDue(UUID uuid, ActivityData activityData, long nowMillis) {
+        if (!suspicionEnabled) {
+            clearAnalysis(activityData);
+            return;
+        }
+        if (!analysisDue(activityData, nowMillis)) {
+            return;
+        }
+
+        long elapsed = analysisElapsed(activityData, nowMillis);
+        activityData.lastAnalysisMillis = nowMillis;
+        ActivityPatternAnalyzer.Analysis analysis = analyzeBehavior(activityData, nowMillis);
+        activityData.analysis = analysis;
+        updateAnalysisMarkers(activityData, analysis, nowMillis);
+        updateSuspicionScore(activityData, analysis.combinedEvidence(), elapsed);
+        updateSuspicionState(uuid, activityData, nowMillis);
+    }
+
+    private static void clearAnalysis(ActivityData activityData) {
+        activityData.suspicious = false;
+        activityData.suspicionScore = 0.0D;
+        activityData.analysis = ActivityPatternAnalyzer.Analysis.EMPTY;
+    }
+
+    private boolean analysisDue(ActivityData activityData, long nowMillis) {
+        long interval = advanced.scoring().analysisIntervalMillis();
+        return activityData.lastAnalysisMillis <= 0L
+                || nowMillis - activityData.lastAnalysisMillis >= interval;
+    }
+
+    private long analysisElapsed(ActivityData activityData, long nowMillis) {
+        long interval = advanced.scoring().analysisIntervalMillis();
+        return activityData.lastAnalysisMillis <= 0L
+                ? interval
+                : Math.max(1L, nowMillis - activityData.lastAnalysisMillis);
+    }
+
+    private ActivityPatternAnalyzer.Analysis analyzeBehavior(ActivityData activityData, long nowMillis) {
+        boolean clickOnly = nowMillis - activityData.lastNonClickActivity >= nonClickGraceMillis;
+        List<BehaviorSample> snapshot = List.copyOf(activityData.behaviorHistory);
+        return analyzer.analyze(snapshot, nowMillis, clickOnly);
+    }
+
+    private static void updateAnalysisMarkers(ActivityData activityData,
+                                              ActivityPatternAnalyzer.Analysis analysis,
+                                              long nowMillis) {
+        if (analysis.combinedEvidence() >= AUTOMATION_EVIDENCE_THRESHOLD) {
+            activityData.lastAutomationEvidenceMillis = nowMillis;
+        }
+        if (analysis.convincingVariation()) {
+            activityData.lastVariedActivityMillis = nowMillis;
+        }
+    }
+
+    private void updateSuspicionScore(ActivityData activityData, double evidence, long elapsed) {
+        if (evidence >= activityData.suspicionScore) {
+            activityData.suspicionScore = evidence;
+            return;
+        }
+        double decay = advanced.scoring().decayPerSecond() * (elapsed / 1000.0D);
+        activityData.suspicionScore = Math.max(evidence,
+                Math.max(0.0D, activityData.suspicionScore - decay));
+    }
+
+    private void updateSuspicionState(UUID uuid, ActivityData activityData, long nowMillis) {
+        boolean wasSuspicious = activityData.suspicious;
+        if (activityData.suspicionScore >= advanced.scoring().suspiciousThreshold()) {
+            activityData.suspicious = true;
+        } else if (shouldClearSuspicion(activityData, nowMillis)) {
+            activityData.suspicious = false;
+        }
+        if (wasSuspicious && !activityData.suspicious) {
+            suspiciousResetMarkers.put(uuid, nowMillis);
+        }
+    }
+
+    private boolean shouldClearSuspicion(ActivityData activityData, long nowMillis) {
+        return activityData.suspicious
+                && activityData.suspicionScore <= advanced.scoring().clearThreshold()
+                && activityData.lastVariedActivityMillis > activityData.lastAutomationEvidenceMillis
+                && nowMillis - activityData.lastVariedActivityMillis <= advanced.scoring().recoveryMillis();
     }
 
     public Map<UUID, ActivitySnapshot> snapshot() {
@@ -136,15 +254,38 @@ public final class ActivityTracker implements Listener {
         return Collections.unmodifiableMap(new ConcurrentHashMap<>(suspiciousResetMarkers));
     }
 
+    public ActivityDiagnostics diagnostics(UUID uuid, long nowMillis) {
+        ActivityData activityData = data.get(uuid);
+        if (activityData == null) {
+            return ActivityDiagnostics.EMPTY;
+        }
+        synchronized (activityData) {
+            ActivityState state = activityData.online ? stateFor(uuid, activityData, nowMillis) : ActivityState.AFK;
+            ActivityPatternAnalyzer.Analysis analysis = activityData.analysis;
+            return new ActivityDiagnostics(state, activityData.suspicionScore,
+                    analysis.clickRegularity(), analysis.movementRepetition(),
+                    analysis.rotationRepetition(), analysis.sequenceRepetition(),
+                    analysis.repetitions(), analysis.dominantCycleMillis(),
+                    activityData.lastVariedActivityMillis <= 0L ? Long.MAX_VALUE
+                            : Math.max(0L, nowMillis - activityData.lastVariedActivityMillis));
+        }
+    }
+
     public void bootstrapPlayer(Player player, long nowMillis) {
+        pruneDisconnected(nowMillis);
         ActivityData activityData = getOrCreate(player, nowMillis);
         synchronized (activityData) {
             updatePosition(activityData, player.getLocation());
+            activityData.online = true;
+            activityData.disconnectedAtMillis = 0L;
             if (activityData.lastGeneralActivity <= UNINITIALIZED_ACTIVITY_TIME) {
                 activityData.lastGeneralActivity = nowMillis;
             }
             if (activityData.lastNonClickActivity <= UNINITIALIZED_ACTIVITY_TIME) {
                 activityData.lastNonClickActivity = nowMillis;
+            }
+            if (activityData.publishedState == null) {
+                activityData.publishedState = stateFor(player.getUniqueId(), activityData, nowMillis);
             }
         }
         suspiciousResetMarkers.putIfAbsent(player.getUniqueId(), nowMillis);
@@ -154,7 +295,11 @@ public final class ActivityTracker implements Listener {
     public boolean ensureTracked(Player player, long nowMillis) {
         ActivityData existing = data.get(player.getUniqueId());
         if (existing != null) {
-            return false;
+            synchronized (existing) {
+                if (existing.online) {
+                    return false;
+                }
+            }
         }
         bootstrapPlayer(player, nowMillis);
         return true;
@@ -166,68 +311,6 @@ public final class ActivityTracker implements Listener {
 
     public void forgetSuspiciousResetMarker(UUID uuid) {
         suspiciousResetMarkers.remove(uuid);
-    }
-
-    private boolean isAutoclickerPattern(ActivityData data, long nowMillis) {
-        if (!suspicionEnabled || !swingTrackingEnabled) {
-            return false;
-        }
-        long cutoff = nowMillis - suspicionWindowMillis;
-        while (!data.swingTimes.isEmpty() && data.swingTimes.peekFirst() < cutoff) {
-            data.swingTimes.pollFirst();
-        }
-
-        int count = data.swingTimes.size();
-        if (count < minSwings) {
-            return false;
-        }
-
-        if (hasOnlyClickActivity(data, nowMillis)) {
-            return true;
-        }
-
-        if (count <= MIN_AUTOMATION_INTERVAL_COUNT) {
-            return false;
-        }
-
-        double[] intervals = new double[count - 1];
-        long previous = -1L;
-        int index = 0;
-        for (long value : data.swingTimes) {
-            if (previous != -1L) {
-                intervals[index++] = value - previous;
-            }
-            previous = value;
-        }
-
-        if (index <= MIN_AUTOMATION_VARIANCE_SAMPLES) {
-            return false;
-        }
-
-        double sum = 0.0D;
-        for (int i = 0; i < index; i++) {
-            sum += intervals[i];
-        }
-        double mean = sum / index;
-        if (mean < MIN_AUTOMATION_MEAN_MILLIS) {
-            return false;
-        }
-
-        double variance = 0.0D;
-        for (int i = 0; i < index; i++) {
-            double diff = intervals[i] - mean;
-            variance += diff * diff;
-        }
-        variance /= index;
-
-        double stdDev = Math.sqrt(variance);
-        double cv = stdDev / mean;
-        return cv <= maxCv;
-    }
-
-    private boolean hasOnlyClickActivity(ActivityData data, long nowMillis) {
-        long cutoff = nowMillis - suspicionWindowMillis;
-        return data.lastNonClickActivity < cutoff;
     }
 
     public String actionBarMessage(ActivityState state) {
@@ -254,65 +337,122 @@ public final class ActivityTracker implements Listener {
     }
 
     private ActivityData getOrCreate(Player player, long nowMillis) {
-        return data.computeIfAbsent(player.getUniqueId(), ignored -> ActivityData.create(player, nowMillis));
-    }
-
-    private void recordNonClickActivity(Player player, long nowMillis) {
-        ActivityData activityData = getOrCreate(player, nowMillis);
-        synchronized (activityData) {
-            activityData.lastGeneralActivity = nowMillis;
-            activityData.lastNonClickActivity = nowMillis;
-            updatePosition(activityData, player.getLocation());
-            activityData.swingTimes.clear();
-        }
-        counters.activityEventsAccepted.increment();
-        suspiciousResetMarkers.put(player.getUniqueId(), nowMillis);
-    }
-
-    private void recordNonClickActivity(UUID uuid, long nowMillis) {
-        ActivityData activityData = data.computeIfAbsent(uuid, ignored -> ActivityData.create(nowMillis));
-        synchronized (activityData) {
-            activityData.lastGeneralActivity = nowMillis;
-            activityData.lastNonClickActivity = nowMillis;
-            activityData.swingTimes.clear();
-        }
-        counters.activityEventsAccepted.increment();
-        suspiciousResetMarkers.put(uuid, nowMillis);
-    }
-
-    private void recordClickActivity(Player player, long nowMillis) {
-        ActivityData activityData = getOrCreate(player, nowMillis);
-        synchronized (activityData) {
-            activityData.lastGeneralActivity = nowMillis;
-            if (suspicionEnabled && swingTrackingEnabled) {
-                activityData.swingTimes.addLast(nowMillis);
-                while (activityData.swingTimes.size() > 128) {
-                    activityData.swingTimes.pollFirst();
-                }
+        UUID uuid = player.getUniqueId();
+        return data.compute(uuid, (ignored, existing) -> {
+            if (existing == null) {
+                return ActivityData.create(player, nowMillis);
             }
-        }
-        counters.activityEventsAccepted.increment();
+            synchronized (existing) {
+                if (!existing.online && existing.disconnectedAtMillis > 0L
+                        && nowMillis - existing.disconnectedAtMillis
+                        > advanced.scoring().reconnectRetentionMillis()) {
+                    return ActivityData.create(player, nowMillis);
+                }
+                return existing;
+            }
+        });
     }
 
-    private static void updatePosition(ActivityData data, Location location) {
-        data.lastX = location.getX();
-        data.lastY = location.getY();
-        data.lastZ = location.getZ();
-        data.lastYaw = location.getYaw();
-        data.lastPitch = location.getPitch();
-        data.hasPosition = true;
+    void recordAction(Player player, long nowMillis, int actions) {
+        recordAction(player.getUniqueId(), nowMillis, actions);
+    }
+
+    void recordAction(UUID uuid, long nowMillis, int actions) {
+        ActivityData activityData = data.get(uuid);
+        if (activityData == null) {
+            counters.activityEventsSkipped.increment();
+            return;
+        }
+
+        boolean newSample;
+        synchronized (activityData) {
+            if (!activityData.online) {
+                counters.activityEventsSkipped.increment();
+                return;
+            }
+            activityData.lastGeneralActivity = nowMillis;
+            if ((actions & (BehaviorSample.CHAT | BehaviorSample.COMMAND)) != 0) {
+                activityData.lastNonClickActivity = nowMillis;
+            }
+            BehaviorSample sample = new BehaviorSample(nowMillis, actions,
+                    0.0D, 0.0D, 0.0D, 0.0F, 0.0F, true);
+            newSample = appendBehavior(activityData, sample, true);
+        }
+        if (newSample) counters.activityEventsAccepted.increment();
+        else counters.activityEventsSkipped.increment();
+    }
+
+    private boolean appendBehavior(ActivityData activityData,
+                                   BehaviorSample sample,
+                                   boolean deduplicateActions) {
+        BehaviorSample last = activityData.behaviorHistory.peekLast();
+        if (shouldMergeActionFanout(last, sample, deduplicateActions)) {
+            activityData.behaviorHistory.pollLast();
+            activityData.behaviorHistory.addLast(last.mergeActions(sample.actions(), sample.timestampMillis()));
+            return false;
+        }
+        activityData.behaviorHistory.addLast(sample);
+        trimBehaviorHistory(activityData);
+        return true;
+    }
+
+    private static boolean shouldMergeActionFanout(BehaviorSample last,
+                                                   BehaviorSample sample,
+                                                   boolean deduplicateActions) {
+        if (!deduplicateActions || last == null) {
+            return false;
+        }
+        return hasDistinctActionBits(last, sample)
+                && withinActionDedupWindow(last, sample)
+                && actionOnlyPair(last, sample);
+    }
+
+    private static boolean hasDistinctActionBits(BehaviorSample last, BehaviorSample sample) {
+        return (sample.actions() & ~last.actions()) != 0;
+    }
+
+    private static boolean withinActionDedupWindow(BehaviorSample last, BehaviorSample sample) {
+        long delta = sample.timestampMillis() - last.timestampMillis();
+        return delta >= 0L && delta <= ACTION_DEDUP_MILLIS;
+    }
+
+    private static boolean actionOnlyPair(BehaviorSample last, BehaviorSample sample) {
+        return !last.hasMovement() && !last.hasRotation()
+                && !sample.hasMovement() && !sample.hasRotation();
+    }
+
+    private void trimBehaviorHistory(ActivityData activityData) {
+        while (activityData.behaviorHistory.size() > advanced.scoring().historySize()) {
+            activityData.behaviorHistory.pollFirst();
+        }
+    }
+
+    private static void updatePosition(ActivityData activityData, Location location) {
+        activityData.lastX = location.getX();
+        activityData.lastY = location.getY();
+        activityData.lastZ = location.getZ();
+        activityData.lastYaw = location.getYaw();
+        activityData.lastPitch = location.getPitch();
+        activityData.hasPosition = true;
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onJoin(PlayerJoinEvent event) {
         long nowMillis = System.currentTimeMillis();
         Player player = event.getPlayer();
+        pruneDisconnected(nowMillis);
         ActivityData activityData = getOrCreate(player, nowMillis);
         synchronized (activityData) {
             updatePosition(activityData, player.getLocation());
-            activityData.lastGeneralActivity = nowMillis;
-            activityData.lastNonClickActivity = nowMillis;
-            activityData.swingTimes.clear();
+            activityData.online = true;
+            activityData.disconnectedAtMillis = 0L;
+            if (activityData.lastGeneralActivity <= UNINITIALIZED_ACTIVITY_TIME) {
+                activityData.lastGeneralActivity = nowMillis;
+                activityData.lastNonClickActivity = nowMillis;
+            }
+            if (activityData.publishedState == null) {
+                activityData.publishedState = stateFor(player.getUniqueId(), activityData, nowMillis);
+            }
         }
         suspiciousResetMarkers.putIfAbsent(player.getUniqueId(), nowMillis);
         sessionManager.handleJoin(player.getUniqueId(), nowMillis);
@@ -320,10 +460,16 @@ public final class ActivityTracker implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onQuit(PlayerQuitEvent event) {
-        sessionManager.handleQuit(event.getPlayer().getUniqueId());
-        data.remove(event.getPlayer().getUniqueId());
-        // Keep the last legitimate-activity marker so reconnecting cannot reset a
-        // suspicious streak merely by cycling the connection.
+        UUID uuid = event.getPlayer().getUniqueId();
+        sessionManager.handleQuit(uuid);
+        ActivityData activityData = data.get(uuid);
+        if (activityData != null) {
+            synchronized (activityData) {
+                activityData.online = false;
+                activityData.disconnectedAtMillis = System.currentTimeMillis();
+            }
+        }
+        pruneDisconnected(System.currentTimeMillis());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -344,10 +490,10 @@ public final class ActivityTracker implements Listener {
         ActivityData activityData = getOrCreate(player, nowMillis);
         synchronized (activityData) {
             if (!activityData.hasPosition) {
-                recordInitialPosition(player.getUniqueId(), activityData, to, nowMillis);
+                updatePosition(activityData, to);
+                counters.activityEventsSkipped.increment();
                 return;
             }
-
             if (isMovementThrottled(activityData, nowMillis)) {
                 counters.moveEventsThrottled.increment();
                 return;
@@ -360,17 +506,75 @@ public final class ActivityTracker implements Listener {
                 counters.activityEventsSkipped.increment();
                 return;
             }
-
             activityData.lastMovementMutation = nowMillis;
-            if (moved) {
-                recordMovement(player.getUniqueId(), activityData, to, nowMillis);
-            } else if (rotated) {
-                recordRotationMovement(player.getUniqueId(), activityData, to, nowMillis, delta.rotationAmount());
+
+            if (shouldSuppressMovement(player, activityData, delta, nowMillis)) {
+                if (rotated && (player.isGliding() || player.isInsideVehicle())) {
+                    recordMovementSample(activityData, nowMillis, delta, false, false, true);
+                }
+                updatePosition(activityData, to);
+                counters.activityEventsSkipped.increment();
+                return;
             }
+
+            recordMovementSample(activityData, nowMillis, delta, moved, true, rotated);
+            updatePosition(activityData, to);
+            counters.activityEventsAccepted.increment();
         }
     }
 
-    private boolean isUnchangedMove(Location from, Location to) {
+    private void recordMovementSample(ActivityData activityData,
+                                      long nowMillis,
+                                      MovementDelta delta,
+                                      boolean moved,
+                                      boolean patternEligible,
+                                      boolean rotated) {
+        int actions = 0;
+        if (moved) actions |= BehaviorSample.MOVE;
+        if (rotated) actions |= BehaviorSample.ROTATE;
+        if (moved && delta.dy() > JUMP_DELTA) actions |= BehaviorSample.JUMP;
+        if (actions == 0) return;
+
+        activityData.lastGeneralActivity = nowMillis;
+        activityData.lastNonClickActivity = nowMillis;
+        BehaviorSample sample = new BehaviorSample(nowMillis, actions,
+                delta.dx(), delta.dy(), delta.dz(), delta.yawDelta(), delta.pitchDelta(),
+                patternEligible);
+        appendBehavior(activityData, sample, false);
+    }
+
+    private boolean shouldSuppressMovement(Player player,
+                                           ActivityData activityData,
+                                           MovementDelta delta,
+                                           long nowMillis) {
+        return hasExternalOrPassiveMotion(player, activityData, delta, nowMillis)
+                || isPassiveFall(player, delta);
+    }
+
+    private static boolean hasExternalOrPassiveMotion(Player player,
+                                                       ActivityData activityData,
+                                                       MovementDelta delta,
+                                                       long nowMillis) {
+        return nowMillis <= activityData.externalMotionUntilMillis
+                || delta.distanceSquared() > SERVER_CORRECTION_DISTANCE_SQUARED
+                || player.isInsideVehicle()
+                || player.isGliding()
+                || (player.isInWater() && !player.isSwimming());
+    }
+
+    private static boolean isPassiveFall(Player player, MovementDelta delta) {
+        double horizontalSquared = delta.dx() * delta.dx() + delta.dz() * delta.dz();
+        return !player.isOnGround()
+                && delta.dy() < FALLING_DELTA
+                && horizontalSquared < PURE_FALL_HORIZONTAL_SQUARED;
+    }
+
+    private boolean isMovementThrottled(ActivityData activityData, long nowMillis) {
+        return movementThrottleMs > 0L
+                && nowMillis - activityData.lastMovementMutation < movementThrottleMs;
+    }
+
+    private static boolean isUnchangedMove(Location from, Location to) {
         return from.getX() == to.getX()
                 && from.getY() == to.getY()
                 && from.getZ() == to.getZ()
@@ -378,203 +582,195 @@ public final class ActivityTracker implements Listener {
                 && from.getPitch() == to.getPitch();
     }
 
-    private void recordInitialPosition(UUID uuid, ActivityData activityData, Location to, long nowMillis) {
-        updatePosition(activityData, to);
-        activityData.lastGeneralActivity = nowMillis;
-        activityData.lastNonClickActivity = nowMillis;
-        counters.activityEventsAccepted.increment();
-        suspiciousResetMarkers.put(uuid, nowMillis);
-    }
-
-    private boolean isMovementThrottled(ActivityData activityData, long nowMillis) {
-        return movementThrottleMs > 0L && nowMillis - activityData.lastMovementMutation < movementThrottleMs;
-    }
-
-    private MovementDelta movementDelta(ActivityData activityData, Location to) {
+    private static MovementDelta movementDelta(ActivityData activityData, Location to) {
         double dx = to.getX() - activityData.lastX;
         double dy = to.getY() - activityData.lastY;
         double dz = to.getZ() - activityData.lastZ;
-        float dyaw = angleDelta(to.getYaw(), activityData.lastYaw);
-        float dpitch = Math.abs(to.getPitch() - activityData.lastPitch);
-        return new MovementDelta(dx * dx + dy * dy + dz * dz, dyaw, dpitch);
+        float yaw = signedAngleDelta(to.getYaw(), activityData.lastYaw);
+        float pitch = to.getPitch() - activityData.lastPitch;
+        return new MovementDelta(dx, dy, dz, dx * dx + dy * dy + dz * dz, yaw, pitch);
     }
 
-    private void recordMovement(UUID uuid, ActivityData activityData, Location to, long nowMillis) {
-        updatePosition(activityData, to);
-        activityData.lastGeneralActivity = nowMillis;
-        activityData.lastNonClickActivity = nowMillis;
-        activityData.swingTimes.clear();
-        counters.activityEventsAccepted.increment();
-        suspiciousResetMarkers.put(uuid, nowMillis);
-    }
-
-    private void recordRotationMovement(UUID uuid, ActivityData activityData, Location to,
-                                      long nowMillis, float rotationAmount) {
-        boolean wasAutoclicking = suspicionEnabled && isAutoclickerPattern(activityData, nowMillis);
-        if (suspicionEnabled) {
-            recordRotation(activityData, nowMillis, rotationAmount);
-        }
-        updatePosition(activityData, to);
-        if (!wasAutoclicking && !isSuspiciousRotationPattern(activityData, nowMillis)) {
-            activityData.lastGeneralActivity = nowMillis;
-            activityData.lastNonClickActivity = nowMillis;
-            activityData.swingTimes.clear();
-            suspiciousResetMarkers.put(uuid, nowMillis);
-        }
-        counters.activityEventsAccepted.increment();
-    }
-
-    private static float angleDelta(float current, float previous) {
-        float delta = Math.abs(current - previous) % 360.0F;
-        return delta > 180.0F ? 360.0F - delta : delta;
-    }
-
-    private void recordRotation(ActivityData data, long nowMillis, float amount) {
-        long cutoff = nowMillis - suspicionWindowMillis;
-        data.rotationTimes.addLast(nowMillis);
-        data.rotationAmounts.addLast(amount);
-        while (!data.rotationTimes.isEmpty() && data.rotationTimes.peekFirst() < cutoff) {
-            data.rotationTimes.pollFirst();
-            data.rotationAmounts.pollFirst();
-        }
-        while (data.rotationTimes.size() > 128) {
-            data.rotationTimes.pollFirst();
-            data.rotationAmounts.pollFirst();
-        }
-    }
-
-    private boolean isSuspiciousRotationPattern(ActivityData data, long nowMillis) {
-        if (!suspicionEnabled) {
-            return false;
-        }
-        long cutoff = nowMillis - suspicionWindowMillis;
-        while (!data.rotationTimes.isEmpty() && data.rotationTimes.peekFirst() < cutoff) {
-            data.rotationTimes.pollFirst();
-            data.rotationAmounts.pollFirst();
-        }
-
-        int count = data.rotationTimes.size();
-        if (count < MIN_ROTATION_SAMPLES) {
-            return false;
-        }
-
-        double intervalCv = coefficientOfVariationForTimes(data.rotationTimes);
-        double amountCv = coefficientOfVariationForAmounts(data.rotationAmounts);
-        return intervalCv <= maxCv
-                && amountCv <= Math.max(0.02D, maxCv);
-    }
-
-    private static double coefficientOfVariationForTimes(Deque<Long> times) {
-        if (times.size() <= MIN_AUTOMATION_INTERVAL_COUNT) {
-            return Double.MAX_VALUE;
-        }
-
-        List<Double> intervals = new ArrayList<>();
-        long previous = -1L;
-        for (long value : times) {
-            if (previous != -1L) {
-                intervals.add((double) (value - previous));
-            }
-            previous = value;
-        }
-        return coefficientOfVariation(intervals);
-    }
-
-    private static double coefficientOfVariationForAmounts(Deque<Float> amounts) {
-        if (amounts.size() <= MIN_AUTOMATION_VARIANCE_SAMPLES) {
-            return Double.MAX_VALUE;
-        }
-
-        List<Double> values = new ArrayList<>();
-        for (float value : amounts) {
-            values.add((double) value);
-        }
-        return coefficientOfVariation(values);
-    }
-
-    private static double coefficientOfVariation(List<Double> values) {
-        if (values.isEmpty()) {
-            return Double.MAX_VALUE;
-        }
-
-        double sum = 0.0D;
-        for (double value : values) {
-            sum += value;
-        }
-        double mean = sum / values.size();
-        if (mean <= MIN_POSITIVE_MEAN) {
-            return Double.MAX_VALUE;
-        }
-
-        double variance = 0.0D;
-        for (double value : values) {
-            double diff = value - mean;
-            variance += diff * diff;
-        }
-        return Math.sqrt(variance / values.size()) / mean;
+    private static float signedAngleDelta(float current, float previous) {
+        float delta = (current - previous) % FULL_ROTATION_DEGREES;
+        if (delta > HALF_ROTATION_DEGREES) delta -= FULL_ROTATION_DEGREES;
+        if (delta < -HALF_ROTATION_DEGREES) delta += FULL_ROTATION_DEGREES;
+        return delta;
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onChat(AsyncPlayerChatEvent event) {
-        if (!config.chatActivity().countChatAsActivity()) {
+    public void onArmSwing(PlayerArmSwingEvent event) {
+        if (!config.activity().suspiciousSwingTrackingEnabled()) {
             return;
         }
-        recordNonClickActivity(event.getPlayer().getUniqueId(), System.currentTimeMillis());
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public void onCommand(PlayerCommandPreprocessEvent event) {
-        if (!config.chatActivity().countCommandsAsActivity()) {
-            return;
-        }
-        recordNonClickActivity(event.getPlayer(), System.currentTimeMillis());
+        recordAction(event.getPlayer(), System.currentTimeMillis(), BehaviorSample.SWING);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
-        long nowMillis = System.currentTimeMillis();
-        switch (event.getAction()) {
-            case LEFT_CLICK_AIR, LEFT_CLICK_BLOCK, RIGHT_CLICK_AIR, RIGHT_CLICK_BLOCK -> recordClickActivity(event.getPlayer(), nowMillis);
-            default -> recordNonClickActivity(event.getPlayer(), nowMillis);
-        }
+        recordAction(event.getPlayer(), System.currentTimeMillis(), BehaviorSample.INTERACT);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAttack(EntityDamageByEntityEvent event) {
         if (event.getDamager() instanceof Player player) {
-            recordClickActivity(player, System.currentTimeMillis());
+            recordAction(player, System.currentTimeMillis(), BehaviorSample.ATTACK);
         }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockBreak(BlockBreakEvent event) {
-        recordClickActivity(event.getPlayer(), System.currentTimeMillis());
+        recordAction(event.getPlayer(), System.currentTimeMillis(), BehaviorSample.BLOCK_BREAK);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockPlace(BlockPlaceEvent event) {
-        recordNonClickActivity(event.getPlayer(), System.currentTimeMillis());
+        recordAction(event.getPlayer(), System.currentTimeMillis(), BehaviorSample.BLOCK_PLACE);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onChat(AsyncPlayerChatEvent event) {
+        if (config.chatActivity().countChatAsActivity()) {
+            recordAction(event.getPlayer().getUniqueId(), System.currentTimeMillis(), BehaviorSample.CHAT);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onCommand(PlayerCommandPreprocessEvent event) {
+        if (config.chatActivity().countCommandsAsActivity()) {
+            recordAction(event.getPlayer(), System.currentTimeMillis(), BehaviorSample.COMMAND);
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onTeleport(PlayerTeleportEvent event) {
-        recordNonClickActivity(event.getPlayer(), System.currentTimeMillis());
+        markExternalMotion(event.getPlayer(), System.currentTimeMillis(), true);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onWorldChange(PlayerChangedWorldEvent event) {
-        recordNonClickActivity(event.getPlayer(), System.currentTimeMillis());
+        markExternalMotion(event.getPlayer(), System.currentTimeMillis(), true);
     }
 
-    private record MovementDelta(double distanceSquared, float yawDelta, float pitchDelta) {
-        private static final float HEAD_ROTATION_THRESHOLD = 2.0F;
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onVelocity(PlayerVelocityEvent event) {
+        markExternalMotion(event.getPlayer(), System.currentTimeMillis(), false);
+    }
 
-        private boolean hasHeadRotation() {
-            return yawDelta > HEAD_ROTATION_THRESHOLD || pitchDelta > HEAD_ROTATION_THRESHOLD;
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onDamage(EntityDamageEvent event) {
+        if (event.getEntity() instanceof Player player) {
+            markExternalMotion(player, System.currentTimeMillis(), false);
         }
+    }
 
-        private float rotationAmount() {
-            return yawDelta + pitchDelta;
+    private void markExternalMotion(Player player, long nowMillis, boolean rebase) {
+        ActivityData activityData = getOrCreate(player, nowMillis);
+        synchronized (activityData) {
+            activityData.externalMotionUntilMillis = Math.max(activityData.externalMotionUntilMillis,
+                    nowMillis + EXTERNAL_VELOCITY_GRACE_MILLIS);
+            if (rebase) {
+                updatePosition(activityData, player.getLocation());
+                activityData.lastMovementMutation = nowMillis;
+            }
+        }
+    }
+
+    private void publishStateChange(UUID uuid, ActivityState oldState, ActivityState newState,
+                                    long nowMillis, ActivityData activityData) {
+        Player player = Bukkit.getPlayer(uuid);
+        if (player == null || !player.isOnline()) {
+            return;
+        }
+        Bukkit.getPluginManager().callEvent(new PlayerActivityStateChangeEvent(
+                player, oldState, newState, Instant.ofEpochMilli(nowMillis)));
+        if (newState == ActivityState.SUSPICIOUS
+                && config.debug().enabled() && config.debug().logSuspicious()) {
+            ActivityDiagnostics diagnostics;
+            synchronized (activityData) {
+                diagnostics = diagnosticsLocked(newState, activityData, nowMillis);
+            }
+            Plugin plugin = Bukkit.getPluginManager().getPlugin("EnthusiaPlaytime");
+            if (plugin != null) {
+                plugin.getLogger().info("Untrusted repetitive activity for " + player.getName()
+                        + ": score=" + percent(diagnostics.suspicionScore())
+                        + ", click=" + percent(diagnostics.clickRegularity())
+                        + ", movement=" + percent(diagnostics.movementRepetition())
+                        + ", rotation=" + percent(diagnostics.rotationRepetition())
+                        + ", sequence=" + percent(diagnostics.sequenceRepetition())
+                        + ", repetitions=" + diagnostics.repetitions()
+                        + ", cycle=" + diagnostics.dominantCycleMillis() + "ms.");
+            }
+        }
+    }
+
+    private ActivityDiagnostics diagnosticsLocked(ActivityState state, ActivityData activityData, long nowMillis) {
+        ActivityPatternAnalyzer.Analysis analysis = activityData.analysis;
+        return new ActivityDiagnostics(state, activityData.suspicionScore,
+                analysis.clickRegularity(), analysis.movementRepetition(),
+                analysis.rotationRepetition(), analysis.sequenceRepetition(),
+                analysis.repetitions(), analysis.dominantCycleMillis(),
+                activityData.lastVariedActivityMillis <= 0L ? Long.MAX_VALUE
+                        : Math.max(0L, nowMillis - activityData.lastVariedActivityMillis));
+    }
+
+    private static String percent(double value) {
+        return String.format(java.util.Locale.ROOT, "%.0f%%", value * 100.0D);
+    }
+
+    private void pruneDisconnected(long nowMillis) {
+        removeExpiredDisconnected(nowMillis);
+        trimDisconnectedRetention();
+    }
+
+    private void removeExpiredDisconnected(long nowMillis) {
+        long retention = advanced.scoring().reconnectRetentionMillis();
+        for (Map.Entry<UUID, ActivityData> entry : data.entrySet()) {
+            if (isExpiredDisconnected(entry.getValue(), nowMillis, retention)) {
+                data.remove(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+
+    private static boolean isExpiredDisconnected(ActivityData activityData,
+                                                 long nowMillis,
+                                                 long retention) {
+        synchronized (activityData) {
+            return !activityData.online && activityData.disconnectedAtMillis > 0L
+                    && nowMillis - activityData.disconnectedAtMillis > retention;
+        }
+    }
+
+    private void trimDisconnectedRetention() {
+        List<Map.Entry<UUID, ActivityData>> disconnected = disconnectedEntries();
+        int excess = disconnected.size() - advanced.scoring().maxRetainedDisconnected();
+        if (excess <= 0) {
+            return;
+        }
+        disconnected.sort(Comparator.comparingLong(entry -> entry.getValue().disconnectedAtMillis));
+        for (int index = 0; index < excess; index++) {
+            Map.Entry<UUID, ActivityData> entry = disconnected.get(index);
+            data.remove(entry.getKey(), entry.getValue());
+        }
+    }
+
+    private List<Map.Entry<UUID, ActivityData>> disconnectedEntries() {
+        List<Map.Entry<UUID, ActivityData>> disconnected = new ArrayList<>();
+        for (Map.Entry<UUID, ActivityData> entry : data.entrySet()) {
+            synchronized (entry.getValue()) {
+                if (!entry.getValue().online) {
+                    disconnected.add(entry);
+                }
+            }
+        }
+        return disconnected;
+    }
+
+    private record MovementDelta(double dx, double dy, double dz, double distanceSquared,
+                                 float yawDelta, float pitchDelta) {
+        private boolean hasHeadRotation() {
+            return Math.abs(yawDelta) > HEAD_ROTATION_THRESHOLD
+                    || Math.abs(pitchDelta) > HEAD_ROTATION_THRESHOLD;
         }
     }
 
@@ -588,9 +784,17 @@ public final class ActivityTracker implements Listener {
         private float lastPitch;
         private long lastMovementMutation;
         private boolean hasPosition;
-        private final Deque<Long> swingTimes = new ArrayDeque<>();
-        private final Deque<Long> rotationTimes = new ArrayDeque<>();
-        private final Deque<Float> rotationAmounts = new ArrayDeque<>();
+        private boolean online = true;
+        private long disconnectedAtMillis;
+        private long externalMotionUntilMillis;
+        private final Deque<BehaviorSample> behaviorHistory = new ArrayDeque<>();
+        private double suspicionScore;
+        private boolean suspicious;
+        private long lastAnalysisMillis;
+        private long lastAutomationEvidenceMillis;
+        private long lastVariedActivityMillis;
+        private ActivityPatternAnalyzer.Analysis analysis = ActivityPatternAnalyzer.Analysis.EMPTY;
+        private ActivityState publishedState;
 
         private static ActivityData create(long nowMillis) {
             ActivityData data = new ActivityData();
@@ -615,22 +819,34 @@ public final class ActivityTracker implements Listener {
             data.lastYaw = snapshot.lastYaw();
             data.lastPitch = snapshot.lastPitch();
             data.hasPosition = snapshot.hasPosition();
-            data.swingTimes.addAll(snapshot.swingTimes());
+            data.behaviorHistory.addAll(snapshot.behaviorSamples());
+            if (data.behaviorHistory.isEmpty()) {
+                for (Long swing : snapshot.swingTimes()) {
+                    data.behaviorHistory.addLast(new BehaviorSample(swing, BehaviorSample.SWING,
+                            0.0D, 0.0D, 0.0D, 0.0F, 0.0F, true));
+                }
+            }
+            data.suspicionScore = snapshot.suspicionScore();
+            data.suspicious = snapshot.suspicious();
+            data.lastAnalysisMillis = snapshot.lastAnalysisMillis();
+            data.lastAutomationEvidenceMillis = snapshot.lastAutomationEvidenceMillis();
+            data.lastVariedActivityMillis = snapshot.lastVariedActivityMillis();
+            data.publishedState = snapshot.publishedState();
+            data.online = snapshot.online();
+            data.disconnectedAtMillis = snapshot.disconnectedAtMillis();
             return data;
         }
 
         private ActivitySnapshot snapshot() {
-            return new ActivitySnapshot(
-                    lastGeneralActivity,
-                    lastNonClickActivity,
-                    lastX,
-                    lastY,
-                    lastZ,
-                    lastYaw,
-                    lastPitch,
-                    hasPosition,
-                    List.copyOf(new ArrayList<>(swingTimes))
-            );
+            List<Long> swings = new ArrayList<>();
+            for (BehaviorSample sample : behaviorHistory) {
+                if (sample.has(BehaviorSample.SWING)) swings.add(sample.timestampMillis());
+            }
+            return new ActivitySnapshot(lastGeneralActivity, lastNonClickActivity,
+                    lastX, lastY, lastZ, lastYaw, lastPitch, hasPosition,
+                    List.copyOf(swings), List.copyOf(behaviorHistory), suspicionScore,
+                    suspicious, lastAnalysisMillis, lastAutomationEvidenceMillis,
+                    lastVariedActivityMillis, publishedState, online, disconnectedAtMillis);
         }
     }
 
@@ -642,6 +858,46 @@ public final class ActivityTracker implements Listener {
                                    float lastYaw,
                                    float lastPitch,
                                    boolean hasPosition,
-                                   List<Long> swingTimes) {
+                                   List<Long> swingTimes,
+                                   List<BehaviorSample> behaviorSamples,
+                                   double suspicionScore,
+                                   boolean suspicious,
+                                   long lastAnalysisMillis,
+                                   long lastAutomationEvidenceMillis,
+                                   long lastVariedActivityMillis,
+                                   ActivityState publishedState,
+                                   boolean online,
+                                   long disconnectedAtMillis) {
+        public ActivitySnapshot(long lastGeneralActivity,
+                                long lastNonClickActivity,
+                                double lastX,
+                                double lastY,
+                                double lastZ,
+                                float lastYaw,
+                                float lastPitch,
+                                boolean hasPosition,
+                                List<Long> swingTimes) {
+            this(lastGeneralActivity, lastNonClickActivity, lastX, lastY, lastZ,
+                    lastYaw, lastPitch, hasPosition, swingTimes, List.of(),
+                    0.0D, false, 0L, 0L, 0L, null, true, 0L);
+        }
+
+        public ActivitySnapshot {
+            swingTimes = swingTimes == null ? List.of() : List.copyOf(swingTimes);
+            behaviorSamples = behaviorSamples == null ? List.of() : List.copyOf(behaviorSamples);
+        }
+    }
+
+    public record ActivityDiagnostics(ActivityState state,
+                                      double suspicionScore,
+                                      double clickRegularity,
+                                      double movementRepetition,
+                                      double rotationRepetition,
+                                      double sequenceRepetition,
+                                      int repetitions,
+                                      long dominantCycleMillis,
+                                      long millisSinceConvincingVariation) {
+        static final ActivityDiagnostics EMPTY = new ActivityDiagnostics(ActivityState.AFK,
+                0.0D, 0.0D, 0.0D, 0.0D, 0.0D, 0, 0L, Long.MAX_VALUE);
     }
 }

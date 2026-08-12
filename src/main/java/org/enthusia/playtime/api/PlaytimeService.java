@@ -16,4 +16,21 @@ public interface PlaytimeService {
     ActivityState getLiveState(UUID uuid);
 
     long getCurrentSessionMillis(UUID uuid);
+
+    /**
+     * True only when the detector currently trusts the player as strongly active.
+     * IDLE, AFK and SUSPICIOUS all return false.
+     */
+    default boolean isGenuinelyActive(UUID uuid) {
+        return getLiveState(uuid) == ActivityState.ACTIVE;
+    }
+
+    /**
+     * True for states that AFK-sensitive gameplay should normally treat as inactive.
+     * SUSPICIOUS means untrusted/repetitive activity, not a cheating conviction.
+     */
+    default boolean isEffectivelyAfk(UUID uuid) {
+        ActivityState state = getLiveState(uuid);
+        return state == ActivityState.AFK || state == ActivityState.SUSPICIOUS;
+    }
 }
