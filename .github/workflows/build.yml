@@ -15,10 +15,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4
         with:
           distribution: temurin
           java-version: '21'
@@ -32,7 +34,7 @@ jobs:
 
       - name: Upload build log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: build-log-${{ github.sha }}
           path: build.log
@@ -58,8 +60,52 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare Sentinel regression artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAR=$(find target -maxdepth 1 -type f -name '*.jar' ! -name 'original-*' | head -n 1)
+          test -n "$JAR"
+
+          rm -rf /tmp/enthusia-playtime-sentinel
+          mkdir -p /tmp/enthusia-playtime-sentinel/target /tmp/enthusia-playtime-sentinel/fixtures
+          cp "$JAR" /tmp/enthusia-playtime-sentinel/target/EnthusiaPlaytime.jar
+          cp sentinel/fixtures/EnthusiaPlaytime-config.yml \
+            /tmp/enthusia-playtime-sentinel/fixtures/EnthusiaPlaytime-config.yml
+          python3 scripts/create-sentinel-playtime-fixture.py \
+            /tmp/enthusia-playtime-sentinel/fixtures/EnthusiaPlaytime-playtime.db
+
+          FIXTURE=/tmp/enthusia-playtime-sentinel/fixtures/EnthusiaPlaytime-playtime.db \
+          python3 - <<'PY'
+          import os
+          import sqlite3
+
+          path = os.environ['FIXTURE']
+          with sqlite3.connect(path) as connection:
+              columns = {row[1] for row in connection.execute('PRAGMA table_info(lifetime_agg)')}
+              if 'last_seen' in columns:
+                  raise SystemExit('legacy fixture unexpectedly already contains lifetime_agg.last_seen')
+              active = connection.execute(
+                  "SELECT active_minutes FROM lifetime_agg WHERE player_uuid = ?",
+                  ('00000000-0000-0000-0000-000000000001',),
+              ).fetchone()
+              if active != (1234,):
+                  raise SystemExit(f'unexpected lifetime canary before upload: {active!r}')
+              check = connection.execute('PRAGMA quick_check').fetchone()
+              if check != ('ok',):
+                  raise SystemExit(f'fixture quick_check failed: {check!r}')
+          PY
+
+      - name: Upload Sentinel regression artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: enthusiaplaytime-plugin
+          path: /tmp/enthusia-playtime-sentinel/
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Upload plugin JAR
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: EnthusiaPlaytime-${{ github.sha }}
           path: target/playtime-plugin-*.jar
