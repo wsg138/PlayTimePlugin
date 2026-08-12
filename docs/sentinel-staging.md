@@ -19,7 +19,7 @@ The database fixture contains established PlayTime canary rows while `lifetime_a
 
 Sentinel independently rejects unexpected database replacement, unsafe SQLite objects, malformed databases, leftover journal/WAL state, row-count changes outside the manifest contract, and canary changes.
 
-The config fixture is intentionally sparse and uses `config-version: 3` with `sampling.afk-seconds: 777`. The `restart-config` profile proves migration to the current config version preserves that valid custom value and creates the last-good backup. The `reload-config` profile changes the value to `778`, runs `playtime reload`, waits for the plugin's successful reload marker, and verifies the edited value remains on disk after reload.
+The config fixture is intentionally sparse and uses `config-version: 3` with `sampling.afk-seconds: 777`. The `restart-config` profile proves migration to the current config version preserves that valid custom value and creates the last-good backup. The `reload-config` profile changes the value to `778`, runs `playtime admin reload`, waits for the plugin's successful reload marker, and verifies the edited value remains on disk after reload.
 
 ## Declared profiles
 
