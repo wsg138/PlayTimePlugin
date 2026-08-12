@@ -1,0 +1,243 @@
+schema_version: 1
+plugin:
+  id: enthusiaplaytime
+  name: EnthusiaPlaytime
+  main_class: org.enthusia.playtime.PlayTimePlugin
+artifact:
+  name: enthusiaplaytime-plugin
+  jar_path: target/EnthusiaPlaytime.jar
+profiles:
+  - startup
+  - restart
+  - restart-config
+  - reload-config
+  - database
+  - full
+  - post-merge
+configs:
+  - path: plugins/EnthusiaPlaytime/config.yml
+    format: yaml
+    required: true
+    reload_supported: true
+    fixture: fixtures/EnthusiaPlaytime-config.yml
+databases:
+  - id: primary
+    engine: sqlite
+    path: plugins/EnthusiaPlaytime/playtime.db
+    fixture: fixtures/EnthusiaPlaytime-playtime.db
+    user_version: 0
+    preserve_tables:
+      - daily_agg
+      - hourly_agg
+      - lifetime_agg
+      - joins_log
+      - player_profiles
+      - player_skin_profiles
+      - playtime_applied_batches
+dependencies: []
+actions:
+  - profile: startup
+    stage: after-start
+    type: assert-file
+    path: plugins/EnthusiaPlaytime/config.yml
+    exists: true
+  - profile: restart-config
+    stage: after-restart
+    type: assert-config
+    path: plugins/EnthusiaPlaytime/config.yml
+    key: config-version
+    equals: 4
+  - profile: restart-config
+    stage: after-restart
+    type: assert-config
+    path: plugins/EnthusiaPlaytime/config.yml
+    key: sampling.afk-seconds
+    equals: 777
+  - profile: restart-config
+    stage: after-restart
+    type: assert-file
+    path: plugins/EnthusiaPlaytime/backups/config.yml.last-good
+    exists: true
+  - profile: reload-config
+    stage: after-start
+    type: edit-config
+    path: plugins/EnthusiaPlaytime/config.yml
+    key: sampling.afk-seconds
+    equals: 778
+  - profile: reload-config
+    stage: after-start
+    type: console-command
+    command: playtime admin reload
+  - profile: reload-config
+    stage: after-reload
+    type: wait-log
+    contains: Playtime plugin reloaded safely.
+  - profile: reload-config
+    stage: after-reload
+    type: assert-config
+    path: plugins/EnthusiaPlaytime/config.yml
+    key: config-version
+    equals: 4
+  - profile: reload-config
+    stage: after-reload
+    type: assert-config
+    path: plugins/EnthusiaPlaytime/config.yml
+    key: sampling.afk-seconds
+    equals: 778
+  - profile: database
+    stage: after-restart
+    type: assert-database
+    database: primary
+    table: daily_agg
+    columns:
+      - player_uuid
+      - day
+      - active_minutes
+      - afk_minutes
+      - total_minutes
+    minimum_rows: 1
+    maximum_rows: 1
+  - profile: database
+    stage: after-restart
+    type: assert-database
+    database: primary
+    table: hourly_agg
+    columns:
+      - player_uuid
+      - hour_start
+      - active_minutes
+      - afk_minutes
+      - total_minutes
+    minimum_rows: 1
+    maximum_rows: 1
+  - profile: database
+    stage: after-restart
+    type: assert-database
+    database: primary
+    table: lifetime_agg
+    columns:
+      - player_uuid
+      - first_join
+      - last_join
+      - last_seen
+      - active_minutes
+      - afk_minutes
+      - total_minutes
+    minimum_rows: 1
+    maximum_rows: 1
+  - profile: database
+    stage: after-restart
+    type: assert-database
+    database: primary
+    table: joins_log
+    columns:
+      - id
+      - player_uuid
+      - joined_at
+    minimum_rows: 1
+    maximum_rows: 1
+  - profile: database
+    stage: after-restart
+    type: assert-database
+    database: primary
+    table: player_profiles
+    columns:
+      - player_uuid
+      - username
+      - display_name
+      - first_seen
+      - last_seen
+      - updated_at
+    minimum_rows: 1
+    maximum_rows: 1
+  - profile: database
+    stage: after-restart
+    type: assert-database
+    database: primary
+    table: player_skin_profiles
+    columns:
+      - player_uuid
+      - texture_value
+      - texture_signature
+      - last_known_name
+      - updated_at
+    minimum_rows: 1
+    maximum_rows: 1
+  - profile: database
+    stage: after-restart
+    type: assert-database
+    database: primary
+    table: playtime_applied_batches
+    columns:
+      - batch_id
+      - applied_at
+    minimum_rows: 1
+    maximum_rows: 1
+  - profile: database
+    stage: after-restart
+    type: assert-database-canary
+    database: primary
+    table: lifetime_agg
+    key_column: player_uuid
+    key_equals: 00000000-0000-0000-0000-000000000001
+    value_column: active_minutes
+    equals: 1234
+  - profile: database
+    stage: after-restart
+    type: assert-database-canary
+    database: primary
+    table: daily_agg
+    key_column: player_uuid
+    key_equals: 00000000-0000-0000-0000-000000000001
+    value_column: total_minutes
+    equals: 366
+  - profile: database
+    stage: after-restart
+    type: assert-database-canary
+    database: primary
+    table: hourly_agg
+    key_column: player_uuid
+    key_equals: 00000000-0000-0000-0000-000000000001
+    value_column: active_minutes
+    equals: 60
+  - profile: database
+    stage: after-restart
+    type: assert-database-canary
+    database: primary
+    table: joins_log
+    key_column: id
+    key_equals: 1
+    value_column: player_uuid
+    equals: 00000000-0000-0000-0000-000000000001
+  - profile: database
+    stage: after-restart
+    type: assert-database-canary
+    database: primary
+    table: player_profiles
+    key_column: player_uuid
+    key_equals: 00000000-0000-0000-0000-000000000001
+    value_column: username
+    equals: sentineluser
+  - profile: database
+    stage: after-restart
+    type: assert-database-canary
+    database: primary
+    table: player_skin_profiles
+    key_column: player_uuid
+    key_equals: 00000000-0000-0000-0000-000000000001
+    value_column: last_known_name
+    equals: sentineluser
+  - profile: database
+    stage: after-restart
+    type: assert-database-canary
+    database: primary
+    table: playtime_applied_batches
+    key_column: batch_id
+    key_equals: 11111111-1111-1111-1111-111111111111
+    value_column: batch_id
+    equals: 11111111-1111-1111-1111-111111111111
+  - profile: database
+    stage: after-restart
+    type: assert-file
+    path: plugins/EnthusiaPlaytime/backups/playtime.db.last-good
+    exists: true

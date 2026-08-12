@@ -1,0 +1,17 @@
+# Intentionally sparse legacy configuration for Sentinel migration testing.
+# The current plugin must merge current defaults and advance config-version while
+# preserving the valid custom AFK threshold below.
+config-version: 3
+
+storage:
+  type: sqlite
+  sqlite:
+    file: "playtime.db"
+
+sampling:
+  tick-interval: 20
+  idle-seconds: 60
+  afk-seconds: 777
+
+joins:
+  timezone: "America/New_York"
