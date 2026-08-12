@@ -51,6 +51,9 @@ public final class ActivityTracker implements Listener {
     private static final double FALLING_DELTA = -0.08D;
     private static final double JUMP_DELTA = 0.15D;
     private static final float HEAD_ROTATION_THRESHOLD = 2.0F;
+    private static final double AUTOMATION_EVIDENCE_THRESHOLD = 0.55D;
+    private static final float FULL_ROTATION_DEGREES = 360.0F;
+    private static final float HALF_ROTATION_DEGREES = 180.0F;
     private static final String HIDDEN_ACTION_BAR_MESSAGE = "";
 
     private final PlaytimeConfig config;
@@ -156,59 +159,85 @@ public final class ActivityTracker implements Listener {
 
     private void analyzeIfDue(UUID uuid, ActivityData activityData, long nowMillis) {
         if (!suspicionEnabled) {
-            activityData.suspicious = false;
-            activityData.suspicionScore = 0.0D;
-            activityData.analysis = ActivityPatternAnalyzer.Analysis.EMPTY;
+            clearAnalysis(activityData);
             return;
         }
-        long interval = advanced.scoring().analysisIntervalMillis();
-        if (activityData.lastAnalysisMillis > 0L
-                && nowMillis - activityData.lastAnalysisMillis < interval) {
+        if (!analysisDue(activityData, nowMillis)) {
             return;
         }
 
-        long elapsed = activityData.lastAnalysisMillis <= 0L
+        long elapsed = analysisElapsed(activityData, nowMillis);
+        activityData.lastAnalysisMillis = nowMillis;
+        ActivityPatternAnalyzer.Analysis analysis = analyzeBehavior(activityData, nowMillis);
+        activityData.analysis = analysis;
+        updateAnalysisMarkers(activityData, analysis, nowMillis);
+        updateSuspicionScore(activityData, analysis.combinedEvidence(), elapsed);
+        updateSuspicionState(uuid, activityData, nowMillis);
+    }
+
+    private static void clearAnalysis(ActivityData activityData) {
+        activityData.suspicious = false;
+        activityData.suspicionScore = 0.0D;
+        activityData.analysis = ActivityPatternAnalyzer.Analysis.EMPTY;
+    }
+
+    private boolean analysisDue(ActivityData activityData, long nowMillis) {
+        long interval = advanced.scoring().analysisIntervalMillis();
+        return activityData.lastAnalysisMillis <= 0L
+                || nowMillis - activityData.lastAnalysisMillis >= interval;
+    }
+
+    private long analysisElapsed(ActivityData activityData, long nowMillis) {
+        long interval = advanced.scoring().analysisIntervalMillis();
+        return activityData.lastAnalysisMillis <= 0L
                 ? interval
                 : Math.max(1L, nowMillis - activityData.lastAnalysisMillis);
-        activityData.lastAnalysisMillis = nowMillis;
+    }
+
+    private ActivityPatternAnalyzer.Analysis analyzeBehavior(ActivityData activityData, long nowMillis) {
         boolean clickOnly = nowMillis - activityData.lastNonClickActivity >= nonClickGraceMillis;
         List<BehaviorSample> snapshot = List.copyOf(activityData.behaviorHistory);
-        ActivityPatternAnalyzer.Analysis analysis = analyzer.analyze(snapshot, nowMillis, clickOnly);
-        activityData.analysis = analysis;
+        return analyzer.analyze(snapshot, nowMillis, clickOnly);
+    }
 
-        double evidence = analysis.combinedEvidence();
-        if (evidence >= 0.55D) {
+    private static void updateAnalysisMarkers(ActivityData activityData,
+                                              ActivityPatternAnalyzer.Analysis analysis,
+                                              long nowMillis) {
+        if (analysis.combinedEvidence() >= AUTOMATION_EVIDENCE_THRESHOLD) {
             activityData.lastAutomationEvidenceMillis = nowMillis;
         }
         if (analysis.convincingVariation()) {
             activityData.lastVariedActivityMillis = nowMillis;
         }
+    }
 
+    private void updateSuspicionScore(ActivityData activityData, double evidence, long elapsed) {
         if (evidence >= activityData.suspicionScore) {
-            // Strong recurrence should be reflected promptly, while weak/no evidence
-            // decays gradually so one trivial event cannot erase minutes of history.
             activityData.suspicionScore = evidence;
-        } else {
-            double decay = advanced.scoring().decayPerSecond() * (elapsed / 1000.0D);
-            activityData.suspicionScore = Math.max(evidence,
-                    Math.max(0.0D, activityData.suspicionScore - decay));
+            return;
         }
+        double decay = advanced.scoring().decayPerSecond() * (elapsed / 1000.0D);
+        activityData.suspicionScore = Math.max(evidence,
+                Math.max(0.0D, activityData.suspicionScore - decay));
+    }
 
+    private void updateSuspicionState(UUID uuid, ActivityData activityData, long nowMillis) {
         boolean wasSuspicious = activityData.suspicious;
         if (activityData.suspicionScore >= advanced.scoring().suspiciousThreshold()) {
             activityData.suspicious = true;
-        } else if (activityData.suspicious
-                && activityData.suspicionScore <= advanced.scoring().clearThreshold()
-                && activityData.lastVariedActivityMillis > activityData.lastAutomationEvidenceMillis
-                && nowMillis - activityData.lastVariedActivityMillis <= advanced.scoring().recoveryMillis()) {
+        } else if (shouldClearSuspicion(activityData, nowMillis)) {
             activityData.suspicious = false;
         }
-
         if (wasSuspicious && !activityData.suspicious) {
-            // This is the only normal path that clears the accrual tracker's suspicious
-            // reconnect/grace state. Ordinary movement, commands, placement, etc. do not.
             suspiciousResetMarkers.put(uuid, nowMillis);
         }
+    }
+
+    private boolean shouldClearSuspicion(ActivityData activityData, long nowMillis) {
+        return activityData.suspicious
+                && activityData.suspicionScore <= advanced.scoring().clearThreshold()
+                && activityData.lastVariedActivityMillis > activityData.lastAutomationEvidenceMillis
+                && nowMillis - activityData.lastVariedActivityMillis <= advanced.scoring().recoveryMillis();
     }
 
     public Map<UUID, ActivitySnapshot> snapshot() {
@@ -309,7 +338,7 @@ public final class ActivityTracker implements Listener {
 
     private ActivityData getOrCreate(Player player, long nowMillis) {
         UUID uuid = player.getUniqueId();
-        ActivityData activityData = data.compute(uuid, (ignored, existing) -> {
+        return data.compute(uuid, (ignored, existing) -> {
             if (existing == null) {
                 return ActivityData.create(player, nowMillis);
             }
@@ -322,21 +351,12 @@ public final class ActivityTracker implements Listener {
                 return existing;
             }
         });
-        return activityData;
     }
 
-    /**
-     * Records already-observed synchronous player input. Package visibility keeps the
-     * listener pipeline deterministic in tests without exposing a public API.
-     */
     void recordAction(Player player, long nowMillis, int actions) {
         recordAction(player.getUniqueId(), nowMillis, actions);
     }
 
-    /**
-     * UUID-only input is used by async chat. It may update an existing live tracker,
-     * but it must never recreate or re-online a player after quit.
-     */
     void recordAction(UUID uuid, long nowMillis, int actions) {
         ActivityData activityData = data.get(uuid);
         if (activityData == null) {
@@ -362,27 +382,49 @@ public final class ActivityTracker implements Listener {
         else counters.activityEventsSkipped.increment();
     }
 
-    private boolean appendBehavior(ActivityData activityData, BehaviorSample sample, boolean deduplicateActions) {
+    private boolean appendBehavior(ActivityData activityData,
+                                   BehaviorSample sample,
+                                   boolean deduplicateActions) {
         BehaviorSample last = activityData.behaviorHistory.peekLast();
-        int newActionBits = last == null ? sample.actions() : sample.actions() & ~last.actions();
-        if (deduplicateActions && last != null
-                && newActionBits != 0
-                && sample.timestampMillis() - last.timestampMillis() >= 0L
-                && sample.timestampMillis() - last.timestampMillis() <= ACTION_DEDUP_MILLIS
-                && !last.hasMovement() && !last.hasRotation()
-                && !sample.hasMovement() && !sample.hasRotation()) {
-            // Merge only distinct event fan-out from one physical input. Repeated SWING,
-            // ATTACK, INTERACT, etc. remain separate samples even inside this window so
-            // high-rate macros cannot erase their own timing history.
+        if (shouldMergeActionFanout(last, sample, deduplicateActions)) {
             activityData.behaviorHistory.pollLast();
             activityData.behaviorHistory.addLast(last.mergeActions(sample.actions(), sample.timestampMillis()));
             return false;
         }
         activityData.behaviorHistory.addLast(sample);
+        trimBehaviorHistory(activityData);
+        return true;
+    }
+
+    private static boolean shouldMergeActionFanout(BehaviorSample last,
+                                                   BehaviorSample sample,
+                                                   boolean deduplicateActions) {
+        if (!deduplicateActions || last == null) {
+            return false;
+        }
+        return hasDistinctActionBits(last, sample)
+                && withinActionDedupWindow(last, sample)
+                && actionOnlyPair(last, sample);
+    }
+
+    private static boolean hasDistinctActionBits(BehaviorSample last, BehaviorSample sample) {
+        return (sample.actions() & ~last.actions()) != 0;
+    }
+
+    private static boolean withinActionDedupWindow(BehaviorSample last, BehaviorSample sample) {
+        long delta = sample.timestampMillis() - last.timestampMillis();
+        return delta >= 0L && delta <= ACTION_DEDUP_MILLIS;
+    }
+
+    private static boolean actionOnlyPair(BehaviorSample last, BehaviorSample sample) {
+        return !last.hasMovement() && !last.hasRotation()
+                && !sample.hasMovement() && !sample.hasRotation();
+    }
+
+    private void trimBehaviorHistory(ActivityData activityData) {
         while (activityData.behaviorHistory.size() > advanced.scoring().historySize()) {
             activityData.behaviorHistory.pollFirst();
         }
-        return true;
     }
 
     private static void updatePosition(ActivityData activityData, Location location) {
@@ -427,7 +469,6 @@ public final class ActivityTracker implements Listener {
                 activityData.disconnectedAtMillis = System.currentTimeMillis();
             }
         }
-        // Bounded retention defeats quick reconnect/reset macros while keeping memory finite.
         pruneDisconnected(System.currentTimeMillis());
     }
 
@@ -468,7 +509,6 @@ public final class ActivityTracker implements Listener {
             activityData.lastMovementMutation = nowMillis;
 
             if (shouldSuppressMovement(player, activityData, delta, nowMillis)) {
-                // Passive/external movement only rebases position. It cannot keep a player active.
                 if (rotated && (player.isGliding() || player.isInsideVehicle())) {
                     recordMovementSample(activityData, nowMillis, delta, false, false, true);
                 }
@@ -477,8 +517,6 @@ public final class ActivityTracker implements Listener {
                 return;
             }
 
-            // Intentional swimming is player-controlled input and remains analyzable.
-            // Passive water drift is already rejected by shouldSuppressMovement().
             recordMovementSample(activityData, nowMillis, delta, moved, true, rotated);
             updatePosition(activityData, to);
             counters.activityEventsAccepted.increment();
@@ -509,13 +547,25 @@ public final class ActivityTracker implements Listener {
                                            ActivityData activityData,
                                            MovementDelta delta,
                                            long nowMillis) {
-        if (nowMillis <= activityData.externalMotionUntilMillis) return true;
-        if (delta.distanceSquared() > SERVER_CORRECTION_DISTANCE_SQUARED) return true;
-        if (player.isInsideVehicle()) return true;
-        if (player.isGliding()) return true;
-        if (player.isInWater() && !player.isSwimming()) return true;
+        return hasExternalOrPassiveMotion(player, activityData, delta, nowMillis)
+                || isPassiveFall(player, delta);
+    }
+
+    private static boolean hasExternalOrPassiveMotion(Player player,
+                                                       ActivityData activityData,
+                                                       MovementDelta delta,
+                                                       long nowMillis) {
+        return nowMillis <= activityData.externalMotionUntilMillis
+                || delta.distanceSquared() > SERVER_CORRECTION_DISTANCE_SQUARED
+                || player.isInsideVehicle()
+                || player.isGliding()
+                || (player.isInWater() && !player.isSwimming());
+    }
+
+    private static boolean isPassiveFall(Player player, MovementDelta delta) {
         double horizontalSquared = delta.dx() * delta.dx() + delta.dz() * delta.dz();
-        return !player.isOnGround() && delta.dy() < FALLING_DELTA
+        return !player.isOnGround()
+                && delta.dy() < FALLING_DELTA
                 && horizontalSquared < PURE_FALL_HORIZONTAL_SQUARED;
     }
 
@@ -542,9 +592,9 @@ public final class ActivityTracker implements Listener {
     }
 
     private static float signedAngleDelta(float current, float previous) {
-        float delta = (current - previous) % 360.0F;
-        if (delta > 180.0F) delta -= 360.0F;
-        if (delta < -180.0F) delta += 360.0F;
+        float delta = (current - previous) % FULL_ROTATION_DEGREES;
+        if (delta > HALF_ROTATION_DEGREES) delta -= FULL_ROTATION_DEGREES;
+        if (delta < -HALF_ROTATION_DEGREES) delta += FULL_ROTATION_DEGREES;
         return delta;
     }
 
@@ -558,8 +608,6 @@ public final class ActivityTracker implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
-        // Right-click input is not an arm swing. If Paper also emits a real swing,
-        // the short de-duplication window merges the distinct events into one sample.
         recordAction(event.getPlayer(), System.currentTimeMillis(), BehaviorSample.INTERACT);
     }
 
@@ -577,7 +625,6 @@ public final class ActivityTracker implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockPlace(BlockPlaceEvent event) {
-        // Placement is an observed action, not proof that activity is genuine.
         recordAction(event.getPlayer(), System.currentTimeMillis(), BehaviorSample.BLOCK_PLACE);
     }
 
@@ -597,8 +644,6 @@ public final class ActivityTracker implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onTeleport(PlayerTeleportEvent event) {
-        // Teleports can be caused by plugins, commands, portals, corrections, or other
-        // systems. Rebase coordinates but never use the teleport itself as human input.
         markExternalMotion(event.getPlayer(), System.currentTimeMillis(), true);
     }
 
@@ -674,32 +719,51 @@ public final class ActivityTracker implements Listener {
     }
 
     private void pruneDisconnected(long nowMillis) {
+        removeExpiredDisconnected(nowMillis);
+        trimDisconnectedRetention();
+    }
+
+    private void removeExpiredDisconnected(long nowMillis) {
         long retention = advanced.scoring().reconnectRetentionMillis();
         for (Map.Entry<UUID, ActivityData> entry : data.entrySet()) {
-            ActivityData activityData = entry.getValue();
-            boolean remove;
-            synchronized (activityData) {
-                remove = !activityData.online && activityData.disconnectedAtMillis > 0L
-                        && nowMillis - activityData.disconnectedAtMillis > retention;
-            }
-            if (remove) {
-                data.remove(entry.getKey(), activityData);
+            if (isExpiredDisconnected(entry.getValue(), nowMillis, retention)) {
+                data.remove(entry.getKey(), entry.getValue());
             }
         }
+    }
 
-        List<Map.Entry<UUID, ActivityData>> disconnected = new ArrayList<>();
-        for (Map.Entry<UUID, ActivityData> entry : data.entrySet()) {
-            synchronized (entry.getValue()) {
-                if (!entry.getValue().online) disconnected.add(entry);
-            }
+    private static boolean isExpiredDisconnected(ActivityData activityData,
+                                                 long nowMillis,
+                                                 long retention) {
+        synchronized (activityData) {
+            return !activityData.online && activityData.disconnectedAtMillis > 0L
+                    && nowMillis - activityData.disconnectedAtMillis > retention;
         }
+    }
+
+    private void trimDisconnectedRetention() {
+        List<Map.Entry<UUID, ActivityData>> disconnected = disconnectedEntries();
         int excess = disconnected.size() - advanced.scoring().maxRetainedDisconnected();
-        if (excess <= 0) return;
+        if (excess <= 0) {
+            return;
+        }
         disconnected.sort(Comparator.comparingLong(entry -> entry.getValue().disconnectedAtMillis));
         for (int index = 0; index < excess; index++) {
             Map.Entry<UUID, ActivityData> entry = disconnected.get(index);
             data.remove(entry.getKey(), entry.getValue());
         }
+    }
+
+    private List<Map.Entry<UUID, ActivityData>> disconnectedEntries() {
+        List<Map.Entry<UUID, ActivityData>> disconnected = new ArrayList<>();
+        for (Map.Entry<UUID, ActivityData> entry : data.entrySet()) {
+            synchronized (entry.getValue()) {
+                if (!entry.getValue().online) {
+                    disconnected.add(entry);
+                }
+            }
+        }
+        return disconnected;
     }
 
     private record MovementDelta(double dx, double dy, double dz, double distanceSquared,
