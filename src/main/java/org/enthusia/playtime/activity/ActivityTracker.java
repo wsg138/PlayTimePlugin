@@ -325,20 +325,31 @@ public final class ActivityTracker implements Listener {
         return activityData;
     }
 
-    private ActivityData getOrCreate(UUID uuid, long nowMillis) {
-        return data.computeIfAbsent(uuid, ignored -> ActivityData.create(nowMillis));
-    }
-
-    private void recordAction(Player player, long nowMillis, int actions) {
+    /**
+     * Records already-observed synchronous player input. Package visibility keeps the
+     * listener pipeline deterministic in tests without exposing a public API.
+     */
+    void recordAction(Player player, long nowMillis, int actions) {
         recordAction(player.getUniqueId(), nowMillis, actions);
     }
 
-    private void recordAction(UUID uuid, long nowMillis, int actions) {
-        ActivityData activityData = getOrCreate(uuid, nowMillis);
+    /**
+     * UUID-only input is used by async chat. It may update an existing live tracker,
+     * but it must never recreate or re-online a player after quit.
+     */
+    void recordAction(UUID uuid, long nowMillis, int actions) {
+        ActivityData activityData = data.get(uuid);
+        if (activityData == null) {
+            counters.activityEventsSkipped.increment();
+            return;
+        }
+
         boolean newSample;
         synchronized (activityData) {
-            activityData.online = true;
-            activityData.disconnectedAtMillis = 0L;
+            if (!activityData.online) {
+                counters.activityEventsSkipped.increment();
+                return;
+            }
             activityData.lastGeneralActivity = nowMillis;
             if ((actions & (BehaviorSample.CHAT | BehaviorSample.COMMAND)) != 0) {
                 activityData.lastNonClickActivity = nowMillis;
@@ -353,10 +364,16 @@ public final class ActivityTracker implements Listener {
 
     private boolean appendBehavior(ActivityData activityData, BehaviorSample sample, boolean deduplicateActions) {
         BehaviorSample last = activityData.behaviorHistory.peekLast();
+        int newActionBits = last == null ? sample.actions() : sample.actions() & ~last.actions();
         if (deduplicateActions && last != null
+                && newActionBits != 0
                 && sample.timestampMillis() - last.timestampMillis() >= 0L
                 && sample.timestampMillis() - last.timestampMillis() <= ACTION_DEDUP_MILLIS
+                && !last.hasMovement() && !last.hasRotation()
                 && !sample.hasMovement() && !sample.hasRotation()) {
+            // Merge only distinct event fan-out from one physical input. Repeated SWING,
+            // ATTACK, INTERACT, etc. remain separate samples even inside this window so
+            // high-rate macros cannot erase their own timing history.
             activityData.behaviorHistory.pollLast();
             activityData.behaviorHistory.addLast(last.mergeActions(sample.actions(), sample.timestampMillis()));
             return false;
@@ -460,8 +477,9 @@ public final class ActivityTracker implements Listener {
                 return;
             }
 
-            boolean patternEligible = !player.isSwimming();
-            recordMovementSample(activityData, nowMillis, delta, moved, patternEligible, rotated);
+            // Intentional swimming is player-controlled input and remains analyzable.
+            // Passive water drift is already rejected by shouldSuppressMovement().
+            recordMovementSample(activityData, nowMillis, delta, moved, true, rotated);
             updatePosition(activityData, to);
             counters.activityEventsAccepted.increment();
         }
@@ -540,11 +558,9 @@ public final class ActivityTracker implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
-        // Interact captures right-click actions that do not necessarily swing an arm.
-        // The short de-duplication window merges it with a Paper arm-swing sample when
-        // both events represent the same physical action.
-        recordAction(event.getPlayer(), System.currentTimeMillis(),
-                BehaviorSample.SWING | BehaviorSample.INTERACT);
+        // Right-click input is not an arm swing. If Paper also emits a real swing,
+        // the short de-duplication window merges the distinct events into one sample.
+        recordAction(event.getPlayer(), System.currentTimeMillis(), BehaviorSample.INTERACT);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
