@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ActivityPatternAnalyzerTest {
+    private static final float TEST_ROTATION_THRESHOLD = 2.0F;
     private static final AdvancedDetectionSettings SETTINGS = new AdvancedDetectionSettings(
             new AdvancedDetectionSettings.Click(true, 20_000L, 25, 0.08D),
             new AdvancedDetectionSettings.Rotation(true, 30_000L, 10, 0.06D),
@@ -163,8 +164,6 @@ class ActivityPatternAnalyzerTest {
         int[] timeJitter = {-18, 12, 5, -9, 20, -4};
         double[] positionJitter = {-0.006D, 0.004D, -0.003D, 0.005D};
         long time = 1_000L;
-        // The configured movement analyzer deliberately waits for 24 samples.
-        // Twelve two-step cycles meet that floor while still exercising tick/position jitter.
         for (int cycle = 0; cycle < 12; cycle++) {
             double jitter = positionJitter[cycle % positionJitter.length];
             samples.add(move(time, 0.28D + jitter, 0.0D, 0.0D, 0.0F, 0));
@@ -269,16 +268,33 @@ class ActivityPatternAnalyzerTest {
     private List<BehaviorSample> repeatingTwoStepMovement(int cycles, boolean xAxis, boolean jump) {
         List<BehaviorSample> samples = new ArrayList<>();
         long time = 1_000L;
+        double upward = jumpDelta(jump, 0.32D);
+        int firstExtra = jumpAction(jump);
         for (int cycle = 0; cycle < cycles; cycle++) {
-            int firstExtra = jump ? BehaviorSample.JUMP : 0;
-            samples.add(move(time, xAxis ? 0.28D : 0.0D, jump ? 0.32D : 0.0D,
-                    xAxis ? 0.0D : 0.28D, 0.0F, firstExtra));
+            samples.add(axisMove(time, xAxis, 0.28D, upward, firstExtra));
             time += 500L;
-            samples.add(move(time, xAxis ? -0.28D : 0.0D, jump ? -0.32D : 0.0D,
-                    xAxis ? 0.0D : -0.28D, 0.0F, 0));
+            samples.add(axisMove(time, xAxis, -0.28D, -upward, 0));
             time += 500L;
         }
         return samples;
+    }
+
+    private static BehaviorSample axisMove(long time,
+                                           boolean xAxis,
+                                           double distance,
+                                           double dy,
+                                           int extraActions) {
+        return xAxis
+                ? move(time, distance, dy, 0.0D, 0.0F, extraActions)
+                : move(time, 0.0D, dy, distance, 0.0F, extraActions);
+    }
+
+    private static double jumpDelta(boolean jump, double distance) {
+        return jump ? distance : 0.0D;
+    }
+
+    private static int jumpAction(boolean jump) {
+        return jump ? BehaviorSample.JUMP : 0;
     }
 
     private List<BehaviorSample> repeatedCombinedCycle(int cycles, int actionFlags) {
@@ -298,7 +314,7 @@ class ActivityPatternAnalyzerTest {
     private static BehaviorSample move(long time, double dx, double dy, double dz,
                                        float yawDelta, int extraActions) {
         int actions = BehaviorSample.MOVE | extraActions;
-        if (Math.abs(yawDelta) >= 2.0F) actions |= BehaviorSample.ROTATE;
+        if (Math.abs(yawDelta) >= TEST_ROTATION_THRESHOLD) actions |= BehaviorSample.ROTATE;
         return new BehaviorSample(time, actions, dx, dy, dz, yawDelta, 0.0F, true);
     }
 
