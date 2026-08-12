@@ -40,6 +40,29 @@ class LegacyStorageMigrationIntegrationTest {
     private static final String BATCH_UUID = "11111111-1111-1111-1111-111111111111";
     private static final String LEGACY_JOIN_TIME = "2026-01-02 12:34:56";
 
+    private static final String INSERT_DAILY = "INSERT INTO daily_agg VALUES (?, ?, ?, ?, ?)";
+    private static final String INSERT_HOURLY = "INSERT INTO hourly_agg VALUES (?, ?, ?, ?, ?)";
+    private static final String INSERT_LIFETIME = "INSERT INTO lifetime_agg VALUES (?, ?, ?, ?, ?, ?)";
+    private static final String INSERT_JOIN =
+            "INSERT INTO joins_log (id, player_uuid, joined_at) VALUES (?, ?, ?)";
+    private static final String INSERT_PROFILE = "INSERT INTO player_profiles VALUES (?, ?, ?, ?, ?, ?)";
+    private static final String INSERT_SKIN = "INSERT INTO player_skin_profiles VALUES (?, ?, ?, ?, ?)";
+    private static final String INSERT_BATCH = "INSERT INTO playtime_applied_batches VALUES (?, ?)";
+    private static final String SELECT_LIFETIME_ACTIVE =
+            "SELECT active_minutes FROM lifetime_agg WHERE player_uuid = ?";
+    private static final String SELECT_DAILY_TOTAL =
+            "SELECT total_minutes FROM daily_agg WHERE player_uuid = ?";
+    private static final String SELECT_HOURLY_ACTIVE =
+            "SELECT active_minutes FROM hourly_agg WHERE player_uuid = ?";
+    private static final String SELECT_USERNAME =
+            "SELECT username FROM player_profiles WHERE player_uuid = ?";
+    private static final String SELECT_BATCH =
+            "SELECT batch_id FROM playtime_applied_batches WHERE batch_id = ?";
+    private static final String SELECT_LAST_SEEN =
+            "SELECT last_seen FROM lifetime_agg WHERE player_uuid = ?";
+    private static final String SELECT_LAST_JOIN =
+            "SELECT last_join FROM lifetime_agg WHERE player_uuid = ?";
+
     @TempDir
     Path dataFolder;
 
@@ -242,26 +265,28 @@ class LegacyStorageMigrationIntegrationTest {
     }
 
     private void insertLegacyCanaries(Connection connection) throws Exception {
-        executeUpdate(connection, "INSERT INTO daily_agg VALUES (?, ?, ?, ?, ?)",
+        executeUpdate(connection.prepareStatement(INSERT_DAILY),
                 PLAYER_UUID, "2026-01-02", 321, 45, 366);
-        executeUpdate(connection, "INSERT INTO hourly_agg VALUES (?, ?, ?, ?, ?)",
+        executeUpdate(connection.prepareStatement(INSERT_HOURLY),
                 PLAYER_UUID, "2026-01-02 12:00:00", 60, 5, 65);
-        executeUpdate(connection, "INSERT INTO lifetime_agg VALUES (?, ?, ?, ?, ?, ?)",
+        executeUpdate(connection.prepareStatement(INSERT_LIFETIME),
                 PLAYER_UUID, "2025-06-01 12:00:00", LEGACY_JOIN_TIME, 1234, 56, 1290);
-        executeUpdate(connection, "INSERT INTO joins_log (id, player_uuid, joined_at) VALUES (?, ?, ?)",
-                1, PLAYER_UUID, LEGACY_JOIN_TIME);
-        executeUpdate(connection, "INSERT INTO player_profiles VALUES (?, ?, ?, ?, ?, ?)",
-                PLAYER_UUID, "sentineluser", "Sentinel User",
-                "2025-06-01 12:00:00", LEGACY_JOIN_TIME, LEGACY_JOIN_TIME);
-        executeUpdate(connection, "INSERT INTO player_skin_profiles VALUES (?, ?, ?, ?, ?)",
-                PLAYER_UUID, "sentinel-texture-canary", "sentinel-signature-canary",
-                "sentineluser", LEGACY_JOIN_TIME);
-        executeUpdate(connection, "INSERT INTO playtime_applied_batches VALUES (?, ?)",
-                BATCH_UUID, LEGACY_JOIN_TIME);
+        insertProfileCanaries(connection);
     }
 
-    private void executeUpdate(Connection connection, String sql, Object... values) throws Exception {
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+    private void insertProfileCanaries(Connection connection) throws Exception {
+        executeUpdate(connection.prepareStatement(INSERT_JOIN), 1, PLAYER_UUID, LEGACY_JOIN_TIME);
+        executeUpdate(connection.prepareStatement(INSERT_PROFILE),
+                PLAYER_UUID, "sentineluser", "Sentinel User",
+                "2025-06-01 12:00:00", LEGACY_JOIN_TIME, LEGACY_JOIN_TIME);
+        executeUpdate(connection.prepareStatement(INSERT_SKIN),
+                PLAYER_UUID, "sentinel-texture-canary", "sentinel-signature-canary",
+                "sentineluser", LEGACY_JOIN_TIME);
+        executeUpdate(connection.prepareStatement(INSERT_BATCH), BATCH_UUID, LEGACY_JOIN_TIME);
+    }
+
+    private void executeUpdate(PreparedStatement statement, Object... values) throws Exception {
+        try (statement) {
             for (int index = 0; index < values.length; index++) {
                 statement.setObject(index + 1, values[index]);
             }
@@ -272,17 +297,12 @@ class LegacyStorageMigrationIntegrationTest {
     private void assertLegacyCanaries(File database, boolean expectLastSeen) throws Exception {
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database.getAbsolutePath())) {
             assertEquals(expectLastSeen, lifetimeColumns(connection).contains("last_seen"));
-            assertEquals(1234L, queryLong(connection,
-                    "SELECT active_minutes FROM lifetime_agg WHERE player_uuid = ?", PLAYER_UUID));
-            assertEquals(366L, queryLong(connection,
-                    "SELECT total_minutes FROM daily_agg WHERE player_uuid = ?", PLAYER_UUID));
-            assertEquals(60L, queryLong(connection,
-                    "SELECT active_minutes FROM hourly_agg WHERE player_uuid = ?", PLAYER_UUID));
-            assertEquals("sentineluser", queryString(connection,
-                    "SELECT username FROM player_profiles WHERE player_uuid = ?", PLAYER_UUID));
-            assertEquals(BATCH_UUID, queryString(connection,
-                    "SELECT batch_id FROM playtime_applied_batches WHERE batch_id = ?", BATCH_UUID));
-            assertEquals("ok", queryString(connection, "PRAGMA quick_check"));
+            assertEquals(1234L, queryLong(connection.prepareStatement(SELECT_LIFETIME_ACTIVE), PLAYER_UUID));
+            assertEquals(366L, queryLong(connection.prepareStatement(SELECT_DAILY_TOTAL), PLAYER_UUID));
+            assertEquals(60L, queryLong(connection.prepareStatement(SELECT_HOURLY_ACTIVE), PLAYER_UUID));
+            assertEquals("sentineluser", queryString(connection.prepareStatement(SELECT_USERNAME), PLAYER_UUID));
+            assertEquals(BATCH_UUID, queryString(connection.prepareStatement(SELECT_BATCH), BATCH_UUID));
+            assertEquals("ok", quickCheck(connection));
         }
     }
 
@@ -297,19 +317,25 @@ class LegacyStorageMigrationIntegrationTest {
         return columns;
     }
 
+    private String quickCheck(Connection connection) throws Exception {
+        try (Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery("PRAGMA quick_check")) {
+            assertTrue(result.next());
+            return result.getString(1);
+        }
+    }
+
     private void assertCurrentCanaries(File database) throws Exception {
         assertLegacyCanaries(database, true);
         try (Connection connection = DriverManager.getConnection("jdbc:sqlite:" + database.getAbsolutePath())) {
-            String lastSeen = queryString(connection,
-                    "SELECT last_seen FROM lifetime_agg WHERE player_uuid = ?", PLAYER_UUID);
-            String lastJoin = queryString(connection,
-                    "SELECT last_join FROM lifetime_agg WHERE player_uuid = ?", PLAYER_UUID);
+            String lastSeen = queryString(connection.prepareStatement(SELECT_LAST_SEEN), PLAYER_UUID);
+            String lastJoin = queryString(connection.prepareStatement(SELECT_LAST_JOIN), PLAYER_UUID);
             assertEquals(lastJoin, lastSeen, "legacy last_seen must be backfilled from last_join");
         }
     }
 
-    private long queryLong(Connection connection, String sql, String key) throws Exception {
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+    private long queryLong(PreparedStatement statement, String key) throws Exception {
+        try (statement) {
             statement.setString(1, key);
             try (ResultSet result = statement.executeQuery()) {
                 assertTrue(result.next());
@@ -318,21 +344,13 @@ class LegacyStorageMigrationIntegrationTest {
         }
     }
 
-    private String queryString(Connection connection, String sql, String key) throws Exception {
-        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+    private String queryString(PreparedStatement statement, String key) throws Exception {
+        try (statement) {
             statement.setString(1, key);
             try (ResultSet result = statement.executeQuery()) {
                 assertTrue(result.next());
                 return result.getString(1);
             }
-        }
-    }
-
-    private String queryString(Connection connection, String sql) throws Exception {
-        try (Statement statement = connection.createStatement();
-             ResultSet result = statement.executeQuery(sql)) {
-            assertTrue(result.next());
-            return result.getString(1);
         }
     }
 }
