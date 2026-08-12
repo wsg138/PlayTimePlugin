@@ -14,7 +14,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * movement event.
  */
 public final class ActivityPatternAnalyzer {
-    private static final double EPSILON = 1.0E-9D;
     private static final int MAX_ANALYSIS_SAMPLES = 256;
     private static final long HEARTBEAT_WINDOW_MILLIS = 300_000L;
     private static final long HEARTBEAT_MIN_INTERVAL_MILLIS = 2_000L;
@@ -31,7 +30,6 @@ public final class ActivityPatternAnalyzer {
     private static final double DIRECTION_CHANGE_SIMILARITY = 0.75D;
     private static final double MIN_DIRECTION_DISTANCE = 0.02D;
     private static final double MIN_SEQUENCE_HORIZONTAL_DISTANCE = 0.25D;
-    private static final int FIRST_CYCLE_OFFSET = 0;
     private static final double STRONG_SIGNAL_THRESHOLD = 0.80D;
     private static final int MULTI_SIGNAL_COUNT = 2;
     private static final double MULTI_SIGNAL_BONUS = 0.12D;
@@ -48,9 +46,6 @@ public final class ActivityPatternAnalyzer {
     private static final int VARIATION_MINIMUM_SAMPLES = 8;
     private static final int VARIATION_DISTINCT_SIGNATURES = 2;
     private static final double VARIATION_MINIMUM_CV = 0.10D;
-    private static final double MIN_DIRECTION_LENGTH = 0.01D;
-    private static final int MEAN_INTERVAL_MINIMUM_SAMPLES = 2;
-    private static final int CV_INTERVAL_MINIMUM_SAMPLES = 3;
 
     private final AdvancedDetectionSettings settings;
 
@@ -117,8 +112,8 @@ public final class ActivityPatternAnalyzer {
         if (times.size() < settings.click().minimumSwings()) {
             return new Regularity(0.0D, times.size());
         }
-        double cv = coefficientOfVariationOfIntervals(times);
-        return new Regularity(cvScore(cv, settings.click().maxCv()), times.size());
+        double cv = BehaviorSimilarity.coefficientOfVariationOfIntervals(times);
+        return new Regularity(BehaviorSimilarity.cvScore(cv, settings.click().maxCv()), times.size());
     }
 
     private Regularity rotationRegularity(List<BehaviorSample> samples, long nowMillis) {
@@ -139,8 +134,10 @@ public final class ActivityPatternAnalyzer {
         if (times.size() < settings.rotation().minimumSamples()) {
             return new Regularity(0.0D, times.size());
         }
-        double interval = cvScore(coefficientOfVariationOfIntervals(times), settings.rotation().maxCv());
-        double amount = cvScore(coefficientOfVariation(amounts), settings.rotation().maxCv());
+        double interval = BehaviorSimilarity.cvScore(
+                BehaviorSimilarity.coefficientOfVariationOfIntervals(times), settings.rotation().maxCv());
+        double amount = BehaviorSimilarity.cvScore(
+                BehaviorSimilarity.coefficientOfVariation(amounts), settings.rotation().maxCv());
         return new Regularity(Math.sqrt(interval * amount), times.size());
     }
 
@@ -176,12 +173,6 @@ public final class ActivityPatternAnalyzer {
                 0L, false);
     }
 
-    /**
-     * Detects low-frequency single-input keepalive macros that ordinary short-window
-     * cycle analysis intentionally ignores. Human chat/movement can be repetitive,
-     * so this requires five samples, at least a minute of span, intervals of at least
-     * two seconds, and extremely low timing variance.
-     */
     private CycleResult heartbeatRecurrence(List<BehaviorSample> samples, long nowMillis) {
         Map<Integer, List<Long>> timesBySignature = collectHeartbeatTimes(samples, nowMillis);
         CycleResult best = CycleResult.NONE;
@@ -198,7 +189,7 @@ public final class ActivityPatternAnalyzer {
             if (!heartbeatSampleEligible(sample, cutoff)) {
                 continue;
             }
-            int signature = normalizedActionSignature(sample);
+            int signature = BehaviorSimilarity.normalizedActionSignature(sample);
             appendHeartbeatTime(timesBySignature, signature, sample.timestampMillis());
         }
         return timesBySignature;
@@ -208,7 +199,7 @@ public final class ActivityPatternAnalyzer {
         return sample.patternEligible()
                 && sample.timestampMillis() >= cutoff
                 && heartbeatEligible(sample)
-                && normalizedActionSignature(sample) != 0;
+                && BehaviorSimilarity.normalizedActionSignature(sample) != 0;
     }
 
     private static void appendHeartbeatTime(Map<Integer, List<Long>> timesBySignature,
@@ -222,17 +213,17 @@ public final class ActivityPatternAnalyzer {
             return CycleResult.NONE;
         }
         long span = times.get(times.size() - 1) - times.get(0);
-        double mean = meanInterval(times);
+        double mean = BehaviorSimilarity.meanInterval(times);
         if (span < HEARTBEAT_MIN_SPAN_MILLIS || mean < HEARTBEAT_MIN_INTERVAL_MILLIS) {
             return CycleResult.NONE;
         }
-        double cv = coefficientOfVariationOfIntervals(times);
+        double cv = BehaviorSimilarity.coefficientOfVariationOfIntervals(times);
         if (!Double.isFinite(cv) || cv > HEARTBEAT_MAX_CV) {
             return CycleResult.NONE;
         }
         double score = HEARTBEAT_BASE_SCORE
                 + HEARTBEAT_SCORE_RANGE * (1.0D - cv / HEARTBEAT_MAX_CV);
-        return new CycleResult(clamp01(score), times.size(), Math.round(mean), 1);
+        return new CycleResult(BehaviorSimilarity.clamp01(score), times.size(), Math.round(mean), 1);
     }
 
     private static boolean heartbeatEligible(BehaviorSample sample) {
@@ -305,7 +296,8 @@ public final class ActivityPatternAnalyzer {
         int repetitions = 1;
         double similarityTotal = 1.0D;
         for (int candidateStart = previousStart; candidateStart >= 0; candidateStart -= period) {
-            double similarity = cycleSimilarity(samples, candidateStart, referenceStart, period, movementOnly);
+            double similarity = BehaviorSimilarity.cycleSimilarity(
+                    samples, candidateStart, referenceStart, period, movementOnly);
             if (similarity < similarityThreshold) {
                 break;
             }
@@ -322,10 +314,7 @@ public final class ActivityPatternAnalyzer {
     private boolean cycleHasMeaningfulStructure(List<BehaviorSample> samples, int start,
                                                 int period, boolean movementOnly) {
         CycleStructure structure = summarizeCycleStructure(samples, start, period);
-        if (movementOnly) {
-            return hasMovementStructure(structure);
-        }
-        return hasSequenceStructure(structure);
+        return movementOnly ? hasMovementStructure(structure) : hasSequenceStructure(structure);
     }
 
     private CycleStructure summarizeCycleStructure(List<BehaviorSample> samples, int start, int period) {
@@ -335,7 +324,7 @@ public final class ActivityPatternAnalyzer {
         double horizontalTotal = 0.0D;
         for (int index = 0; index < period; index++) {
             BehaviorSample current = samples.get(start + index);
-            int semantic = normalizedActionSignature(current);
+            int semantic = BehaviorSimilarity.normalizedActionSignature(current);
             if (semantic != 0) {
                 distinctSignatures.add(semantic);
             }
@@ -353,7 +342,7 @@ public final class ActivityPatternAnalyzer {
     }
 
     private static boolean isDirectionChange(BehaviorSample current, BehaviorSample next) {
-        return directionSimilarity(current, next) < DIRECTION_CHANGE_SIMILARITY
+        return BehaviorSimilarity.directionSimilarity(current, next) < DIRECTION_CHANGE_SIMILARITY
                 && current.horizontalDistance() > MIN_DIRECTION_DISTANCE
                 && next.horizontalDistance() > MIN_DIRECTION_DISTANCE;
     }
@@ -371,80 +360,6 @@ public final class ActivityPatternAnalyzer {
                 && hasMovementStructure(structure);
     }
 
-    private double cycleSimilarity(List<BehaviorSample> samples, int candidateStart,
-                                   int referenceStart, int period, boolean movementOnly) {
-        double total = 0.0D;
-        for (int offset = 0; offset < period; offset++) {
-            BehaviorSample candidate = samples.get(candidateStart + offset);
-            BehaviorSample reference = samples.get(referenceStart + offset);
-            double feature = movementOnly
-                    ? movementSimilarity(candidate, reference)
-                    : behaviorSimilarity(candidate, reference);
-            double timing = cycleTimingSimilarity(samples, candidateStart, referenceStart, offset);
-            total += feature * 0.82D + timing * 0.18D;
-        }
-        return total / period;
-    }
-
-    private static double cycleTimingSimilarity(List<BehaviorSample> samples,
-                                                int candidateStart,
-                                                int referenceStart,
-                                                int offset) {
-        if (offset == FIRST_CYCLE_OFFSET) {
-            return 1.0D;
-        }
-        long candidateInterval = samples.get(candidateStart + offset).timestampMillis()
-                - samples.get(candidateStart + offset - 1).timestampMillis();
-        long referenceInterval = samples.get(referenceStart + offset).timestampMillis()
-                - samples.get(referenceStart + offset - 1).timestampMillis();
-        return timingSimilarity(candidateInterval, referenceInterval);
-    }
-
-    private double movementSimilarity(BehaviorSample first, BehaviorSample second) {
-        if (!first.hasMovement() || !second.hasMovement()) {
-            return 0.0D;
-        }
-        double direction = directionSimilarity(first, second);
-        double distance = relativeSimilarity(first.horizontalDistance(), second.horizontalDistance(), 0.08D);
-        double vertical = absoluteSimilarity(first.dy(), second.dy(), 0.12D);
-        double turn = absoluteSimilarity(first.yawDelta(), second.yawDelta(), 12.0D);
-        double jump = first.has(BehaviorSample.JUMP) == second.has(BehaviorSample.JUMP) ? 1.0D : 0.0D;
-        return direction * 0.34D + distance * 0.24D + vertical * 0.14D
-                + turn * 0.18D + jump * 0.10D;
-    }
-
-    private double behaviorSimilarity(BehaviorSample first, BehaviorSample second) {
-        int firstSignature = normalizedActionSignature(first);
-        int secondSignature = normalizedActionSignature(second);
-        int union = firstSignature | secondSignature;
-        double action = union == 0 ? 1.0D
-                : (double) Integer.bitCount(firstSignature & secondSignature) / Integer.bitCount(union);
-
-        double feature = action;
-        double weight = 1.0D;
-        if (first.hasMovement() || second.hasMovement()) {
-            feature += movementSimilarity(first, second) * 1.4D;
-            weight += 1.4D;
-        }
-        if (first.hasRotation() || second.hasRotation()) {
-            double rotation = first.hasRotation() && second.hasRotation()
-                    ? (absoluteSimilarity(first.yawDelta(), second.yawDelta(), 10.0D)
-                    + absoluteSimilarity(first.pitchDelta(), second.pitchDelta(), 8.0D)) / 2.0D
-                    : 0.0D;
-            feature += rotation * 0.8D;
-            weight += 0.8D;
-        }
-        return feature / weight;
-    }
-
-    private int normalizedActionSignature(BehaviorSample sample) {
-        int signature = sample.semanticActions();
-        if (sample.hasMovement()) signature |= BehaviorSample.MOVE;
-        if (sample.hasRotation()) signature |= BehaviorSample.ROTATE;
-        if (sample.has(BehaviorSample.JUMP)) signature |= BehaviorSample.JUMP;
-        return signature;
-    }
-
     private double combinedEvidence(Regularity click,
                                     Regularity rotation,
                                     CycleResult movement,
@@ -456,7 +371,7 @@ public final class ActivityPatternAnalyzer {
         evidence = applyRotationEvidenceFloor(evidence, rotation);
         evidence = applyMovementEvidenceFloor(evidence, movement);
         evidence = applySequenceEvidenceFloor(evidence, sequence);
-        return clamp01(evidence);
+        return BehaviorSimilarity.clamp01(evidence);
     }
 
     private static double baseEvidence(Regularity click,
@@ -492,14 +407,15 @@ public final class ActivityPatternAnalyzer {
     }
 
     private double applyClickEvidenceFloor(double evidence, Regularity click, boolean clickOnlyRecently) {
+        double adjusted = evidence;
         if (clickOnlyRecently && click.score() >= STRONG_SIGNAL_THRESHOLD) {
-            evidence = Math.max(evidence, CLICK_ONLY_FLOOR);
+            adjusted = Math.max(adjusted, CLICK_ONLY_FLOOR);
         }
         if (click.score() >= EXTREME_REGULARITY_THRESHOLD
                 && click.count() >= settings.click().minimumSwings() * MULTI_SIGNAL_COUNT) {
-            evidence = Math.max(evidence, CLICK_FLOOR);
+            adjusted = Math.max(adjusted, CLICK_FLOOR);
         }
-        return evidence;
+        return adjusted;
     }
 
     private double applyRotationEvidenceFloor(double evidence, Regularity rotation) {
@@ -537,7 +453,7 @@ public final class ActivityPatternAnalyzer {
                 continue;
             }
             count++;
-            int signature = normalizedActionSignature(sample);
+            int signature = BehaviorSimilarity.normalizedActionSignature(sample);
             if (signature != 0) {
                 distinctSignatures.add(signature);
             }
@@ -552,90 +468,11 @@ public final class ActivityPatternAnalyzer {
             return true;
         }
         double mean = distanceSum / count;
-        if (mean <= EPSILON) {
+        if (mean <= 0.0D) {
             return false;
         }
         double variance = Math.max(0.0D, distanceSquaredSum / count - mean * mean);
         return Math.sqrt(variance) / mean >= VARIATION_MINIMUM_CV;
-    }
-
-    private static double directionSimilarity(BehaviorSample first, BehaviorSample second) {
-        double firstLength = first.horizontalDistance();
-        double secondLength = second.horizontalDistance();
-        if (firstLength <= MIN_DIRECTION_LENGTH && secondLength <= MIN_DIRECTION_LENGTH) {
-            return 1.0D;
-        }
-        if (firstLength <= MIN_DIRECTION_LENGTH || secondLength <= MIN_DIRECTION_LENGTH) {
-            return 0.0D;
-        }
-        double dot = (first.dx() * second.dx() + first.dz() * second.dz())
-                / (firstLength * secondLength);
-        return clamp01((Math.max(-1.0D, Math.min(1.0D, dot)) + 1.0D) / 2.0D);
-    }
-
-    private static double timingSimilarity(long first, long second) {
-        if (first <= 0L || second <= 0L) {
-            return first == second ? 1.0D : 0.0D;
-        }
-        double scale = Math.max(120.0D, Math.max(first, second) * 0.30D);
-        return absoluteSimilarity(first, second, scale);
-    }
-
-    private static double relativeSimilarity(double first, double second, double floor) {
-        double scale = Math.max(floor, Math.max(Math.abs(first), Math.abs(second)) * 0.20D);
-        return absoluteSimilarity(first, second, scale);
-    }
-
-    private static double absoluteSimilarity(double first, double second, double tolerance) {
-        return clamp01(1.0D - Math.abs(first - second) / Math.max(EPSILON, tolerance));
-    }
-
-    private static double meanInterval(List<Long> times) {
-        if (times.size() < MEAN_INTERVAL_MINIMUM_SAMPLES) return 0.0D;
-        long total = 0L;
-        for (int index = 1; index < times.size(); index++) {
-            total += times.get(index) - times.get(index - 1);
-        }
-        return (double) total / (times.size() - 1);
-    }
-
-    private static double coefficientOfVariationOfIntervals(List<Long> times) {
-        if (times.size() < CV_INTERVAL_MINIMUM_SAMPLES) return Double.MAX_VALUE;
-        List<Double> intervals = new ArrayList<>(times.size() - 1);
-        for (int index = 1; index < times.size(); index++) {
-            intervals.add((double) (times.get(index) - times.get(index - 1)));
-        }
-        return coefficientOfVariation(intervals);
-    }
-
-    private static double coefficientOfVariation(List<Double> values) {
-        if (values.isEmpty()) return Double.MAX_VALUE;
-        double total = 0.0D;
-        for (double value : values) total += value;
-        double mean = total / values.size();
-        if (mean <= EPSILON) return Double.MAX_VALUE;
-        double variance = 0.0D;
-        for (double value : values) {
-            double delta = value - mean;
-            variance += delta * delta;
-        }
-        return Math.sqrt(variance / values.size()) / mean;
-    }
-
-    private static double cvScore(double cv, double configuredMaximum) {
-        if (!Double.isFinite(cv)) return 0.0D;
-        double max = Math.max(0.001D, configuredMaximum);
-        if (cv <= max) {
-            return clamp01(1.0D - 0.25D * (cv / max));
-        }
-        if (cv >= max * 2.0D) {
-            return 0.0D;
-        }
-        return clamp01(0.75D * (1.0D - (cv - max) / max));
-    }
-
-    private static double clamp01(double value) {
-        return Math.max(0.0D, Math.min(1.0D, value));
     }
 
     public record Analysis(double clickRegularity,
