@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ActivityLifecycleTest {
@@ -57,6 +58,102 @@ class ActivityLifecycleTest {
         assertEquals(ActivityState.AFK, tracker.getState(player.getUniqueId(), base + 301_000L));
 
         assertEquals(List.of("ACTIVE->IDLE", "IDLE->AFK"), transitions);
+    }
+
+    @Test
+    void highCpsSwingsRemainDistinctAndBecomeSuspicious() {
+        PlayerMock player = MockBukkit.getMock().addPlayer();
+        ActivityTracker tracker = plugin.runtime().activityTracker();
+        long base = System.currentTimeMillis();
+        tracker.bootstrapPlayer(player, base);
+
+        long time = base + 100L;
+        for (int i = 0; i < 70; i++) {
+            tracker.recordAction(player, time, BehaviorSample.SWING);
+            time += 50L;
+        }
+
+        ActivityTracker.ActivitySnapshot snapshot = tracker.snapshot().get(player.getUniqueId());
+        assertEquals(70, snapshot.behaviorSamples().size());
+        assertEquals(ActivityState.SUSPICIOUS, tracker.getState(player.getUniqueId(), time));
+        assertTrue(tracker.diagnostics(player.getUniqueId(), time).clickRegularity() >= 0.985D);
+    }
+
+    @Test
+    void distinctEventsFromOnePhysicalActionStillDeduplicate() {
+        PlayerMock player = MockBukkit.getMock().addPlayer();
+        ActivityTracker tracker = plugin.runtime().activityTracker();
+        long base = System.currentTimeMillis();
+        tracker.bootstrapPlayer(player, base);
+
+        tracker.recordAction(player, base + 100L, BehaviorSample.SWING);
+        tracker.recordAction(player, base + 110L, BehaviorSample.ATTACK);
+
+        List<BehaviorSample> samples = tracker.snapshot().get(player.getUniqueId()).behaviorSamples();
+        assertEquals(1, samples.size());
+        assertTrue(samples.get(0).has(BehaviorSample.SWING));
+        assertTrue(samples.get(0).has(BehaviorSample.ATTACK));
+    }
+
+    @Test
+    void repeatedHeldUseStyleInteractionDoesNotFabricateMacroStructure() {
+        PlayerMock player = MockBukkit.getMock().addPlayer();
+        ActivityTracker tracker = plugin.runtime().activityTracker();
+        long base = System.currentTimeMillis();
+        tracker.bootstrapPlayer(player, base);
+
+        long time = base + 100L;
+        for (int i = 0; i < 80; i++) {
+            tracker.recordAction(player, time, BehaviorSample.INTERACT | BehaviorSample.BLOCK_PLACE);
+            time += 200L;
+        }
+
+        assertEquals(ActivityState.ACTIVE, tracker.getState(player.getUniqueId(), time));
+        ActivityTracker.ActivityDiagnostics diagnostics = tracker.diagnostics(player.getUniqueId(), time);
+        assertEquals(0.0D, diagnostics.clickRegularity());
+        assertTrue(diagnostics.sequenceRepetition() < 0.80D);
+    }
+
+    @Test
+    void lowFrequencyCommandHeartbeatBecomesSuspicious() {
+        PlayerMock player = MockBukkit.getMock().addPlayer();
+        ActivityTracker tracker = plugin.runtime().activityTracker();
+        long base = System.currentTimeMillis();
+        tracker.bootstrapPlayer(player, base);
+
+        long time = base + 1_000L;
+        for (int i = 0; i < 5; i++) {
+            tracker.recordAction(player, time, BehaviorSample.COMMAND);
+            time += 30_000L;
+        }
+        long analyzeAt = time - 30_000L;
+
+        assertEquals(ActivityState.SUSPICIOUS, tracker.getState(player.getUniqueId(), analyzeAt));
+        ActivityTracker.ActivityDiagnostics diagnostics = tracker.diagnostics(player.getUniqueId(), analyzeAt);
+        assertTrue(diagnostics.sequenceRepetition() >= 0.98D);
+        assertEquals(30_000L, diagnostics.dominantCycleMillis());
+    }
+
+    @Test
+    void lateAsyncStyleActionCannotReonlineDisconnectedState() {
+        PlayerMock player = MockBukkit.getMock().addPlayer();
+        UUID uuid = player.getUniqueId();
+        long now = System.currentTimeMillis();
+        ActivityTracker.ActivitySnapshot disconnected = new ActivityTracker.ActivitySnapshot(
+                now - 1_000L, now - 1_000L,
+                player.getLocation().getX(), player.getLocation().getY(), player.getLocation().getZ(),
+                player.getLocation().getYaw(), player.getLocation().getPitch(), true,
+                List.of(), List.of(), 0.0D, false, now - 1_000L, 0L,
+                0L, ActivityState.ACTIVE, false, now - 500L);
+        ActivityTracker tracker = new ActivityTracker(plugin.getRuntimeConfig(), new SessionManager(),
+                Map.of(uuid, disconnected), Map.of(), new PerformanceCounters());
+
+        tracker.recordAction(uuid, now, BehaviorSample.CHAT);
+
+        ActivityTracker.ActivitySnapshot after = tracker.snapshot().get(uuid);
+        assertFalse(after.online());
+        assertTrue(after.behaviorSamples().isEmpty());
+        assertEquals(ActivityState.AFK, tracker.peekState(uuid, now));
     }
 
     @Test
