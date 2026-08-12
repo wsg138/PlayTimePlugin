@@ -100,7 +100,7 @@ class PlaytimeAccrualTrackerTest {
     }
 
     @Test
-    void legitimateMovementReleasesReconnectGuard() {
+    void trivialMovementDoesNotReleaseReconnectGuard() {
         UUID uuid = UUID.randomUUID();
         PlaytimeConfig config = mock(PlaytimeConfig.class);
         when(config.sampling()).thenReturn(new PlaytimeConfig.Sampling(
@@ -139,12 +139,12 @@ class PlaytimeAccrualTrackerTest {
         activityTracker.onMove(movement);
 
         long movementMarker = activityTracker.getSuspiciousResetMarker(uuid);
-        assertTrue(movementMarker > reconnectMarker);
-        var credited = accrualTracker.sample(
+        assertEquals(reconnectMarker, movementMarker);
+        var stillGuarded = accrualTracker.sample(
                 uuid, 220L * SECOND, ActivityState.ACTIVE, movementMarker);
-        assertEquals(ActivityState.ACTIVE, credited.state());
-        assertEquals(1, credited.activeMinutes());
-        assertEquals(0, credited.suspiciousStreak());
+        assertEquals(ActivityState.SUSPICIOUS, stillGuarded.state());
+        assertEquals(0, stillGuarded.activeMinutes());
+        assertEquals(3, stillGuarded.suspiciousStreak());
     }
 
     @Test

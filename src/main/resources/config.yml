@@ -56,7 +56,8 @@ storage:
   flush-interval-ticks: 1200
 
 sampling:
-  # Reserved for future higher-frequency sampling work.
+  # Runtime state is sampled once per second by default. Raw movement events are
+  # throttled separately and expensive recurrence analysis is not run per packet.
   tick-interval: 20
 
   # Legacy-compatible aliases are still accepted internally:
@@ -67,34 +68,75 @@ sampling:
   suspicion:
     enabled: true
 
-    # Look at click timing inside this moving window.
+    # Legacy click/autoclick settings remain the canonical click timing thresholds.
+    # This preserves custom values from existing installations during migration.
     window-seconds: 20
-
-    # Minimum clicks/swings in the window before regularity is judged.
     min-swings: 25
-
-    # Lower values mean more perfectly regular clicking is required before the player is marked suspicious.
+    # Coefficient of variation. Lower means more mechanically regular timing is required.
     max-cv: 0.08
-
-    # Require this much non-click inactivity before suspicious-click logic can apply.
+    # A stationary click-only stream can become suspicious after this much time.
     non-click-grace-seconds: 10
 
     # Suspicious time still counts as active playtime for the first N consecutive suspicious minutes.
-    # Once the streak exceeds this threshold, suspicious minutes stop counting until the player
-    # returns to a non-suspicious state.
+    # Once the streak exceeds this threshold, suspicious minutes stop counting until convincing
+    # varied activity clears the detector. Trivial movement/commands/placement do not reset it.
     max-counted-consecutive-minutes: 10
 
+    click:
+      enabled: true
+
+    rotation:
+      enabled: true
+      window-seconds: 30
+      minimum-samples: 10
+      # Both rotation amounts and timing must be extremely regular.
+      max-cv: 0.06
+
+    movement:
+      enabled: true
+      window-seconds: 45
+      minimum-samples: 24
+      minimum-cycles: 4
+      # Whole cycles must be this similar; normal repetitive gameplay should vary more.
+      similarity-threshold: 0.96
+      maximum-cycle-samples: 32
+      # Prevent tiny alternating packet patterns from becoming a strong standalone signal.
+      minimum-cycle-millis: 900
+
+    sequence:
+      enabled: true
+      window-seconds: 60
+      minimum-actions: 12
+      minimum-repetitions: 3
+      similarity-threshold: 0.95
+      maximum-cycle-samples: 40
+
+    scoring:
+      # High-confidence hysteresis: entering SUSPICIOUS is intentionally much harder
+      # than remaining clear. Prefer a false negative over repeatedly flagging humans.
+      suspicious-threshold: 0.86
+      clear-threshold: 0.30
+      decay-per-second: 0.025
+      analysis-interval-ms: 1000
+      # Strict per-player memory bound for raw behavior history.
+      history-size: 256
+      # Suspicion only clears after low evidence plus convincing varied activity.
+      recovery-seconds: 15
+      # Preserve bounded detector state across quick reconnects so reconnecting is not a reset trick.
+      reconnect-retention-seconds: 300
+      max-retained-disconnected: 512
+
 activity:
-  # Minimum time between movement-based activity mutations for the same player.
+  # Minimum time between movement-based samples for the same player.
   movement-throttle-ms: 250
 
-  # Existing behavior counted meaningful head rotation as activity.
+  # Meaningful camera rotation may count as observed activity and as a detector signal.
   count-head-rotation: true
 
   # Squared distance threshold used to ignore tiny movement noise.
   tiny-movement-threshold: 0.01
 
-  # Keeps suspicious/autoclick swing tracking enabled without making other activity events heavier.
+  # Paper arm-swing timing is the primary click timing source when enabled.
   suspicious-swing-tracking-enabled: true
 
 chat:
