@@ -67,11 +67,11 @@ actions:
   - profile: reload-config
     stage: after-start
     type: console-command
-    command: playtime reload
+    command: playtime admin reload
   - profile: reload-config
     stage: after-reload
     type: wait-log
-    contains: Playtime runtime reloaded successfully
+    contains: Playtime plugin reloaded safely.
   - profile: reload-config
     stage: after-reload
     type: assert-config
