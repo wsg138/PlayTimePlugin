@@ -107,7 +107,7 @@ class LegacyStorageMigrationIntegrationTest {
         return plugin;
     }
 
-    private ConfigMigrator migrateAndVerifyConfig(PlayTimePlugin plugin, File configFile) {
+    private ConfigMigrator migrateAndVerifyConfig(PlayTimePlugin plugin, File configFile) throws Exception {
         ConfigMigrator migrator = new ConfigMigrator(plugin);
         ConfigMigrator.MigrationResult migration = migrator.migrateConfig();
         assertEquals(3, migration.oldVersion());
@@ -153,7 +153,7 @@ class LegacyStorageMigrationIntegrationTest {
         return Files.readAttributes(file.toPath(), BasicFileAttributes.class).fileKey();
     }
 
-    private void markGoodAndVerifyConfigBackup(ConfigMigrator migrator) {
+    private void markGoodAndVerifyConfigBackup(ConfigMigrator migrator) throws Exception {
         migrator.markCurrentConfigGood();
         File backup = dataFolder.resolve("backups/config.yml.last-good").toFile();
         assertTrue(backup.isFile());
