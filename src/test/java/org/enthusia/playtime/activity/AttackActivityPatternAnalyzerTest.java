@@ -92,7 +92,7 @@ class AttackActivityPatternAnalyzerTest {
         for (int i = 0; i < 70; i++) {
             samples.add(attack(time));
             time += intervals[i % intervals.length];
-            if (random.nextInt(4) == 0) {
+            if (random.nextInt(3) != 0) {
                 double dx = 0.18D + random.nextDouble() * 0.35D;
                 double dz = (random.nextDouble() - 0.5D) * 0.45D;
                 float yaw = (float) ((random.nextDouble() - 0.5D) * 90.0D);
