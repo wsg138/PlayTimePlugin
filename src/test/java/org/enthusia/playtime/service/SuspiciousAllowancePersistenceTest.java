@@ -77,6 +77,27 @@ class SuspiciousAllowancePersistenceTest {
     }
 
     @Test
+    void detectorApprovedResetDropsPartialSuspiciousTailBeforeCleanAccrual() {
+        UUID uuid = UUID.randomUUID();
+        PlaytimeAccrualTracker tracker = new PlaytimeAccrualTracker(1, Map.of());
+        tracker.connect(uuid, 0L, 1L);
+
+        var partialSuspicion = tracker.sample(
+                uuid, 30L * SECOND, ActivityState.SUSPICIOUS, 1L);
+        assertEquals(0, partialSuspicion.completedMinutes());
+        assertEquals(0, partialSuspicion.suspiciousStreak());
+
+        var reset = tracker.sample(uuid, 31L * SECOND, ActivityState.ACTIVE, 2L);
+        assertEquals(0, reset.completedMinutes());
+        assertEquals(0, reset.suspiciousStreak());
+
+        var cleanMinute = tracker.sample(uuid, 90L * SECOND, ActivityState.ACTIVE, 2L);
+        assertEquals(1, cleanMinute.activeMinutes());
+        assertEquals(0, cleanMinute.afkMinutes());
+        assertEquals(0, cleanMinute.suspiciousStreak());
+    }
+
+    @Test
     void resetMarkerThatAdvancedWhileOfflineClearsReconnectGuard() {
         UUID uuid = UUID.randomUUID();
         PlaytimeAccrualTracker tracker = new PlaytimeAccrualTracker(1, Map.of());
