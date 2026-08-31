@@ -19,19 +19,19 @@ import java.util.concurrent.ConcurrentHashMap;
  * 60-second windows into timestamped playtime credits. Partial windows survive
  * reconnects and runtime handoffs.
  *
- * <p>The suspicious streak is intentionally an allowance consumed since the last
- * detector-approved recovery marker, not merely a count of adjacent suspicious
- * minutes. IDLE, AFK, reconnects, and ordinary ACTIVE observations therefore do
- * not replenish suspicious credit. The runtime also caps suspicious ACTIVE grace
- * at one minute so a detected automation cannot farm a long grace window.</p>
+ * <p>The suspicious streak is consumed since the last detector-approved recovery
+ * marker, not merely a count of adjacent suspicious minutes. IDLE, AFK, reconnects,
+ * and ordinary ACTIVE observations therefore do not replenish suspicious credit.
+ * SUSPICIOUS time is fail-closed and never receives ACTIVE credit.</p>
  */
 final class PlaytimeAccrualTracker {
     static final long NANOS_PER_MINUTE = 60_000_000_000L;
     static final long DEFAULT_MAX_SAMPLE_NANOS = 5L * NANOS_PER_MINUTE;
     private static final long ZERO_NANOS = 0L;
+    private static final long SUSPICIOUS_MINUTE_DOMINANCE_NANOS = 1_000_000_000L;
     private static final int ZERO_STREAK = 0;
     private static final int NEXT_STREAK = 1;
-    private static final int MAX_SUSPICIOUS_ACTIVE_GRACE_MINUTES = 1;
+    private static final int MAX_SUSPICIOUS_ACTIVE_GRACE_MINUTES = 0;
     private static final List<ActivityState> MINUTE_STATE_PRIORITY = List.of(
             ActivityState.ACTIVE, ActivityState.IDLE, ActivityState.AFK, ActivityState.SUSPICIOUS);
 
@@ -247,17 +247,24 @@ final class PlaytimeAccrualTracker {
                 state.segments.removeFirst();
             }
         }
+        return new ConsumedMinute(selectMinuteState(durations), Objects.requireNonNull(creditedAt));
+    }
+
+    private static ActivityState selectMinuteState(EnumMap<ActivityState, Long> durations) {
+        if (durations.getOrDefault(ActivityState.SUSPICIOUS, ZERO_NANOS)
+                >= SUSPICIOUS_MINUTE_DOMINANCE_NANOS) {
+            return ActivityState.SUSPICIOUS;
+        }
         ActivityState selected = ActivityState.ACTIVE;
         long selectedNanos = -NEXT_STREAK;
         for (ActivityState candidate : MINUTE_STATE_PRIORITY) {
             long duration = durations.getOrDefault(candidate, ZERO_NANOS);
-            if (duration > selectedNanos
-                    || (duration == selectedNanos && candidate == ActivityState.SUSPICIOUS)) {
+            if (duration > selectedNanos) {
                 selected = candidate;
                 selectedNanos = duration;
             }
         }
-        return new ConsumedMinute(selected, Objects.requireNonNull(creditedAt));
+        return selected;
     }
 
     private static Instant inferredInstant(long nowNanos) {
