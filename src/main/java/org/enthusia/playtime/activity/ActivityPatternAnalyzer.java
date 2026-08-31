@@ -1,17 +1,17 @@
 package org.enthusia.playtime.activity;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Pure, bounded behavioral analysis. It intentionally looks for recurrence across
- * whole cycles rather than treating repetitive Minecraft actions as suspicious by
- * themselves. The tracker invokes this at a coarse interval, never for every raw
- * movement event.
+ * Pure, bounded behavioral analysis. It looks for repeated cycles, regular
+ * cadences, and sustained low-variety action streams while keeping environmental
+ * movement out of the trusted-input path. The tracker invokes this at a coarse
+ * interval, never for every raw movement event.
  */
 public final class ActivityPatternAnalyzer {
     private static final int MAX_ANALYSIS_SAMPLES = 256;
@@ -22,10 +22,21 @@ public final class ActivityPatternAnalyzer {
     private static final double HEARTBEAT_MAX_CV = 0.02D;
     private static final double HEARTBEAT_BASE_SCORE = 0.98D;
     private static final double HEARTBEAT_SCORE_RANGE = 0.02D;
-    // Secondary sweep-damage callbacks from one melee action are synchronous. Keep
-    // this comfortably below one server tick so legitimate 20 TPS attack attempts
-    // remain distinct while one physical attack cannot flood the click timeline.
-    private static final long ATTACK_FANOUT_DEDUP_MILLIS = 20L;
+    private static final long ACTION_FANOUT_DEDUP_MILLIS = 20L;
+    private static final int CADENCE_ACTION_MASK = BehaviorSample.SEMANTIC_ACTIONS | BehaviorSample.JUMP;
+    private static final long CADENCE_WINDOW_MILLIS = 60_000L;
+    private static final long CADENCE_MIN_SPAN_MILLIS = 4_000L;
+    private static final int CADENCE_MIN_SAMPLES = 10;
+    private static final double CADENCE_MAX_CV = 0.20D;
+    private static final double CADENCE_BASE_SCORE = 0.975D;
+    private static final double CADENCE_SCORE_RANGE = 0.025D;
+    private static final long MONOTONY_WINDOW_MILLIS = 60_000L;
+    private static final long MONOTONY_MIN_SPAN_MILLIS = 20_000L;
+    private static final int MONOTONY_MIN_SAMPLES = 12;
+    private static final double MONOTONY_DOMINANT_RATIO = 0.90D;
+    private static final double MONOTONY_SCORE = 0.985D;
+    private static final double MONOTONY_MOVEMENT_DISTANCE = 0.15D;
+    private static final float MONOTONY_ROTATION_DEGREES = 15.0F;
     private static final double MIN_ROTATION_AMOUNT = 2.0D;
     private static final int MOVEMENT_MINIMUM_PERIOD = 2;
     private static final int SEQUENCE_MINIMUM_PERIOD = 3;
@@ -46,11 +57,13 @@ public final class ActivityPatternAnalyzer {
     private static final double MOVEMENT_FLOOR = 0.90D;
     private static final double SEQUENCE_FLOOR = 0.96D;
     private static final double VARIATION_MAX_EVIDENCE = 0.30D;
-    private static final long VARIATION_WINDOW_MILLIS = 10_000L;
-    private static final int VARIATION_MINIMUM_SAMPLES = 8;
-    private static final int VARIATION_DISTINCT_SIGNATURES = 2;
-    private static final double VARIATION_MINIMUM_CV = 0.10D;
-    private static final double VARIATION_MINIMUM_MEAN = 1.0E-9D;
+    private static final long VARIATION_WINDOW_MILLIS = 15_000L;
+    private static final int VARIATION_MINIMUM_SAMPLES = 12;
+    private static final int VARIATION_DISTINCT_SIGNATURES = 3;
+    private static final int VARIATION_MINIMUM_FEATURE_SAMPLES = 4;
+    private static final double VARIATION_TEMPORAL_MINIMUM_CV = 0.18D;
+    private static final double VARIATION_MOVEMENT_MINIMUM_CV = 0.18D;
+    private static final double VARIATION_ROTATION_MINIMUM_CV = 0.20D;
 
     private final AdvancedDetectionSettings settings;
 
@@ -88,7 +101,11 @@ public final class ActivityPatternAnalyzer {
         if (!settings.sequence().enabled()) {
             return CycleResult.NONE;
         }
-        return strongerCycle(sequenceRecurrence(samples, nowMillis), heartbeatRecurrence(samples, nowMillis));
+        CycleResult structured = sequenceRecurrence(samples, nowMillis);
+        CycleResult heartbeat = heartbeatRecurrence(samples, nowMillis);
+        CycleResult cadence = actionCadenceRecurrence(samples, nowMillis);
+        CycleResult monotony = stationaryActionMonotony(samples, nowMillis);
+        return strongerCycle(strongerCycle(structured, heartbeat), strongerCycle(cadence, monotony));
     }
 
     private Analysis buildAnalysis(List<BehaviorSample> samples,
@@ -140,7 +157,7 @@ public final class ActivityPatternAnalyzer {
             return false;
         }
         long delta = sample.timestampMillis() - lastAcceptedAttackMillis;
-        return delta >= 0L && delta <= ATTACK_FANOUT_DEDUP_MILLIS;
+        return delta >= 0L && delta <= ACTION_FANOUT_DEDUP_MILLIS;
     }
 
     private Regularity rotationRegularity(List<BehaviorSample> samples, long nowMillis) {
@@ -200,6 +217,80 @@ public final class ActivityPatternAnalyzer {
                 0L, false);
     }
 
+    private CycleResult actionCadenceRecurrence(List<BehaviorSample> samples, long nowMillis) {
+        Map<Integer, List<Long>> timesBySignature = collectActionTimes(samples,
+                nowMillis - CADENCE_WINDOW_MILLIS);
+        CycleResult best = CycleResult.NONE;
+        for (List<Long> times : timesBySignature.values()) {
+            best = strongerCycle(best, cadenceCandidate(times));
+        }
+        return best;
+    }
+
+    private CycleResult cadenceCandidate(List<Long> times) {
+        if (times.size() < CADENCE_MIN_SAMPLES) {
+            return CycleResult.NONE;
+        }
+        long span = times.get(times.size() - 1) - times.get(0);
+        if (span < CADENCE_MIN_SPAN_MILLIS) {
+            return CycleResult.NONE;
+        }
+        double cv = BehaviorSimilarity.coefficientOfVariationOfIntervals(times);
+        if (!Double.isFinite(cv) || cv > CADENCE_MAX_CV) {
+            return CycleResult.NONE;
+        }
+        double normalized = 1.0D - cv / CADENCE_MAX_CV;
+        double score = CADENCE_BASE_SCORE + CADENCE_SCORE_RANGE * normalized;
+        return new CycleResult(BehaviorSimilarity.clamp01(score), times.size(),
+                Math.round(BehaviorSimilarity.meanInterval(times)), 1);
+    }
+
+    private CycleResult stationaryActionMonotony(List<BehaviorSample> samples, long nowMillis) {
+        long cutoff = nowMillis - MONOTONY_WINDOW_MILLIS;
+        Map<Integer, Integer> signatureCounts = new HashMap<>();
+        Map<Integer, Long> lastAcceptedBySignature = new HashMap<>();
+        List<Long> acceptedTimes = new ArrayList<>();
+        boolean independentVariation = false;
+        for (BehaviorSample sample : samples) {
+            if (!sample.patternEligible() || sample.timestampMillis() < cutoff) {
+                continue;
+            }
+            int actionSignature = cadenceActionSignature(sample);
+            if (actionSignature == 0) {
+                independentVariation |= hasIndependentPhysicalVariation(sample);
+                continue;
+            }
+            if (isDuplicateActionFanout(actionSignature, sample.timestampMillis(),
+                    lastAcceptedBySignature)) {
+                continue;
+            }
+            lastAcceptedBySignature.put(actionSignature, sample.timestampMillis());
+            signatureCounts.merge(actionSignature, 1, Integer::sum);
+            acceptedTimes.add(sample.timestampMillis());
+        }
+        if (independentVariation || acceptedTimes.size() < MONOTONY_MIN_SAMPLES) {
+            return CycleResult.NONE;
+        }
+        long span = acceptedTimes.get(acceptedTimes.size() - 1) - acceptedTimes.get(0);
+        if (span < MONOTONY_MIN_SPAN_MILLIS) {
+            return CycleResult.NONE;
+        }
+        int dominant = 0;
+        for (int count : signatureCounts.values()) {
+            dominant = Math.max(dominant, count);
+        }
+        if ((double) dominant / acceptedTimes.size() < MONOTONY_DOMINANT_RATIO) {
+            return CycleResult.NONE;
+        }
+        return new CycleResult(MONOTONY_SCORE, acceptedTimes.size(),
+                Math.round(BehaviorSimilarity.meanInterval(acceptedTimes)), 1);
+    }
+
+    private static boolean hasIndependentPhysicalVariation(BehaviorSample sample) {
+        return (sample.hasMovement() && sample.horizontalDistance() >= MONOTONY_MOVEMENT_DISTANCE)
+                || (sample.hasRotation() && sample.turnAmount() >= MONOTONY_ROTATION_DEGREES);
+    }
+
     private CycleResult heartbeatRecurrence(List<BehaviorSample> samples, long nowMillis) {
         Map<Integer, List<Long>> timesBySignature = collectHeartbeatTimes(samples, nowMillis);
         CycleResult best = CycleResult.NONE;
@@ -211,22 +302,57 @@ public final class ActivityPatternAnalyzer {
 
     private Map<Integer, List<Long>> collectHeartbeatTimes(List<BehaviorSample> samples, long nowMillis) {
         long cutoff = nowMillis - HEARTBEAT_WINDOW_MILLIS;
-        Map<Integer, List<Long>> timesBySignature = new ConcurrentHashMap<>();
-        long lastAcceptedAttackMillis = Long.MIN_VALUE;
+        Map<Integer, List<Long>> timesBySignature = new HashMap<>();
+        Map<Integer, Long> lastAcceptedBySignature = new HashMap<>();
         for (BehaviorSample sample : samples) {
             if (!heartbeatSampleEligible(sample, cutoff)) {
                 continue;
             }
-            if (isAttackFanout(sample, lastAcceptedAttackMillis)) {
+            int actionSignature = cadenceActionSignature(sample);
+            if (actionSignature != 0 && isDuplicateActionFanout(actionSignature,
+                    sample.timestampMillis(), lastAcceptedBySignature)) {
                 continue;
             }
             int signature = BehaviorSimilarity.normalizedActionSignature(sample);
-            appendHeartbeatTime(timesBySignature, signature, sample.timestampMillis());
-            if (sample.has(BehaviorSample.ATTACK)) {
-                lastAcceptedAttackMillis = sample.timestampMillis();
+            appendTime(timesBySignature, signature, sample.timestampMillis());
+            if (actionSignature != 0) {
+                lastAcceptedBySignature.put(actionSignature, sample.timestampMillis());
             }
         }
         return timesBySignature;
+    }
+
+    private Map<Integer, List<Long>> collectActionTimes(List<BehaviorSample> samples, long cutoff) {
+        Map<Integer, List<Long>> timesBySignature = new HashMap<>();
+        Map<Integer, Long> lastAcceptedBySignature = new HashMap<>();
+        for (BehaviorSample sample : samples) {
+            if (!sample.patternEligible() || sample.timestampMillis() < cutoff) {
+                continue;
+            }
+            int signature = cadenceActionSignature(sample);
+            if (signature == 0 || isDuplicateActionFanout(signature,
+                    sample.timestampMillis(), lastAcceptedBySignature)) {
+                continue;
+            }
+            appendTime(timesBySignature, signature, sample.timestampMillis());
+            lastAcceptedBySignature.put(signature, sample.timestampMillis());
+        }
+        return timesBySignature;
+    }
+
+    private static int cadenceActionSignature(BehaviorSample sample) {
+        return sample.actions() & CADENCE_ACTION_MASK;
+    }
+
+    private static boolean isDuplicateActionFanout(int signature,
+                                                    long timestampMillis,
+                                                    Map<Integer, Long> lastAcceptedBySignature) {
+        Long previous = lastAcceptedBySignature.get(signature);
+        if (previous == null) {
+            return false;
+        }
+        long delta = timestampMillis - previous;
+        return delta >= 0L && delta <= ACTION_FANOUT_DEDUP_MILLIS;
     }
 
     private boolean heartbeatSampleEligible(BehaviorSample sample, long cutoff) {
@@ -236,9 +362,9 @@ public final class ActivityPatternAnalyzer {
                 && BehaviorSimilarity.normalizedActionSignature(sample) != 0;
     }
 
-    private static void appendHeartbeatTime(Map<Integer, List<Long>> timesBySignature,
-                                            int signature,
-                                            long timestampMillis) {
+    private static void appendTime(Map<Integer, List<Long>> timesBySignature,
+                                   int signature,
+                                   long timestampMillis) {
         timesBySignature.computeIfAbsent(signature, ignored -> new ArrayList<>()).add(timestampMillis);
     }
 
@@ -265,6 +391,9 @@ public final class ActivityPatternAnalyzer {
                 || sample.has(BehaviorSample.CHAT)
                 || sample.has(BehaviorSample.SWING)
                 || sample.has(BehaviorSample.ATTACK)
+                || sample.has(BehaviorSample.INTERACT)
+                || sample.has(BehaviorSample.BLOCK_BREAK)
+                || sample.has(BehaviorSample.BLOCK_PLACE)
                 || sample.has(BehaviorSample.JUMP)
                 || sample.hasMovement()
                 || sample.hasRotation();
@@ -479,35 +608,41 @@ public final class ActivityPatternAnalyzer {
 
     private boolean convincingVariation(List<BehaviorSample> samples, long nowMillis) {
         long cutoff = nowMillis - VARIATION_WINDOW_MILLIS;
-        int count = 0;
+        List<Long> times = new ArrayList<>();
         Set<Integer> distinctSignatures = new HashSet<>();
-        double distanceSum = 0.0D;
-        double distanceSquaredSum = 0.0D;
+        List<Double> movementDistances = new ArrayList<>();
+        List<Double> rotationAmounts = new ArrayList<>();
         for (BehaviorSample sample : samples) {
             if (!sample.patternEligible() || sample.timestampMillis() < cutoff) {
                 continue;
             }
-            count++;
+            times.add(sample.timestampMillis());
             int signature = BehaviorSimilarity.normalizedActionSignature(sample);
             if (signature != 0) {
                 distinctSignatures.add(signature);
             }
-            double distance = sample.distance();
-            distanceSum += distance;
-            distanceSquaredSum += distance * distance;
+            if (sample.hasMovement()) {
+                movementDistances.add(sample.distance());
+            }
+            if (sample.hasRotation() && sample.turnAmount() >= MIN_ROTATION_AMOUNT) {
+                rotationAmounts.add((double) sample.turnAmount());
+            }
         }
-        if (count < VARIATION_MINIMUM_SAMPLES) {
+        if (times.size() < VARIATION_MINIMUM_SAMPLES) {
             return false;
         }
-        if (distinctSignatures.size() >= VARIATION_DISTINCT_SIGNATURES) {
-            return true;
-        }
-        double mean = distanceSum / count;
-        if (mean <= VARIATION_MINIMUM_MEAN) {
-            return false;
-        }
-        double variance = Math.max(0.0D, distanceSquaredSum / count - mean * mean);
-        return Math.sqrt(variance) / mean >= VARIATION_MINIMUM_CV;
+        boolean signatureDiversity = distinctSignatures.size() >= VARIATION_DISTINCT_SIGNATURES;
+        boolean temporalVariation = BehaviorSimilarity.coefficientOfVariationOfIntervals(times)
+                >= VARIATION_TEMPORAL_MINIMUM_CV;
+        boolean movementVariation = movementDistances.size() >= VARIATION_MINIMUM_FEATURE_SAMPLES
+                && BehaviorSimilarity.coefficientOfVariation(movementDistances)
+                >= VARIATION_MOVEMENT_MINIMUM_CV;
+        boolean rotationVariation = rotationAmounts.size() >= VARIATION_MINIMUM_FEATURE_SAMPLES
+                && BehaviorSimilarity.coefficientOfVariation(rotationAmounts)
+                >= VARIATION_ROTATION_MINIMUM_CV;
+        return (signatureDiversity && temporalVariation)
+                || (movementVariation && (signatureDiversity || rotationVariation))
+                || (rotationVariation && temporalVariation);
     }
 
     public record Analysis(double clickRegularity,
