@@ -9,7 +9,7 @@ import java.util.Set;
 
 /**
  * Pure, bounded behavioral analysis. It looks for repeated cycles, regular
- * cadences, and sustained low-variety action streams while keeping environmental
+ * cadences, and sustained stationary action streams while keeping environmental
  * movement out of the trusted-input path. The tracker invokes this at a coarse
  * interval, never for every raw movement event.
  */
@@ -31,9 +31,10 @@ public final class ActivityPatternAnalyzer {
     private static final double CADENCE_BASE_SCORE = 0.975D;
     private static final double CADENCE_SCORE_RANGE = 0.025D;
     private static final long MONOTONY_WINDOW_MILLIS = 60_000L;
-    private static final long MONOTONY_MIN_SPAN_MILLIS = 20_000L;
+    private static final long MONOTONY_MIN_SPAN_MILLIS = 4_000L;
     private static final int MONOTONY_MIN_SAMPLES = 12;
-    private static final double MONOTONY_DOMINANT_RATIO = 0.90D;
+    private static final int MONOTONY_HIGH_VOLUME_SAMPLES = 64;
+    private static final double MONOTONY_MAX_PHYSICAL_VARIATION_RATIO = 0.35D;
     private static final double MONOTONY_SCORE = 0.985D;
     private static final double MONOTONY_MOVEMENT_DISTANCE = 0.15D;
     private static final float MONOTONY_ROTATION_DEGREES = 15.0F;
@@ -247,39 +248,38 @@ public final class ActivityPatternAnalyzer {
 
     private CycleResult stationaryActionMonotony(List<BehaviorSample> samples, long nowMillis) {
         long cutoff = nowMillis - MONOTONY_WINDOW_MILLIS;
-        Map<Integer, Integer> signatureCounts = new HashMap<>();
         Map<Integer, Long> lastAcceptedBySignature = new HashMap<>();
         List<Long> acceptedTimes = new ArrayList<>();
-        boolean independentVariation = false;
+        int eligibleSamples = 0;
+        int meaningfulPhysicalSamples = 0;
         for (BehaviorSample sample : samples) {
             if (!sample.patternEligible() || sample.timestampMillis() < cutoff) {
                 continue;
             }
-            int actionSignature = cadenceActionSignature(sample);
-            if (actionSignature == 0) {
-                independentVariation |= hasIndependentPhysicalVariation(sample);
-                continue;
+            eligibleSamples++;
+            if (hasIndependentPhysicalVariation(sample)) {
+                meaningfulPhysicalSamples++;
             }
-            if (isDuplicateActionFanout(actionSignature, sample.timestampMillis(),
-                    lastAcceptedBySignature)) {
+            int actionSignature = cadenceActionSignature(sample);
+            if (actionSignature == 0 || isDuplicateActionFanout(actionSignature,
+                    sample.timestampMillis(), lastAcceptedBySignature)) {
                 continue;
             }
             lastAcceptedBySignature.put(actionSignature, sample.timestampMillis());
-            signatureCounts.merge(actionSignature, 1, Integer::sum);
             acceptedTimes.add(sample.timestampMillis());
         }
-        if (independentVariation || acceptedTimes.size() < MONOTONY_MIN_SAMPLES) {
+        if (acceptedTimes.size() < MONOTONY_MIN_SAMPLES) {
             return CycleResult.NONE;
         }
         long span = acceptedTimes.get(acceptedTimes.size() - 1) - acceptedTimes.get(0);
-        if (span < MONOTONY_MIN_SPAN_MILLIS) {
+        if (span < MONOTONY_MIN_SPAN_MILLIS
+                && acceptedTimes.size() < MONOTONY_HIGH_VOLUME_SAMPLES) {
             return CycleResult.NONE;
         }
-        int dominant = 0;
-        for (int count : signatureCounts.values()) {
-            dominant = Math.max(dominant, count);
-        }
-        if ((double) dominant / acceptedTimes.size() < MONOTONY_DOMINANT_RATIO) {
+        double physicalVariationRatio = eligibleSamples == 0
+                ? 0.0D
+                : (double) meaningfulPhysicalSamples / eligibleSamples;
+        if (physicalVariationRatio >= MONOTONY_MAX_PHYSICAL_VARIATION_RATIO) {
             return CycleResult.NONE;
         }
         return new CycleResult(MONOTONY_SCORE, acceptedTimes.size(),
