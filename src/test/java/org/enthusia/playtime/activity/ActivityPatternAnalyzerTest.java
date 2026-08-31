@@ -196,7 +196,20 @@ class ActivityPatternAnalyzerTest {
             int action = placing
                     ? BehaviorSample.SWING | BehaviorSample.INTERACT | BehaviorSample.BLOCK_PLACE
                     : BehaviorSample.SWING | BehaviorSample.BLOCK_BREAK;
-            samples.add(action(time, action));
+            boolean physicallyVarying = random.nextInt(5) < 3;
+            if (physicallyVarying) {
+                double dx = (random.nextDouble() - 0.5D) * 0.55D;
+                double dz = (random.nextDouble() - 0.5D) * 0.55D;
+                float yaw = (float) ((random.nextDouble() - 0.5D) * 100.0D);
+                int flags = action | BehaviorSample.MOVE;
+                if (Math.abs(yaw) >= TEST_ROTATION_THRESHOLD) {
+                    flags |= BehaviorSample.ROTATE;
+                }
+                samples.add(new BehaviorSample(time, flags,
+                        dx, 0.0D, dz, yaw, 0.0F, true));
+            } else {
+                samples.add(action(time, action));
+            }
             time += 140L + random.nextInt(360);
             if (i % 13 == 0) {
                 time += 250L + random.nextInt(350);
@@ -208,14 +221,15 @@ class ActivityPatternAnalyzerTest {
     @Test
     void cropFarmingAndPvpStrafingWithVariationAreNotSuspicious() {
         List<BehaviorSample> samples = new ArrayList<>();
+        Random random = new Random(0xC0A57L);
         long time = 1_000L;
         for (int i = 0; i < 90; i++) {
             double direction = (i / 5) % 2 == 0 ? 1.0D : -1.0D;
             double distance = direction * (0.16D + ((i * 11) % 9) * 0.013D);
             float yaw = (float) (((i * 37) % 41) - 20);
-            int extra = i % 7 == 0 ? BehaviorSample.SWING | BehaviorSample.ATTACK : 0;
+            int extra = random.nextInt(7) == 0 ? BehaviorSample.SWING | BehaviorSample.ATTACK : 0;
             samples.add(move(time, 0.03D * Math.sin(i), 0.0D, distance, yaw, extra));
-            time += 190L + ((i * 43) % 170);
+            time += 190L + random.nextInt(170);
         }
         assertNotSuspicious(samples, time);
     }

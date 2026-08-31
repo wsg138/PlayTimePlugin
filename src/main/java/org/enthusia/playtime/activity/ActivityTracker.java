@@ -45,7 +45,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ActivityTracker implements Listener {
     private static final long UNINITIALIZED_ACTIVITY_TIME = 0L;
     private static final long ACTION_DEDUP_MILLIS = 75L;
+    private static final long DUPLICATE_ACTION_DEDUP_MILLIS = 20L;
     private static final long EXTERNAL_VELOCITY_GRACE_MILLIS = 1_500L;
+    private static final long MIN_SUSPICIOUS_RECOVERY_MILLIS = 180_000L;
+    private static final long SUSPICIOUS_OFFLINE_RESET_MILLIS = 24L * 60L * 60L * 1000L;
     private static final double SERVER_CORRECTION_DISTANCE_SQUARED = 16.0D;
     private static final double PURE_FALL_HORIZONTAL_SQUARED = 0.0025D;
     private static final double FALLING_DELTA = -0.08D;
@@ -170,14 +173,18 @@ public final class ActivityTracker implements Listener {
         activityData.lastAnalysisMillis = nowMillis;
         ActivityPatternAnalyzer.Analysis analysis = analyzeBehavior(activityData, nowMillis);
         activityData.analysis = analysis;
-        updateAnalysisMarkers(activityData, analysis, nowMillis);
-        updateSuspicionScore(activityData, analysis.combinedEvidence(), elapsed);
+        double sparseEvidence = LongHorizonActivityAnalyzer.sparseKeepaliveEvidence(
+                activityData.activityPulses, nowMillis, idleMillis);
+        double evidence = Math.max(analysis.combinedEvidence(), sparseEvidence);
+        updateAnalysisMarkers(activityData, analysis, evidence, nowMillis);
+        updateSuspicionScore(activityData, evidence, elapsed);
         updateSuspicionState(uuid, activityData, nowMillis);
     }
 
     private static void clearAnalysis(ActivityData activityData) {
         activityData.suspicious = false;
         activityData.suspicionScore = 0.0D;
+        activityData.variedRecoveryStartMillis = 0L;
         activityData.analysis = ActivityPatternAnalyzer.Analysis.EMPTY;
     }
 
@@ -202,12 +209,22 @@ public final class ActivityTracker implements Listener {
 
     private static void updateAnalysisMarkers(ActivityData activityData,
                                               ActivityPatternAnalyzer.Analysis analysis,
+                                              double evidence,
                                               long nowMillis) {
-        if (analysis.combinedEvidence() >= AUTOMATION_EVIDENCE_THRESHOLD) {
+        if (evidence >= AUTOMATION_EVIDENCE_THRESHOLD) {
             activityData.lastAutomationEvidenceMillis = nowMillis;
+            activityData.variedRecoveryStartMillis = 0L;
+            return;
         }
         if (analysis.convincingVariation()) {
             activityData.lastVariedActivityMillis = nowMillis;
+        }
+        boolean recoveryQuality = analysis.convincingVariation()
+                && LongHorizonActivityAnalyzer.hasDenseRecentActivity(activityData.activityPulses, nowMillis);
+        if (!recoveryQuality) {
+            activityData.variedRecoveryStartMillis = 0L;
+        } else if (activityData.variedRecoveryStartMillis <= activityData.lastAutomationEvidenceMillis) {
+            activityData.variedRecoveryStartMillis = nowMillis;
         }
     }
 
@@ -234,10 +251,13 @@ public final class ActivityTracker implements Listener {
     }
 
     private boolean shouldClearSuspicion(ActivityData activityData, long nowMillis) {
+        long recoveryMillis = Math.max(MIN_SUSPICIOUS_RECOVERY_MILLIS,
+                advanced.scoring().recoveryMillis());
         return activityData.suspicious
                 && activityData.suspicionScore <= advanced.scoring().clearThreshold()
                 && activityData.lastVariedActivityMillis > activityData.lastAutomationEvidenceMillis
-                && nowMillis - activityData.lastVariedActivityMillis <= advanced.scoring().recoveryMillis();
+                && activityData.variedRecoveryStartMillis > activityData.lastAutomationEvidenceMillis
+                && nowMillis - activityData.variedRecoveryStartMillis >= recoveryMillis;
     }
 
     public Map<UUID, ActivitySnapshot> snapshot() {
@@ -343,7 +363,7 @@ public final class ActivityTracker implements Listener {
                 return ActivityData.create(player, nowMillis);
             }
             synchronized (existing) {
-                if (!existing.online && existing.disconnectedAtMillis > 0L
+                if (!existing.online && !existing.suspicious && existing.disconnectedAtMillis > 0L
                         && nowMillis - existing.disconnectedAtMillis
                         > advanced.scoring().reconnectRetentionMillis()) {
                     return ActivityData.create(player, nowMillis);
@@ -385,6 +405,7 @@ public final class ActivityTracker implements Listener {
     private boolean appendBehavior(ActivityData activityData,
                                    BehaviorSample sample,
                                    boolean deduplicateActions) {
+        LongHorizonActivityAnalyzer.recordPulse(activityData.activityPulses, sample.timestampMillis());
         BehaviorSample last = activityData.behaviorHistory.peekLast();
         if (shouldMergeActionFanout(last, sample, deduplicateActions)) {
             activityData.behaviorHistory.pollLast();
@@ -399,21 +420,29 @@ public final class ActivityTracker implements Listener {
     private static boolean shouldMergeActionFanout(BehaviorSample last,
                                                    BehaviorSample sample,
                                                    boolean deduplicateActions) {
-        if (!deduplicateActions || last == null) {
+        if (!deduplicateActions || last == null || !actionOnlyPair(last, sample)) {
             return false;
         }
-        return hasDistinctActionBits(last, sample)
-                && withinActionDedupWindow(last, sample)
-                && actionOnlyPair(last, sample);
+        if (hasDistinctActionBits(last, sample)) {
+            return withinActionWindow(last, sample, ACTION_DEDUP_MILLIS);
+        }
+        return hasSameActionBits(last, sample)
+                && withinActionWindow(last, sample, DUPLICATE_ACTION_DEDUP_MILLIS);
     }
 
     private static boolean hasDistinctActionBits(BehaviorSample last, BehaviorSample sample) {
         return (sample.actions() & ~last.actions()) != 0;
     }
 
-    private static boolean withinActionDedupWindow(BehaviorSample last, BehaviorSample sample) {
+    private static boolean hasSameActionBits(BehaviorSample last, BehaviorSample sample) {
+        return last.actions() == sample.actions();
+    }
+
+    private static boolean withinActionWindow(BehaviorSample last,
+                                              BehaviorSample sample,
+                                              long windowMillis) {
         long delta = sample.timestampMillis() - last.timestampMillis();
-        return delta >= 0L && delta <= ACTION_DEDUP_MILLIS;
+        return delta >= 0L && delta <= windowMillis;
     }
 
     private static boolean actionOnlyPair(BehaviorSample last, BehaviorSample sample) {
@@ -509,11 +538,16 @@ public final class ActivityTracker implements Listener {
             activityData.lastMovementMutation = nowMillis;
 
             if (shouldSuppressMovement(player, activityData, delta, nowMillis)) {
-                if (rotated && (player.isGliding() || player.isInsideVehicle())) {
-                    recordMovementSample(activityData, nowMillis, delta, false, false, true);
+                if (rotated) {
+                    // Positional motion may be environmental, but camera input is still
+                    // player-controlled. Keep only the rotation component and make it
+                    // eligible for automation analysis instead of granting blind activity.
+                    recordMovementSample(activityData, nowMillis, delta, false, true, true);
+                    counters.activityEventsAccepted.increment();
+                } else {
+                    counters.activityEventsSkipped.increment();
                 }
                 updatePosition(activityData, to);
-                counters.activityEventsSkipped.increment();
                 return;
             }
 
@@ -537,9 +571,11 @@ public final class ActivityTracker implements Listener {
 
         activityData.lastGeneralActivity = nowMillis;
         activityData.lastNonClickActivity = nowMillis;
+        double dx = moved ? delta.dx() : 0.0D;
+        double dy = moved ? delta.dy() : 0.0D;
+        double dz = moved ? delta.dz() : 0.0D;
         BehaviorSample sample = new BehaviorSample(nowMillis, actions,
-                delta.dx(), delta.dy(), delta.dz(), delta.yawDelta(), delta.pitchDelta(),
-                patternEligible);
+                dx, dy, dz, delta.yawDelta(), delta.pitchDelta(), patternEligible);
         appendBehavior(activityData, sample, false);
     }
 
@@ -724,41 +760,45 @@ public final class ActivityTracker implements Listener {
     }
 
     private void removeExpiredDisconnected(long nowMillis) {
-        long retention = advanced.scoring().reconnectRetentionMillis();
+        long normalRetention = advanced.scoring().reconnectRetentionMillis();
         for (Map.Entry<UUID, ActivityData> entry : data.entrySet()) {
-            if (isExpiredDisconnected(entry.getValue(), nowMillis, retention)) {
-                data.remove(entry.getKey(), entry.getValue());
+            ActivityData activityData = entry.getValue();
+            boolean remove;
+            boolean resetSuspicion;
+            synchronized (activityData) {
+                long disconnectedFor = activityData.disconnectedAtMillis <= 0L
+                        ? 0L
+                        : nowMillis - activityData.disconnectedAtMillis;
+                resetSuspicion = !activityData.online && activityData.suspicious
+                        && disconnectedFor > SUSPICIOUS_OFFLINE_RESET_MILLIS;
+                remove = !activityData.online && activityData.disconnectedAtMillis > 0L
+                        && (resetSuspicion || (!activityData.suspicious && disconnectedFor > normalRetention));
+            }
+            if (remove && data.remove(entry.getKey(), activityData) && resetSuspicion) {
+                suspiciousResetMarkers.put(entry.getKey(), nowMillis);
             }
         }
     }
 
-    private static boolean isExpiredDisconnected(ActivityData activityData,
-                                                 long nowMillis,
-                                                 long retention) {
-        synchronized (activityData) {
-            return !activityData.online && activityData.disconnectedAtMillis > 0L
-                    && nowMillis - activityData.disconnectedAtMillis > retention;
-        }
-    }
-
     private void trimDisconnectedRetention() {
-        List<Map.Entry<UUID, ActivityData>> disconnected = disconnectedEntries();
-        int excess = disconnected.size() - advanced.scoring().maxRetainedDisconnected();
-        if (excess <= 0) {
+        List<Map.Entry<UUID, ActivityData>> removable = disconnectedNonSuspiciousEntries();
+        int excess = data.size() - advanced.scoring().maxRetainedDisconnected();
+        if (excess <= 0 || removable.isEmpty()) {
             return;
         }
-        disconnected.sort(Comparator.comparingLong(entry -> entry.getValue().disconnectedAtMillis));
-        for (int index = 0; index < excess; index++) {
-            Map.Entry<UUID, ActivityData> entry = disconnected.get(index);
+        removable.sort(Comparator.comparingLong(entry -> entry.getValue().disconnectedAtMillis));
+        int removeCount = Math.min(excess, removable.size());
+        for (int index = 0; index < removeCount; index++) {
+            Map.Entry<UUID, ActivityData> entry = removable.get(index);
             data.remove(entry.getKey(), entry.getValue());
         }
     }
 
-    private List<Map.Entry<UUID, ActivityData>> disconnectedEntries() {
+    private List<Map.Entry<UUID, ActivityData>> disconnectedNonSuspiciousEntries() {
         List<Map.Entry<UUID, ActivityData>> disconnected = new ArrayList<>();
         for (Map.Entry<UUID, ActivityData> entry : data.entrySet()) {
             synchronized (entry.getValue()) {
-                if (!entry.getValue().online) {
+                if (!entry.getValue().online && !entry.getValue().suspicious) {
                     disconnected.add(entry);
                 }
             }
@@ -788,11 +828,13 @@ public final class ActivityTracker implements Listener {
         private long disconnectedAtMillis;
         private long externalMotionUntilMillis;
         private final Deque<BehaviorSample> behaviorHistory = new ArrayDeque<>();
+        private final Deque<Long> activityPulses = new ArrayDeque<>();
         private double suspicionScore;
         private boolean suspicious;
         private long lastAnalysisMillis;
         private long lastAutomationEvidenceMillis;
         private long lastVariedActivityMillis;
+        private long variedRecoveryStartMillis;
         private ActivityPatternAnalyzer.Analysis analysis = ActivityPatternAnalyzer.Analysis.EMPTY;
         private ActivityState publishedState;
 
@@ -826,11 +868,13 @@ public final class ActivityTracker implements Listener {
                             0.0D, 0.0D, 0.0D, 0.0F, 0.0F, true));
                 }
             }
+            data.activityPulses.addAll(snapshot.activityPulses());
             data.suspicionScore = snapshot.suspicionScore();
             data.suspicious = snapshot.suspicious();
             data.lastAnalysisMillis = snapshot.lastAnalysisMillis();
             data.lastAutomationEvidenceMillis = snapshot.lastAutomationEvidenceMillis();
             data.lastVariedActivityMillis = snapshot.lastVariedActivityMillis();
+            data.variedRecoveryStartMillis = snapshot.variedRecoveryStartMillis();
             data.publishedState = snapshot.publishedState();
             data.online = snapshot.online();
             data.disconnectedAtMillis = snapshot.disconnectedAtMillis();
@@ -846,7 +890,8 @@ public final class ActivityTracker implements Listener {
                     lastX, lastY, lastZ, lastYaw, lastPitch, hasPosition,
                     List.copyOf(swings), List.copyOf(behaviorHistory), suspicionScore,
                     suspicious, lastAnalysisMillis, lastAutomationEvidenceMillis,
-                    lastVariedActivityMillis, publishedState, online, disconnectedAtMillis);
+                    lastVariedActivityMillis, publishedState, online, disconnectedAtMillis,
+                    List.copyOf(activityPulses), variedRecoveryStartMillis);
         }
     }
 
@@ -867,7 +912,9 @@ public final class ActivityTracker implements Listener {
                                    long lastVariedActivityMillis,
                                    ActivityState publishedState,
                                    boolean online,
-                                   long disconnectedAtMillis) {
+                                   long disconnectedAtMillis,
+                                   List<Long> activityPulses,
+                                   long variedRecoveryStartMillis) {
         public ActivitySnapshot(long lastGeneralActivity,
                                 long lastNonClickActivity,
                                 double lastX,
@@ -879,12 +926,38 @@ public final class ActivityTracker implements Listener {
                                 List<Long> swingTimes) {
             this(lastGeneralActivity, lastNonClickActivity, lastX, lastY, lastZ,
                     lastYaw, lastPitch, hasPosition, swingTimes, List.of(),
-                    0.0D, false, 0L, 0L, 0L, null, true, 0L);
+                    0.0D, false, 0L, 0L, 0L, null, true, 0L, List.of(), 0L);
+        }
+
+        public ActivitySnapshot(long lastGeneralActivity,
+                                long lastNonClickActivity,
+                                double lastX,
+                                double lastY,
+                                double lastZ,
+                                float lastYaw,
+                                float lastPitch,
+                                boolean hasPosition,
+                                List<Long> swingTimes,
+                                List<BehaviorSample> behaviorSamples,
+                                double suspicionScore,
+                                boolean suspicious,
+                                long lastAnalysisMillis,
+                                long lastAutomationEvidenceMillis,
+                                long lastVariedActivityMillis,
+                                ActivityState publishedState,
+                                boolean online,
+                                long disconnectedAtMillis) {
+            this(lastGeneralActivity, lastNonClickActivity, lastX, lastY, lastZ,
+                    lastYaw, lastPitch, hasPosition, swingTimes, behaviorSamples,
+                    suspicionScore, suspicious, lastAnalysisMillis, lastAutomationEvidenceMillis,
+                    lastVariedActivityMillis, publishedState, online, disconnectedAtMillis,
+                    List.of(), 0L);
         }
 
         public ActivitySnapshot {
             swingTimes = swingTimes == null ? List.of() : List.copyOf(swingTimes);
             behaviorSamples = behaviorSamples == null ? List.of() : List.copyOf(behaviorSamples);
+            activityPulses = activityPulses == null ? List.of() : List.copyOf(activityPulses);
         }
     }
 
