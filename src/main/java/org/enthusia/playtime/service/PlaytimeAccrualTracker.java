@@ -160,10 +160,21 @@ final class PlaytimeAccrualTracker {
         if (resetMarker <= state.processedResetMarker) {
             return false;
         }
+        discardPendingSuspiciousWindow(state);
         state.processedResetMarker = resetMarker;
         state.suspiciousStreak = ZERO_STREAK;
         state.reconnectGuard = false;
         return true;
+    }
+
+    private static void discardPendingSuspiciousWindow(PlayerAccrual state) {
+        for (Segment segment : state.segments) {
+            if (segment.state == ActivityState.SUSPICIOUS) {
+                state.segments.clear();
+                state.pendingNanos = ZERO_NANOS;
+                return;
+            }
+        }
     }
 
     private void append(PlayerAccrual state, ActivityState activityState, long nanos,
