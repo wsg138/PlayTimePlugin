@@ -208,14 +208,15 @@ class ActivityPatternAnalyzerTest {
     @Test
     void cropFarmingAndPvpStrafingWithVariationAreNotSuspicious() {
         List<BehaviorSample> samples = new ArrayList<>();
+        Random random = new Random(0xC0A57L);
         long time = 1_000L;
         for (int i = 0; i < 90; i++) {
             double direction = (i / 5) % 2 == 0 ? 1.0D : -1.0D;
             double distance = direction * (0.16D + ((i * 11) % 9) * 0.013D);
             float yaw = (float) (((i * 37) % 41) - 20);
-            int extra = i % 7 == 0 ? BehaviorSample.SWING | BehaviorSample.ATTACK : 0;
+            int extra = random.nextInt(7) == 0 ? BehaviorSample.SWING | BehaviorSample.ATTACK : 0;
             samples.add(move(time, 0.03D * Math.sin(i), 0.0D, distance, yaw, extra));
-            time += 190L + ((i * 43) % 170);
+            time += 190L + random.nextInt(170);
         }
         assertNotSuspicious(samples, time);
     }
