@@ -196,7 +196,20 @@ class ActivityPatternAnalyzerTest {
             int action = placing
                     ? BehaviorSample.SWING | BehaviorSample.INTERACT | BehaviorSample.BLOCK_PLACE
                     : BehaviorSample.SWING | BehaviorSample.BLOCK_BREAK;
-            samples.add(action(time, action));
+            boolean physicallyVarying = random.nextInt(5) < 3;
+            if (physicallyVarying) {
+                double dx = (random.nextDouble() - 0.5D) * 0.55D;
+                double dz = (random.nextDouble() - 0.5D) * 0.55D;
+                float yaw = (float) ((random.nextDouble() - 0.5D) * 100.0D);
+                int flags = action | BehaviorSample.MOVE;
+                if (Math.abs(yaw) >= TEST_ROTATION_THRESHOLD) {
+                    flags |= BehaviorSample.ROTATE;
+                }
+                samples.add(new BehaviorSample(time, flags,
+                        dx, 0.0D, dz, yaw, 0.0F, true));
+            } else {
+                samples.add(action(time, action));
+            }
             time += 140L + random.nextInt(360);
             if (i % 13 == 0) {
                 time += 250L + random.nextInt(350);
