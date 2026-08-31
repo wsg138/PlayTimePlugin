@@ -1,7 +1,7 @@
 package org.enthusia.playtime.activity;
 
 import java.util.Deque;
-import java.util.List;
+import java.util.Iterator;
 
 /**
  * Coalesces accepted player-controlled input into one pulse per second and analyzes
@@ -34,7 +34,7 @@ final class LongHorizonActivityAnalyzer {
         trim(pulses, timestampMillis);
     }
 
-    static double sparseKeepaliveEvidence(List<Long> pulses, long nowMillis, long idleMillis) {
+    static double sparseKeepaliveEvidence(Deque<Long> pulses, long nowMillis, long idleMillis) {
         if (pulses.size() < MIN_SPARSE_PULSES || idleMillis <= 0L) {
             return 0.0D;
         }
@@ -46,15 +46,14 @@ final class LongHorizonActivityAnalyzer {
         if (segment.spanMillis() < minimumSpan) {
             return 0.0D;
         }
-        double occupiedSeconds = segment.count();
         double elapsedSeconds = Math.max(1.0D,
                 segment.spanMillis() / (double) PULSE_BUCKET_MILLIS + 1.0D);
-        return occupiedSeconds / elapsedSeconds < MAX_SPARSE_OCCUPANCY
+        return segment.count() / elapsedSeconds < MAX_SPARSE_OCCUPANCY
                 ? SPARSE_KEEPALIVE_EVIDENCE
                 : 0.0D;
     }
 
-    static boolean hasDenseRecentActivity(List<Long> pulses, long nowMillis) {
+    static boolean hasDenseRecentActivity(Deque<Long> pulses, long nowMillis) {
         long cutoff = nowMillis - RECOVERY_DENSITY_WINDOW_MILLIS;
         int count = 0;
         long first = Long.MIN_VALUE;
@@ -79,35 +78,37 @@ final class LongHorizonActivityAnalyzer {
         return count / windowSeconds >= RECOVERY_MIN_OCCUPANCY;
     }
 
-    private static Segment latestContinuousSegment(List<Long> pulses, long nowMillis, long idleMillis) {
-        int latestIndex = latestIndexAtOrBefore(pulses, nowMillis);
-        if (latestIndex < 0) {
-            return null;
-        }
-        long latest = pulses.get(latestIndex);
-        if (nowMillis - latest >= idleMillis) {
-            return null;
-        }
-        int startIndex = latestIndex;
-        while (startIndex > 0) {
-            long current = pulses.get(startIndex);
-            long previous = pulses.get(startIndex - 1);
-            if (current - previous >= idleMillis) {
+    private static Segment latestContinuousSegment(Deque<Long> pulses, long nowMillis, long idleMillis) {
+        Iterator<Long> descending = pulses.descendingIterator();
+        long latest = Long.MIN_VALUE;
+        long previous = Long.MIN_VALUE;
+        long first = Long.MIN_VALUE;
+        int count = 0;
+        while (descending.hasNext()) {
+            long pulse = descending.next();
+            if (pulse > nowMillis) {
+                continue;
+            }
+            if (latest == Long.MIN_VALUE) {
+                latest = pulse;
+                previous = pulse;
+                first = pulse;
+                count = 1;
+                if (nowMillis - latest >= idleMillis) {
+                    return null;
+                }
+                continue;
+            }
+            if (previous - pulse >= idleMillis) {
                 break;
             }
-            startIndex--;
+            previous = pulse;
+            first = pulse;
+            count++;
         }
-        long first = pulses.get(startIndex);
-        return new Segment(latestIndex - startIndex + 1, Math.max(0L, latest - first));
-    }
-
-    private static int latestIndexAtOrBefore(List<Long> pulses, long nowMillis) {
-        for (int index = pulses.size() - 1; index >= 0; index--) {
-            if (pulses.get(index) <= nowMillis) {
-                return index;
-            }
-        }
-        return -1;
+        return latest == Long.MIN_VALUE
+                ? null
+                : new Segment(count, Math.max(0L, latest - first));
     }
 
     private static void trim(Deque<Long> pulses, long nowMillis) {
