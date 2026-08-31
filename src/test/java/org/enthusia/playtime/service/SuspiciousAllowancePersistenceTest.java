@@ -20,8 +20,10 @@ class SuspiciousAllowancePersistenceTest {
 
         assertEquals(1, tracker.sample(
                 uuid, 60L * SECOND, ActivityState.SUSPICIOUS, 1L).activeMinutes());
-        assertEquals(1, tracker.sample(
-                uuid, 120L * SECOND, ActivityState.SUSPICIOUS, 1L).activeMinutes());
+        var blocked = tracker.sample(
+                uuid, 120L * SECOND, ActivityState.SUSPICIOUS, 1L);
+        assertEquals(0, blocked.activeMinutes());
+        assertEquals(1, blocked.afkMinutes());
 
         var idle = tracker.sample(uuid, 180L * SECOND, ActivityState.IDLE, 1L);
         assertEquals(1, idle.afkMinutes());
@@ -34,6 +36,7 @@ class SuspiciousAllowancePersistenceTest {
         var resumedAutomation = tracker.sample(
                 uuid, 300L * SECOND, ActivityState.SUSPICIOUS, 1L);
         assertEquals(0, resumedAutomation.activeMinutes());
+        assertEquals(1, resumedAutomation.afkMinutes());
         assertEquals(3, resumedAutomation.suspiciousStreak());
     }
 
@@ -52,6 +55,7 @@ class SuspiciousAllowancePersistenceTest {
         var resumedAutomation = tracker.sample(
                 uuid, 180L * SECOND, ActivityState.SUSPICIOUS, 1L);
         assertEquals(0, resumedAutomation.activeMinutes());
+        assertEquals(1, resumedAutomation.afkMinutes());
         assertEquals(2, resumedAutomation.suspiciousStreak());
     }
 
