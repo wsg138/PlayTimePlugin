@@ -45,6 +45,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ActivityTracker implements Listener {
     private static final long UNINITIALIZED_ACTIVITY_TIME = 0L;
     private static final long ACTION_DEDUP_MILLIS = 75L;
+    private static final long DUPLICATE_ACTION_DEDUP_MILLIS = 20L;
     private static final long EXTERNAL_VELOCITY_GRACE_MILLIS = 1_500L;
     private static final double SERVER_CORRECTION_DISTANCE_SQUARED = 16.0D;
     private static final double PURE_FALL_HORIZONTAL_SQUARED = 0.0025D;
@@ -399,21 +400,29 @@ public final class ActivityTracker implements Listener {
     private static boolean shouldMergeActionFanout(BehaviorSample last,
                                                    BehaviorSample sample,
                                                    boolean deduplicateActions) {
-        if (!deduplicateActions || last == null) {
+        if (!deduplicateActions || last == null || !actionOnlyPair(last, sample)) {
             return false;
         }
-        return hasDistinctActionBits(last, sample)
-                && withinActionDedupWindow(last, sample)
-                && actionOnlyPair(last, sample);
+        if (hasDistinctActionBits(last, sample)) {
+            return withinActionWindow(last, sample, ACTION_DEDUP_MILLIS);
+        }
+        return hasSameActionBits(last, sample)
+                && withinActionWindow(last, sample, DUPLICATE_ACTION_DEDUP_MILLIS);
     }
 
     private static boolean hasDistinctActionBits(BehaviorSample last, BehaviorSample sample) {
         return (sample.actions() & ~last.actions()) != 0;
     }
 
-    private static boolean withinActionDedupWindow(BehaviorSample last, BehaviorSample sample) {
+    private static boolean hasSameActionBits(BehaviorSample last, BehaviorSample sample) {
+        return last.actions() == sample.actions();
+    }
+
+    private static boolean withinActionWindow(BehaviorSample last,
+                                              BehaviorSample sample,
+                                              long windowMillis) {
         long delta = sample.timestampMillis() - last.timestampMillis();
-        return delta >= 0L && delta <= ACTION_DEDUP_MILLIS;
+        return delta >= 0L && delta <= windowMillis;
     }
 
     private static boolean actionOnlyPair(BehaviorSample last, BehaviorSample sample) {
@@ -509,11 +518,16 @@ public final class ActivityTracker implements Listener {
             activityData.lastMovementMutation = nowMillis;
 
             if (shouldSuppressMovement(player, activityData, delta, nowMillis)) {
-                if (rotated && (player.isGliding() || player.isInsideVehicle())) {
-                    recordMovementSample(activityData, nowMillis, delta, false, false, true);
+                if (rotated) {
+                    // Positional motion may be environmental, but camera input is still
+                    // player-controlled. Keep only the rotation component and make it
+                    // eligible for automation analysis instead of granting blind activity.
+                    recordMovementSample(activityData, nowMillis, delta, false, true, true);
+                    counters.activityEventsAccepted.increment();
+                } else {
+                    counters.activityEventsSkipped.increment();
                 }
                 updatePosition(activityData, to);
-                counters.activityEventsSkipped.increment();
                 return;
             }
 
@@ -537,9 +551,11 @@ public final class ActivityTracker implements Listener {
 
         activityData.lastGeneralActivity = nowMillis;
         activityData.lastNonClickActivity = nowMillis;
+        double dx = moved ? delta.dx() : 0.0D;
+        double dy = moved ? delta.dy() : 0.0D;
+        double dz = moved ? delta.dz() : 0.0D;
         BehaviorSample sample = new BehaviorSample(nowMillis, actions,
-                delta.dx(), delta.dy(), delta.dz(), delta.yawDelta(), delta.pitchDelta(),
-                patternEligible);
+                dx, dy, dz, delta.yawDelta(), delta.pitchDelta(), patternEligible);
         appendBehavior(activityData, sample, false);
     }
 
