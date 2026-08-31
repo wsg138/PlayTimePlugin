@@ -13,15 +13,15 @@ class SuspiciousAllowancePersistenceTest {
     private static final long SECOND = 1_000_000_000L;
 
     @Test
-    void idleAndAfkMinutesCannotReplenishSuspiciousAllowance() {
+    void idleAndAfkMinutesCannotClearSuspiciousHistory() {
         UUID uuid = UUID.randomUUID();
         PlaytimeAccrualTracker tracker = new PlaytimeAccrualTracker(2, Map.of());
         tracker.connect(uuid, 0L, 1L);
 
-        assertEquals(1, tracker.sample(
-                uuid, 60L * SECOND, ActivityState.SUSPICIOUS, 1L).activeMinutes());
-        var blocked = tracker.sample(
-                uuid, 120L * SECOND, ActivityState.SUSPICIOUS, 1L);
+        var first = tracker.sample(uuid, 60L * SECOND, ActivityState.SUSPICIOUS, 1L);
+        assertEquals(0, first.activeMinutes());
+        assertEquals(1, first.afkMinutes());
+        var blocked = tracker.sample(uuid, 120L * SECOND, ActivityState.SUSPICIOUS, 1L);
         assertEquals(0, blocked.activeMinutes());
         assertEquals(1, blocked.afkMinutes());
 
@@ -41,13 +41,14 @@ class SuspiciousAllowancePersistenceTest {
     }
 
     @Test
-    void ordinaryActiveStateCannotReplenishSuspiciousAllowance() {
+    void ordinaryActiveStateCannotClearSuspiciousHistory() {
         UUID uuid = UUID.randomUUID();
         PlaytimeAccrualTracker tracker = new PlaytimeAccrualTracker(1, Map.of());
         tracker.connect(uuid, 0L, 1L);
 
-        assertEquals(1, tracker.sample(
-                uuid, 60L * SECOND, ActivityState.SUSPICIOUS, 1L).activeMinutes());
+        var suspicious = tracker.sample(uuid, 60L * SECOND, ActivityState.SUSPICIOUS, 1L);
+        assertEquals(0, suspicious.activeMinutes());
+        assertEquals(1, suspicious.afkMinutes());
         var active = tracker.sample(uuid, 120L * SECOND, ActivityState.ACTIVE, 1L);
         assertEquals(1, active.activeMinutes());
         assertEquals(1, active.suspiciousStreak());
@@ -60,7 +61,7 @@ class SuspiciousAllowancePersistenceTest {
     }
 
     @Test
-    void detectorApprovedResetMarkerReplenishesAllowance() {
+    void detectorApprovedResetMarkerClearsHistoryButDoesNotGrantSuspiciousCredit() {
         UUID uuid = UUID.randomUUID();
         PlaytimeAccrualTracker tracker = new PlaytimeAccrualTracker(1, Map.of());
         tracker.connect(uuid, 0L, 1L);
@@ -70,7 +71,8 @@ class SuspiciousAllowancePersistenceTest {
         var resetAutomation = tracker.sample(
                 uuid, 121L * SECOND, ActivityState.SUSPICIOUS, 2L);
 
-        assertEquals(1, resetAutomation.activeMinutes());
+        assertEquals(0, resetAutomation.activeMinutes());
+        assertEquals(1, resetAutomation.afkMinutes());
         assertEquals(1, resetAutomation.suspiciousStreak());
     }
 
