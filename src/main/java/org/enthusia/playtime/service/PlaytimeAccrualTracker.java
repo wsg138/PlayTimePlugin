@@ -22,7 +22,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>The suspicious streak is intentionally an allowance consumed since the last
  * detector-approved recovery marker, not merely a count of adjacent suspicious
  * minutes. IDLE, AFK, reconnects, and ordinary ACTIVE observations therefore do
- * not replenish suspicious credit.</p>
+ * not replenish suspicious credit. The runtime also caps suspicious ACTIVE grace
+ * at one minute so a detected automation cannot farm a long grace window.</p>
  */
 final class PlaytimeAccrualTracker {
     static final long NANOS_PER_MINUTE = 60_000_000_000L;
@@ -30,6 +31,7 @@ final class PlaytimeAccrualTracker {
     private static final long ZERO_NANOS = 0L;
     private static final int ZERO_STREAK = 0;
     private static final int NEXT_STREAK = 1;
+    private static final int MAX_SUSPICIOUS_ACTIVE_GRACE_MINUTES = 1;
     private static final List<ActivityState> MINUTE_STATE_PRIORITY = List.of(
             ActivityState.ACTIVE, ActivityState.IDLE, ActivityState.AFK, ActivityState.SUSPICIOUS);
 
@@ -44,7 +46,8 @@ final class PlaytimeAccrualTracker {
 
     PlaytimeAccrualTracker(int maxCountedSuspiciousMinutes, long maxSampleNanos,
                            Map<UUID, Snapshot> initialState) {
-        this.maxCountedSuspiciousMinutes = Math.max(ZERO_STREAK, maxCountedSuspiciousMinutes);
+        this.maxCountedSuspiciousMinutes = Math.min(MAX_SUSPICIOUS_ACTIVE_GRACE_MINUTES,
+                Math.max(ZERO_STREAK, maxCountedSuspiciousMinutes));
         this.maxSampleNanos = Math.max(NANOS_PER_MINUTE, maxSampleNanos);
         if (initialState != null) {
             initialState.forEach((uuid, snapshot) -> players.put(uuid, PlayerAccrual.from(snapshot)));
@@ -205,8 +208,12 @@ final class PlaytimeAccrualTracker {
                     if (state.suspiciousStreak <= maxCountedSuspiciousMinutes) {
                         active++;
                         activeCredit = 1;
-                    } else if (state.suspiciousStreak == maxCountedSuspiciousMinutes + NEXT_STREAK) {
-                        thresholdCrossed = true;
+                    } else {
+                        afk++;
+                        afkCredit = 1;
+                        if (state.suspiciousStreak == maxCountedSuspiciousMinutes + NEXT_STREAK) {
+                            thresholdCrossed = true;
+                        }
                     }
                 }
                 default -> throw new IllegalStateException("Unsupported activity state " + minute.state());
