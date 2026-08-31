@@ -77,10 +77,11 @@ sampling:
     # A stationary click-only stream can become suspicious after this much time.
     non-click-grace-seconds: 10
 
-    # Suspicious time still counts as active playtime for the first N consecutive suspicious minutes.
-    # Once the streak exceeds this threshold, suspicious minutes stop counting until convincing
-    # varied activity clears the detector. Trivial movement/commands/placement do not reset it.
-    max-counted-consecutive-minutes: 10
+    # Suspicious time may receive at most one ACTIVE grace minute. The runtime hard-caps
+    # this value at 1 even if an older live config still contains a larger value. Once
+    # the allowance is consumed, suspicious minutes accrue as AFK until detector-approved
+    # varied activity clears the streak. Trivial movement/commands/placement do not reset it.
+    max-counted-consecutive-minutes: 1
 
     click:
       enabled: true
@@ -112,8 +113,9 @@ sampling:
       maximum-cycle-samples: 40
 
     scoring:
-      # High-confidence hysteresis: entering SUSPICIOUS is intentionally much harder
-      # than remaining clear. Prefer a false negative over repeatedly flagging humans.
+      # Active-credit detection is intentionally conservative: when behavior strongly
+      # resembles automation, prefer a temporary false SUSPICIOUS result over awarding
+      # ACTIVE time to a bot or macro.
       suspicious-threshold: 0.86
       clear-threshold: 0.30
       decay-per-second: 0.025
