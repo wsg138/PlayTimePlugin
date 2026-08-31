@@ -96,7 +96,27 @@ class ActivityLifecycleTest {
     }
 
     @Test
-    void repeatedHeldUseStyleInteractionDoesNotFabricateMacroStructure() {
+    void duplicateDamageFanoutFromOneAttackDoesNotFloodHistory() {
+        PlayerMock player = MockBukkit.getMock().addPlayer();
+        ActivityTracker tracker = plugin.runtime().activityTracker();
+        long base = System.currentTimeMillis();
+        tracker.bootstrapPlayer(player, base);
+
+        long time = base + 100L;
+        for (int i = 0; i < 70; i++) {
+            tracker.recordAction(player, time, BehaviorSample.ATTACK);
+            tracker.recordAction(player, time + 3L, BehaviorSample.ATTACK);
+            tracker.recordAction(player, time + 7L, BehaviorSample.ATTACK);
+            time += 200L;
+        }
+
+        List<BehaviorSample> samples = tracker.snapshot().get(player.getUniqueId()).behaviorSamples();
+        assertEquals(70, samples.size());
+        assertEquals(ActivityState.SUSPICIOUS, tracker.getState(player.getUniqueId(), time));
+    }
+
+    @Test
+    void repeatedHeldUseStyleInteractionIsUntrustedAutomationEvidence() {
         PlayerMock player = MockBukkit.getMock().addPlayer();
         ActivityTracker tracker = plugin.runtime().activityTracker();
         long base = System.currentTimeMillis();
@@ -108,10 +128,10 @@ class ActivityLifecycleTest {
             time += 200L;
         }
 
-        assertEquals(ActivityState.ACTIVE, tracker.getState(player.getUniqueId(), time));
+        assertEquals(ActivityState.SUSPICIOUS, tracker.getState(player.getUniqueId(), time));
         ActivityTracker.ActivityDiagnostics diagnostics = tracker.diagnostics(player.getUniqueId(), time);
         assertEquals(0.0D, diagnostics.clickRegularity());
-        assertTrue(diagnostics.sequenceRepetition() < 0.80D);
+        assertTrue(diagnostics.sequenceRepetition() >= 0.975D);
     }
 
     @Test
