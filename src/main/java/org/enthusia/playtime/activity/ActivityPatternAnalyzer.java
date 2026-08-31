@@ -22,6 +22,10 @@ public final class ActivityPatternAnalyzer {
     private static final double HEARTBEAT_MAX_CV = 0.02D;
     private static final double HEARTBEAT_BASE_SCORE = 0.98D;
     private static final double HEARTBEAT_SCORE_RANGE = 0.02D;
+    // Secondary sweep-damage callbacks from one melee action are synchronous. Keep
+    // this comfortably below one server tick so legitimate 20 TPS attack attempts
+    // remain distinct while one physical attack cannot flood the click timeline.
+    private static final long ATTACK_FANOUT_DEDUP_MILLIS = 20L;
     private static final double MIN_ROTATION_AMOUNT = 2.0D;
     private static final int MOVEMENT_MINIMUM_PERIOD = 2;
     private static final int SEQUENCE_MINIMUM_PERIOD = 3;
@@ -103,18 +107,40 @@ public final class ActivityPatternAnalyzer {
     }
 
     private Regularity clickRegularity(List<BehaviorSample> samples, long nowMillis) {
-        List<Long> times = new ArrayList<>();
         long cutoff = nowMillis - settings.click().windowMillis();
-        for (BehaviorSample sample : samples) {
-            if (sample.timestampMillis() >= cutoff && sample.has(BehaviorSample.SWING)) {
-                times.add(sample.timestampMillis());
-            }
-        }
+        List<Long> times = collectClickTimes(samples, cutoff);
         if (times.size() < settings.click().minimumSwings()) {
             return new Regularity(0.0D, times.size());
         }
         double cv = BehaviorSimilarity.coefficientOfVariationOfIntervals(times);
         return new Regularity(BehaviorSimilarity.cvScore(cv, settings.click().maxCv()), times.size());
+    }
+
+    private static List<Long> collectClickTimes(List<BehaviorSample> samples, long cutoff) {
+        List<Long> times = new ArrayList<>();
+        long lastAcceptedAttackMillis = Long.MIN_VALUE;
+        for (BehaviorSample sample : samples) {
+            if (sample.timestampMillis() < cutoff
+                    || (!sample.has(BehaviorSample.SWING) && !sample.has(BehaviorSample.ATTACK))) {
+                continue;
+            }
+            if (isAttackFanout(sample, lastAcceptedAttackMillis)) {
+                continue;
+            }
+            times.add(sample.timestampMillis());
+            if (sample.has(BehaviorSample.ATTACK)) {
+                lastAcceptedAttackMillis = sample.timestampMillis();
+            }
+        }
+        return times;
+    }
+
+    private static boolean isAttackFanout(BehaviorSample sample, long lastAcceptedAttackMillis) {
+        if (!sample.has(BehaviorSample.ATTACK) || lastAcceptedAttackMillis == Long.MIN_VALUE) {
+            return false;
+        }
+        long delta = sample.timestampMillis() - lastAcceptedAttackMillis;
+        return delta >= 0L && delta <= ATTACK_FANOUT_DEDUP_MILLIS;
     }
 
     private Regularity rotationRegularity(List<BehaviorSample> samples, long nowMillis) {
@@ -186,12 +212,19 @@ public final class ActivityPatternAnalyzer {
     private Map<Integer, List<Long>> collectHeartbeatTimes(List<BehaviorSample> samples, long nowMillis) {
         long cutoff = nowMillis - HEARTBEAT_WINDOW_MILLIS;
         Map<Integer, List<Long>> timesBySignature = new ConcurrentHashMap<>();
+        long lastAcceptedAttackMillis = Long.MIN_VALUE;
         for (BehaviorSample sample : samples) {
             if (!heartbeatSampleEligible(sample, cutoff)) {
                 continue;
             }
+            if (isAttackFanout(sample, lastAcceptedAttackMillis)) {
+                continue;
+            }
             int signature = BehaviorSimilarity.normalizedActionSignature(sample);
             appendHeartbeatTime(timesBySignature, signature, sample.timestampMillis());
+            if (sample.has(BehaviorSample.ATTACK)) {
+                lastAcceptedAttackMillis = sample.timestampMillis();
+            }
         }
         return timesBySignature;
     }
@@ -231,6 +264,7 @@ public final class ActivityPatternAnalyzer {
         return sample.has(BehaviorSample.COMMAND)
                 || sample.has(BehaviorSample.CHAT)
                 || sample.has(BehaviorSample.SWING)
+                || sample.has(BehaviorSample.ATTACK)
                 || sample.has(BehaviorSample.JUMP)
                 || sample.hasMovement()
                 || sample.hasRotation();
