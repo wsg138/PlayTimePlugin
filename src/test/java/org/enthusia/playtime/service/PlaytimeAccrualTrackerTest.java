@@ -64,17 +64,24 @@ class PlaytimeAccrualTrackerTest {
     }
 
     @Test
-    void suspiciousThresholdCountsFirstMinutesActiveThenStops() {
+    void suspiciousActiveGraceIsCappedAtOneMinuteThenCountsAsAfk() {
         UUID uuid = UUID.randomUUID();
-        PlaytimeAccrualTracker tracker = new PlaytimeAccrualTracker(2, Map.of());
+        PlaytimeAccrualTracker tracker = new PlaytimeAccrualTracker(10, Map.of());
         tracker.connect(uuid, 0L, 1L);
 
-        assertEquals(1, tracker.sample(uuid, 60L * SECOND, ActivityState.SUSPICIOUS, 1L).activeMinutes());
-        assertEquals(1, tracker.sample(uuid, 120L * SECOND, ActivityState.SUSPICIOUS, 1L).activeMinutes());
-        var stopped = tracker.sample(uuid, 180L * SECOND, ActivityState.SUSPICIOUS, 1L);
-        assertEquals(0, stopped.activeMinutes());
-        assertEquals(0, stopped.afkMinutes());
-        assertTrue(stopped.thresholdCrossed());
+        var grace = tracker.sample(uuid, 60L * SECOND, ActivityState.SUSPICIOUS, 1L);
+        assertEquals(1, grace.activeMinutes());
+        assertEquals(0, grace.afkMinutes());
+
+        var blocked = tracker.sample(uuid, 120L * SECOND, ActivityState.SUSPICIOUS, 1L);
+        assertEquals(0, blocked.activeMinutes());
+        assertEquals(1, blocked.afkMinutes());
+        assertTrue(blocked.thresholdCrossed());
+
+        var stillBlocked = tracker.sample(uuid, 180L * SECOND, ActivityState.SUSPICIOUS, 1L);
+        assertEquals(0, stillBlocked.activeMinutes());
+        assertEquals(1, stillBlocked.afkMinutes());
+        assertFalse(stillBlocked.thresholdCrossed());
 
         tracker.sample(uuid, 181L * SECOND, ActivityState.ACTIVE, 2L);
         var reset = tracker.sample(uuid, 241L * SECOND, ActivityState.SUSPICIOUS, 2L);
