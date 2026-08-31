@@ -8,16 +8,21 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.EnumMap;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Accumulates real connected time using a monotonic clock and converts completed
  * 60-second windows into timestamped playtime credits. Partial windows survive
  * reconnects and runtime handoffs.
+ *
+ * <p>The suspicious streak is intentionally an allowance consumed since the last
+ * detector-approved recovery marker, not merely a count of adjacent suspicious
+ * minutes. IDLE, AFK, reconnects, and ordinary ACTIVE observations therefore do
+ * not replenish suspicious credit.</p>
  */
 final class PlaytimeAccrualTracker {
     static final long NANOS_PER_MINUTE = 60_000_000_000L;
@@ -132,28 +137,30 @@ final class PlaytimeAccrualTracker {
     }
 
     private void connectLocked(PlayerAccrual state, long nowNanos, Instant now, long resetMarker) {
+        applyLegitimateReset(state, resetMarker);
         state.connected = true;
         state.lastSampleNanos = nowNanos;
         state.lastSampleInstant = Objects.requireNonNull(now, "now");
-        state.processedResetMarker = Math.max(state.processedResetMarker, resetMarker);
         state.reconnectGuard = state.suspiciousStreak > ZERO_STREAK;
     }
 
     private ActivityState effectiveState(PlayerAccrual state, ActivityState observedState,
                                          long resetMarker) {
-        boolean legitimateReset = resetMarker > state.processedResetMarker;
-        if (legitimateReset) {
-            state.processedResetMarker = resetMarker;
-            state.suspiciousStreak = ZERO_STREAK;
-            state.reconnectGuard = false;
-        }
+        boolean legitimateReset = applyLegitimateReset(state, resetMarker);
         if (state.reconnectGuard && !legitimateReset) {
             return ActivityState.SUSPICIOUS;
         }
-        if (observedState != ActivityState.SUSPICIOUS) {
-            state.suspiciousStreak = ZERO_STREAK;
-        }
         return observedState;
+    }
+
+    private static boolean applyLegitimateReset(PlayerAccrual state, long resetMarker) {
+        if (resetMarker <= state.processedResetMarker) {
+            return false;
+        }
+        state.processedResetMarker = resetMarker;
+        state.suspiciousStreak = ZERO_STREAK;
+        state.reconnectGuard = false;
+        return true;
     }
 
     private void append(PlayerAccrual state, ActivityState activityState, long nanos,
@@ -186,12 +193,10 @@ final class PlaytimeAccrualTracker {
             int afkCredit = 0;
             switch (minute.state()) {
                 case ACTIVE -> {
-                    state.suspiciousStreak = ZERO_STREAK;
                     active++;
                     activeCredit = 1;
                 }
                 case IDLE, AFK -> {
-                    state.suspiciousStreak = ZERO_STREAK;
                     afk++;
                     afkCredit = 1;
                 }
@@ -239,7 +244,8 @@ final class PlaytimeAccrualTracker {
         long selectedNanos = -NEXT_STREAK;
         for (ActivityState candidate : MINUTE_STATE_PRIORITY) {
             long duration = durations.getOrDefault(candidate, ZERO_NANOS);
-            if (duration > selectedNanos || (duration == selectedNanos && candidate == ActivityState.SUSPICIOUS)) {
+            if (duration > selectedNanos
+                    || (duration == selectedNanos && candidate == ActivityState.SUSPICIOUS)) {
                 selected = candidate;
                 selectedNanos = duration;
             }
@@ -264,72 +270,72 @@ final class PlaytimeAccrualTracker {
         }
 
         List<MinuteCredit> reallocate(int requestedActiveMinutes, int requestedAfkMinutes) {
-    int[] activeAllocation = new int[credits.size()];
-    int[] afkAllocation = new int[credits.size()];
-    boolean[] used = new boolean[credits.size()];
-    AllocationRemainder remainder = preserveExistingTypes(
-            Math.max(0, requestedActiveMinutes), Math.max(0, requestedAfkMinutes),
-            activeAllocation, afkAllocation, used);
-    int activeRemaining = assignUnused(remainder.activeMinutes(), activeAllocation, used);
-    int afkRemaining = assignUnused(remainder.afkMinutes(), afkAllocation, used);
-    return collectAllocations(activeAllocation, afkAllocation, activeRemaining, afkRemaining);
-}
-
-private AllocationRemainder preserveExistingTypes(int requestedActive, int requestedAfk,
-                                                 int[] activeAllocation, int[] afkAllocation,
-                                                 boolean[] used) {
-    int activeRemaining = requestedActive;
-    int afkRemaining = requestedAfk;
-    for (int index = 0; index < credits.size(); index++) {
-        MinuteCredit credit = credits.get(index);
-        if (credit.activeMinutes() > 0 && activeRemaining > 0) {
-            activeAllocation[index] = 1;
-            activeRemaining--;
-            used[index] = true;
-            continue;
+            int[] activeAllocation = new int[credits.size()];
+            int[] afkAllocation = new int[credits.size()];
+            boolean[] used = new boolean[credits.size()];
+            AllocationRemainder remainder = preserveExistingTypes(
+                    Math.max(0, requestedActiveMinutes), Math.max(0, requestedAfkMinutes),
+                    activeAllocation, afkAllocation, used);
+            int activeRemaining = assignUnused(remainder.activeMinutes(), activeAllocation, used);
+            int afkRemaining = assignUnused(remainder.afkMinutes(), afkAllocation, used);
+            return collectAllocations(activeAllocation, afkAllocation, activeRemaining, afkRemaining);
         }
-        if (credit.afkMinutes() > 0 && afkRemaining > 0) {
-            afkAllocation[index] = 1;
-            afkRemaining--;
-            used[index] = true;
+
+        private AllocationRemainder preserveExistingTypes(int requestedActive, int requestedAfk,
+                                                          int[] activeAllocation, int[] afkAllocation,
+                                                          boolean[] used) {
+            int activeRemaining = requestedActive;
+            int afkRemaining = requestedAfk;
+            for (int index = 0; index < credits.size(); index++) {
+                MinuteCredit credit = credits.get(index);
+                if (credit.activeMinutes() > 0 && activeRemaining > 0) {
+                    activeAllocation[index] = 1;
+                    activeRemaining--;
+                    used[index] = true;
+                    continue;
+                }
+                if (credit.afkMinutes() > 0 && afkRemaining > 0) {
+                    afkAllocation[index] = 1;
+                    afkRemaining--;
+                    used[index] = true;
+                }
+            }
+            return new AllocationRemainder(activeRemaining, afkRemaining);
+        }
+
+        private int assignUnused(int requested, int[] allocation, boolean[] used) {
+            int remaining = requested;
+            for (int index = 0; index < credits.size() && remaining > 0; index++) {
+                if (!used[index]) {
+                    allocation[index] = 1;
+                    remaining--;
+                    used[index] = true;
+                }
+            }
+            return remaining;
+        }
+
+        private List<MinuteCredit> collectAllocations(int[] activeAllocation, int[] afkAllocation,
+                                                      int activeRemaining, int afkRemaining) {
+            List<MinuteCredit> allocated = new ArrayList<>();
+            for (int index = 0; index < credits.size(); index++) {
+                if (activeAllocation[index] > 0 || afkAllocation[index] > 0) {
+                    allocated.add(new MinuteCredit(credits.get(index).creditedAt(),
+                            activeAllocation[index], afkAllocation[index]));
+                }
+            }
+            if (activeRemaining > 0 || afkRemaining > 0) {
+                Instant creditedAt = credits.isEmpty()
+                        ? Instant.now()
+                        : credits.get(credits.size() - 1).creditedAt();
+                allocated.add(new MinuteCredit(creditedAt, activeRemaining, afkRemaining));
+            }
+            return List.copyOf(allocated);
+        }
+
+        private record AllocationRemainder(int activeMinutes, int afkMinutes) {
         }
     }
-    return new AllocationRemainder(activeRemaining, afkRemaining);
-}
-
-private int assignUnused(int requested, int[] allocation, boolean[] used) {
-    int remaining = requested;
-    for (int index = 0; index < credits.size() && remaining > 0; index++) {
-        if (!used[index]) {
-            allocation[index] = 1;
-            remaining--;
-            used[index] = true;
-        }
-    }
-    return remaining;
-}
-
-private List<MinuteCredit> collectAllocations(int[] activeAllocation, int[] afkAllocation,
-                                              int activeRemaining, int afkRemaining) {
-    List<MinuteCredit> allocated = new ArrayList<>();
-    for (int index = 0; index < credits.size(); index++) {
-        if (activeAllocation[index] > 0 || afkAllocation[index] > 0) {
-            allocated.add(new MinuteCredit(credits.get(index).creditedAt(),
-                    activeAllocation[index], afkAllocation[index]));
-        }
-    }
-    if (activeRemaining > 0 || afkRemaining > 0) {
-        Instant creditedAt = credits.isEmpty()
-                ? Instant.now()
-                : credits.get(credits.size() - 1).creditedAt();
-        allocated.add(new MinuteCredit(creditedAt, activeRemaining, afkRemaining));
-    }
-    return List.copyOf(allocated);
-}
-
-private record AllocationRemainder(int activeMinutes, int afkMinutes) {
-}
-}
 
     record MinuteCredit(Instant creditedAt, int activeMinutes, int afkMinutes) {
         MinuteCredit {
