@@ -52,6 +52,74 @@ class AutomationHardeningPatternTest {
     }
 
     @Test
+    void randomizedStationaryMultiActionStreamStillBecomesSuspicious() {
+        List<BehaviorSample> samples = new ArrayList<>();
+        Random random = new Random(0xB07B07L);
+        int[] actions = {
+                BehaviorSample.INTERACT,
+                BehaviorSample.COMMAND,
+                BehaviorSample.SWING | BehaviorSample.BLOCK_BREAK,
+                BehaviorSample.INTERACT | BehaviorSample.BLOCK_PLACE
+        };
+        long time = 1_000L;
+        for (int i = 0; i < 120; i++) {
+            samples.add(action(time, actions[random.nextInt(actions.length)]));
+            time += 140L + random.nextInt(760);
+        }
+
+        ActivityPatternAnalyzer.Analysis analysis = analyzer.analyze(samples, time, false);
+
+        assertTrue(analysis.sequenceRepetition() >= 0.985D);
+        assertTrue(analysis.combinedEvidence() >= SUSPICIOUS_THRESHOLD);
+    }
+
+    @Test
+    void highRateRandomizedActionsCannotEvadeBoundedHistory() {
+        List<BehaviorSample> samples = new ArrayList<>();
+        Random random = new Random(0x256B07L);
+        int[] actions = {
+                BehaviorSample.INTERACT,
+                BehaviorSample.COMMAND,
+                BehaviorSample.BLOCK_PLACE,
+                BehaviorSample.BLOCK_BREAK
+        };
+        long time = 1_000L;
+        for (int i = 0; i < 700; i++) {
+            samples.add(action(time, actions[random.nextInt(actions.length)]));
+            time += 5L + random.nextInt(11);
+        }
+
+        ActivityPatternAnalyzer.Analysis analysis = analyzer.analyze(samples, time, false);
+
+        assertTrue(analysis.sequenceRepetition() >= 0.985D);
+        assertTrue(analysis.combinedEvidence() >= SUSPICIOUS_THRESHOLD);
+    }
+
+    @Test
+    void occasionalPhysicalNoiseDoesNotClearStationaryAutomation() {
+        List<BehaviorSample> samples = new ArrayList<>();
+        Random random = new Random(0x0CCA510L);
+        long time = 1_000L;
+        for (int i = 0; i < 100; i++) {
+            int action = i % 3 == 0
+                    ? BehaviorSample.INTERACT
+                    : (i % 3 == 1 ? BehaviorSample.COMMAND : BehaviorSample.BLOCK_PLACE);
+            samples.add(action(time, action));
+            time += 180L + random.nextInt(520);
+            if (i % 12 == 0) {
+                samples.add(new BehaviorSample(time, BehaviorSample.MOVE | BehaviorSample.ROTATE,
+                        0.22D, 0.0D, 0.08D, 24.0F, 0.0F, true));
+                time += 70L + random.nextInt(120);
+            }
+        }
+
+        ActivityPatternAnalyzer.Analysis analysis = analyzer.analyze(samples, time, false);
+
+        assertTrue(analysis.sequenceRepetition() >= 0.985D);
+        assertTrue(analysis.combinedEvidence() >= SUSPICIOUS_THRESHOLD);
+    }
+
+    @Test
     void regularStationaryJumpAutomationIsSuspicious() {
         List<BehaviorSample> samples = new ArrayList<>();
         long time = 1_000L;
