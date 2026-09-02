@@ -14,30 +14,34 @@ softdepend:
 
 commands:
   playtime:
-    description: View playtime statistics and leaderboards.
+    description: View your playtime, open GUIs, or admin tools.
+    usage: /playtime
     aliases: [pt]
-    permission: playtime.base
   roman:
-    description: View playtime numeral progression.
+    description: Show playtime roman numeral tiers.
+    usage: /roman
     aliases: [numerals, rn]
-    permission: playtime.base
   firstjoin:
-    description: View first-join information.
+    description: Show when a player first joined according to this plugin's storage.
+    usage: /firstjoin [player]
     aliases: [fj]
   seen:
-    description: View a player's last-seen time.
-    permission: playtime.seen
+    description: Check when a player was last seen according to this plugin's storage.
+    usage: /seen [player]
 
 permissions:
   playtime.base:
     default: true
-    description: Use the playtime GUI, leaderboards, and numeral display.
+    description: Use /playtime, /roman, and the main GUIs.
   playtime.others:
-    default: op
-    description: View another player's ordinary playtime data.
+    default: false
+    description: View playtime for another player.
+  playtime.firstjoined:
+    default: true
+    description: Use /firstjoin.
   playtime.seen:
-    default: op
-    description: View another player's last-seen time.
+    default: false
+    description: Use /seen to check when players were last online.
   playtime.admin.base:
     default: op
     description: Open admin GUI screens.
@@ -46,4 +50,4 @@ permissions:
     description: Reload the playtime plugin safely in-place.
   playtime.admin.debug:
     default: op
-    description: View playtime debug/performance information.
+    description: View runtime debug information.
