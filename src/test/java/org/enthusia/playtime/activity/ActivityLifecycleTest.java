@@ -96,6 +96,23 @@ class ActivityLifecycleTest {
     }
 
     @Test
+    void duplicateAttackAfterMergedSwingAttackFanoutDoesNotCreateExtraSample() {
+        PlayerMock player = MockBukkit.getMock().addPlayer();
+        ActivityTracker tracker = plugin.runtime().activityTracker();
+        long base = System.currentTimeMillis();
+        tracker.bootstrapPlayer(player, base);
+
+        tracker.recordAction(player, base + 100L, BehaviorSample.SWING);
+        tracker.recordAction(player, base + 110L, BehaviorSample.ATTACK);
+        tracker.recordAction(player, base + 115L, BehaviorSample.ATTACK);
+
+        List<BehaviorSample> samples = tracker.snapshot().get(player.getUniqueId()).behaviorSamples();
+        assertEquals(1, samples.size());
+        assertTrue(samples.get(0).has(BehaviorSample.SWING));
+        assertTrue(samples.get(0).has(BehaviorSample.ATTACK));
+    }
+
+    @Test
     void duplicateDamageFanoutFromOneAttackDoesNotFloodHistory() {
         PlayerMock player = MockBukkit.getMock().addPlayer();
         ActivityTracker tracker = plugin.runtime().activityTracker();
