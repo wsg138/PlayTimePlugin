@@ -9,15 +9,19 @@ import java.util.Iterator;
  *
  * <p>The purpose is deliberately conservative: a client that only emits occasional
  * keepalive input just often enough to avoid IDLE must not receive ACTIVE credit,
- * even if it randomizes timing, action type, movement, or camera rotation.</p>
+ * even if it randomizes timing, action type, movement, or camera rotation. Ordinary
+ * gameplay pauses of a few seconds are not sparse-keepalive evidence by themselves.</p>
  */
 final class LongHorizonActivityAnalyzer {
     static final long RETENTION_MILLIS = 15L * 60L * 1000L;
     private static final long PULSE_BUCKET_MILLIS = 1_000L;
     private static final long MIN_SPARSE_SPAN_MILLIS = 75_000L;
     private static final int MIN_SPARSE_PULSES = 3;
-    private static final double MAX_SPARSE_OCCUPANCY = 0.55D;
-    private static final double SPARSE_KEEPALIVE_EVIDENCE = 0.99D;
+    private static final double NEAR_IDLE_AVERAGE_GAP_RATIO = 1.0D / 3.0D;
+    private static final long VERY_SPARSE_MIN_SPAN_MILLIS = 180_000L;
+    private static final double VERY_SPARSE_MAX_OCCUPANCY = 0.08D;
+    private static final double NEAR_IDLE_KEEPALIVE_EVIDENCE = 0.99D;
+    private static final double VERY_SPARSE_KEEPALIVE_EVIDENCE = 0.90D;
     private static final long RECOVERY_DENSITY_WINDOW_MILLIS = 30_000L;
     private static final long RECOVERY_MAX_GAP_MILLIS = 5_000L;
     private static final double RECOVERY_MIN_OCCUPANCY = 0.70D;
@@ -46,10 +50,22 @@ final class LongHorizonActivityAnalyzer {
         if (segment.spanMillis() < minimumSpan) {
             return 0.0D;
         }
+
+        double averageGapMillis = segment.count() <= 1
+                ? 0.0D
+                : segment.spanMillis() / (double) (segment.count() - 1);
+        if (averageGapMillis >= idleMillis * NEAR_IDLE_AVERAGE_GAP_RATIO) {
+            return NEAR_IDLE_KEEPALIVE_EVIDENCE;
+        }
+
+        if (segment.spanMillis() < VERY_SPARSE_MIN_SPAN_MILLIS) {
+            return 0.0D;
+        }
         double elapsedSeconds = Math.max(1.0D,
                 segment.spanMillis() / (double) PULSE_BUCKET_MILLIS + 1.0D);
-        return segment.count() / elapsedSeconds < MAX_SPARSE_OCCUPANCY
-                ? SPARSE_KEEPALIVE_EVIDENCE
+        double occupancy = segment.count() / elapsedSeconds;
+        return occupancy < VERY_SPARSE_MAX_OCCUPANCY
+                ? VERY_SPARSE_KEEPALIVE_EVIDENCE
                 : 0.0D;
     }
 
