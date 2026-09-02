@@ -19,7 +19,7 @@ final class LongHorizonActivityAnalyzer {
     private static final int MIN_SPARSE_PULSES = 3;
     private static final double NEAR_IDLE_AVERAGE_GAP_RATIO = 1.0D / 3.0D;
     private static final long VERY_SPARSE_MIN_SPAN_MILLIS = 180_000L;
-    private static final double VERY_SPARSE_MAX_OCCUPANCY = 0.08D;
+    private static final double VERY_SPARSE_MAX_OCCUPANCY = 0.10D;
     private static final double NEAR_IDLE_KEEPALIVE_EVIDENCE = 0.99D;
     private static final double VERY_SPARSE_KEEPALIVE_EVIDENCE = 0.90D;
     private static final long RECOVERY_DENSITY_WINDOW_MILLIS = 30_000L;
