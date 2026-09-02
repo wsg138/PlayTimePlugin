@@ -64,30 +64,30 @@ class PlaytimeAccrualTrackerTest {
     }
 
     @Test
-    void suspiciousMinutesNeverReceiveActiveCredit() {
+    void suspiciousMinutesGetOneGraceMinuteThenFailClosed() {
         UUID uuid = UUID.randomUUID();
         PlaytimeAccrualTracker tracker = new PlaytimeAccrualTracker(10, Map.of());
         tracker.connect(uuid, 0L, 1L);
 
         var first = tracker.sample(uuid, 60L * SECOND, ActivityState.SUSPICIOUS, 1L);
-        assertEquals(0, first.activeMinutes());
-        assertEquals(1, first.afkMinutes());
-        assertTrue(first.thresholdCrossed());
+        assertEquals(1, first.activeMinutes());
+        assertEquals(0, first.afkMinutes());
+        assertFalse(first.thresholdCrossed());
 
         var second = tracker.sample(uuid, 120L * SECOND, ActivityState.SUSPICIOUS, 1L);
         assertEquals(0, second.activeMinutes());
         assertEquals(1, second.afkMinutes());
-        assertFalse(second.thresholdCrossed());
+        assertTrue(second.thresholdCrossed());
 
         tracker.sample(uuid, 121L * SECOND, ActivityState.ACTIVE, 2L);
         var reset = tracker.sample(uuid, 181L * SECOND, ActivityState.SUSPICIOUS, 2L);
-        assertEquals(0, reset.activeMinutes());
-        assertEquals(1, reset.afkMinutes());
-        assertTrue(reset.thresholdCrossed());
+        assertEquals(1, reset.activeMinutes());
+        assertEquals(0, reset.afkMinutes());
+        assertFalse(reset.thresholdCrossed());
     }
 
     @Test
-    void oneSecondOfSuspicionMakesTheWholeMinuteFailClosed() {
+    void briefSuspicionDoesNotPoisonMostlyActiveMinute() {
         UUID uuid = UUID.randomUUID();
         PlaytimeAccrualTracker tracker = new PlaytimeAccrualTracker(10, Map.of());
         tracker.connect(uuid, 0L, 1L);
@@ -95,9 +95,9 @@ class PlaytimeAccrualTrackerTest {
         tracker.sample(uuid, 59L * SECOND, ActivityState.ACTIVE, 1L);
         var result = tracker.sample(uuid, 60L * SECOND, ActivityState.SUSPICIOUS, 1L);
 
-        assertEquals(0, result.activeMinutes());
-        assertEquals(1, result.afkMinutes());
-        assertEquals(1, result.suspiciousStreak());
+        assertEquals(1, result.activeMinutes());
+        assertEquals(0, result.afkMinutes());
+        assertEquals(0, result.suspiciousStreak());
     }
 
     @Test
@@ -106,14 +106,15 @@ class PlaytimeAccrualTrackerTest {
         PlaytimeAccrualTracker tracker = new PlaytimeAccrualTracker(1, Map.of());
         tracker.connect(uuid, 0L, 1L);
         var suspicious = tracker.sample(uuid, 60L * SECOND, ActivityState.SUSPICIOUS, 1L);
-        assertEquals(0, suspicious.activeMinutes());
-        assertEquals(1, suspicious.afkMinutes());
+        assertEquals(1, suspicious.activeMinutes());
+        assertEquals(0, suspicious.afkMinutes());
         tracker.disconnect(uuid, 61L * SECOND);
 
         tracker.connect(uuid, 100L * SECOND, 1L);
         var guarded = tracker.sample(uuid, 160L * SECOND, ActivityState.ACTIVE, 1L);
         assertEquals(ActivityState.SUSPICIOUS, guarded.state());
         assertEquals(0, guarded.activeMinutes());
+        assertEquals(1, guarded.afkMinutes());
 
         tracker.sample(uuid, 161L * SECOND, ActivityState.ACTIVE, 2L);
         var legitimate = tracker.sample(uuid, 221L * SECOND, ActivityState.ACTIVE, 2L);
@@ -144,8 +145,8 @@ class PlaytimeAccrualTrackerTest {
         accrualTracker.connect(uuid, 0L, reconnectMarker);
         var suspicious = accrualTracker.sample(
                 uuid, 60L * SECOND, ActivityState.SUSPICIOUS, reconnectMarker);
-        assertEquals(0, suspicious.activeMinutes());
-        assertEquals(1, suspicious.afkMinutes());
+        assertEquals(1, suspicious.activeMinutes());
+        assertEquals(0, suspicious.afkMinutes());
         accrualTracker.disconnect(uuid, 60L * SECOND);
 
         accrualTracker.connect(uuid, 100L * SECOND, reconnectMarker);
@@ -153,6 +154,7 @@ class PlaytimeAccrualTrackerTest {
                 uuid, 160L * SECOND, ActivityState.ACTIVE, reconnectMarker);
         assertEquals(ActivityState.SUSPICIOUS, guarded.state());
         assertEquals(0, guarded.activeMinutes());
+        assertEquals(1, guarded.afkMinutes());
         assertEquals(reconnectMarker, activityTracker.getSuspiciousResetMarker(uuid));
 
         PlayerMoveEvent movement = mock(PlayerMoveEvent.class);
@@ -167,6 +169,7 @@ class PlaytimeAccrualTrackerTest {
                 uuid, 220L * SECOND, ActivityState.ACTIVE, movementMarker);
         assertEquals(ActivityState.SUSPICIOUS, stillGuarded.state());
         assertEquals(0, stillGuarded.activeMinutes());
+        assertEquals(1, stillGuarded.afkMinutes());
         assertEquals(3, stillGuarded.suspiciousStreak());
     }
 

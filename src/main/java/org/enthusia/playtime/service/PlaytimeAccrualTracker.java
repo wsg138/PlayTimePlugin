@@ -22,16 +22,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>The suspicious streak is consumed since the last detector-approved recovery
  * marker, not merely a count of adjacent suspicious minutes. IDLE, AFK, reconnects,
  * and ordinary ACTIVE observations therefore do not replenish suspicious credit.
- * SUSPICIOUS time is fail-closed and never receives ACTIVE credit.</p>
+ * A bounded first suspicious minute may receive ACTIVE grace; continued suspicious
+ * minutes fail closed into AFK until detector-approved recovery.</p>
  */
 final class PlaytimeAccrualTracker {
     static final long NANOS_PER_MINUTE = 60_000_000_000L;
     static final long DEFAULT_MAX_SAMPLE_NANOS = 5L * NANOS_PER_MINUTE;
     private static final long ZERO_NANOS = 0L;
-    private static final long SUSPICIOUS_MINUTE_DOMINANCE_NANOS = 1_000_000_000L;
     private static final int ZERO_STREAK = 0;
     private static final int NEXT_STREAK = 1;
-    private static final int MAX_SUSPICIOUS_ACTIVE_GRACE_MINUTES = 0;
+    private static final int MAX_SUSPICIOUS_ACTIVE_GRACE_MINUTES = 1;
     private static final List<ActivityState> MINUTE_STATE_PRIORITY = List.of(
             ActivityState.ACTIVE, ActivityState.IDLE, ActivityState.AFK, ActivityState.SUSPICIOUS);
 
@@ -262,10 +262,6 @@ final class PlaytimeAccrualTracker {
     }
 
     private static ActivityState selectMinuteState(EnumMap<ActivityState, Long> durations) {
-        if (durations.getOrDefault(ActivityState.SUSPICIOUS, ZERO_NANOS)
-                >= SUSPICIOUS_MINUTE_DOMINANCE_NANOS) {
-            return ActivityState.SUSPICIOUS;
-        }
         ActivityState selected = ActivityState.ACTIVE;
         long selectedNanos = -NEXT_STREAK;
         for (ActivityState candidate : MINUTE_STATE_PRIORITY) {

@@ -20,18 +20,19 @@ The server samples player activity once per second.
 
 ### Automation-resistant active time
 
-Active playtime is deliberately harder to farm with simple repetitive input. The activity system looks for patterns such as unusually regular clicking, repetitive rotation, repeating movement cycles, and repeated action sequences.
+Active playtime is deliberately harder to farm with simple repetitive input. The activity system looks for patterns such as unusually regular clicking, repetitive rotation, repeating movement cycles, repeated action sequences, and long-horizon keepalive behavior.
 
 A suspicious pattern is **not a punishment or anti-cheat verdict**. It only controls whether the behavior continues to earn active playtime.
 
 On the current Enthusia configuration:
 
-- the first 10 consecutive suspicious minutes can still count as active time;
-- additional continuous suspicious time stops earning active credit;
-- legitimate varied activity can clear the suspicious state;
+- the first completed minute that is predominantly suspicious can still count as active time;
+- additional suspicious minutes stop earning active credit until detector-approved recovery;
+- brief suspicious samples do not turn an otherwise active minute into a suspicious minute;
+- legitimate varied, sustained activity can clear the suspicious state;
 - disconnecting does not instantly reset an active suspicious streak; detector state can survive a short reconnect window.
 
-This prevents trivial AFK/automation loops from indefinitely advancing active-playtime progression while giving normal repetitive gameplay some tolerance.
+This prevents trivial AFK/automation loops from indefinitely advancing active-playtime progression while giving normal repetitive gameplay and short detector false positives reasonable tolerance.
 
 ## Leaderboards
 
