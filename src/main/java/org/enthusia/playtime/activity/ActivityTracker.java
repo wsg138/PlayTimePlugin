@@ -326,7 +326,8 @@ public final class ActivityTracker implements Listener {
     }
 
     public long getSuspiciousResetMarker(UUID uuid) {
-        return suspiciousResetMarkers.getOrDefault(uuid, 0L);
+        long storedMarker = suspiciousResetMarkers.getOrDefault(uuid, 0L);
+        return suspicionEnabled ? storedMarker : Math.max(storedMarker, System.currentTimeMillis());
     }
 
     public void forgetSuspiciousResetMarker(UUID uuid) {
