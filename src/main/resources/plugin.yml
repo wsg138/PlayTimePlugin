@@ -1,6 +1,6 @@
 name: EnthusiaPlaytime
 main: org.enthusia.playtime.PlayTimePlugin
-version: 3.7.0
+version: 3.7.1
 api-version: '1.21'
 author: Enthusia
 description: Advanced playtime tracking with AFK detection, GUIs, leaderboards, admin tools, and PlaceholderAPI support.
@@ -14,34 +14,30 @@ softdepend:
 
 commands:
   playtime:
-    description: View your playtime, open GUIs, or admin tools.
-    usage: /playtime
+    description: View playtime statistics and leaderboards.
     aliases: [pt]
+    permission: playtime.base
   roman:
-    description: Show playtime roman numeral tiers.
-    usage: /roman
+    description: View playtime numeral progression.
     aliases: [numerals, rn]
+    permission: playtime.base
   firstjoin:
-    description: Show when a player first joined according to this plugin's storage.
-    usage: /firstjoin [player]
+    description: View first-join information.
     aliases: [fj]
   seen:
-    description: Check when a player was last seen according to this plugin's storage.
-    usage: /seen [player]
+    description: View a player's last-seen time.
+    permission: playtime.seen
 
 permissions:
   playtime.base:
     default: true
-    description: Use /playtime, /roman, and the main GUIs.
+    description: Use the playtime GUI, leaderboards, and numeral display.
   playtime.others:
-    default: false
-    description: View playtime for another player.
-  playtime.firstjoined:
-    default: true
-    description: Use /firstjoin.
+    default: op
+    description: View another player's ordinary playtime data.
   playtime.seen:
-    default: false
-    description: Use /seen to check when players were last online.
+    default: op
+    description: View another player's last-seen time.
   playtime.admin.base:
     default: op
     description: Open admin GUI screens.
@@ -50,4 +46,4 @@ permissions:
     description: Reload the playtime plugin safely in-place.
   playtime.admin.debug:
     default: op
-    description: View runtime debug information.
+    description: View playtime debug/performance information.
