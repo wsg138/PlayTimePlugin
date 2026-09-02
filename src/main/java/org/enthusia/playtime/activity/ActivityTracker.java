@@ -47,7 +47,7 @@ public final class ActivityTracker implements Listener {
     private static final long ACTION_DEDUP_MILLIS = 75L;
     private static final long DUPLICATE_ACTION_DEDUP_MILLIS = 20L;
     private static final long EXTERNAL_VELOCITY_GRACE_MILLIS = 1_500L;
-    private static final long MIN_SUSPICIOUS_RECOVERY_MILLIS = 180_000L;
+    private static final long MIN_SUSPICIOUS_RECOVERY_MILLIS = 15_000L;
     private static final long SUSPICIOUS_OFFLINE_RESET_MILLIS = 24L * 60L * 60L * 1000L;
     private static final double SERVER_CORRECTION_DISTANCE_SQUARED = 16.0D;
     private static final double PURE_FALL_HORIZONTAL_SQUARED = 0.0025D;
@@ -426,7 +426,7 @@ public final class ActivityTracker implements Listener {
         if (hasDistinctActionBits(last, sample)) {
             return withinActionWindow(last, sample, ACTION_DEDUP_MILLIS);
         }
-        return hasSameActionBits(last, sample)
+        return hasRepeatedActionBits(last, sample)
                 && withinActionWindow(last, sample, DUPLICATE_ACTION_DEDUP_MILLIS);
     }
 
@@ -434,8 +434,8 @@ public final class ActivityTracker implements Listener {
         return (sample.actions() & ~last.actions()) != 0;
     }
 
-    private static boolean hasSameActionBits(BehaviorSample last, BehaviorSample sample) {
-        return last.actions() == sample.actions();
+    private static boolean hasRepeatedActionBits(BehaviorSample last, BehaviorSample sample) {
+        return sample.actions() != 0 && (last.actions() & sample.actions()) == sample.actions();
     }
 
     private static boolean withinActionWindow(BehaviorSample last,
