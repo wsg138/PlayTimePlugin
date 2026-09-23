@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -70,7 +71,7 @@ class PluginSurfaceContractTest {
         expected.addAll(DEFAULT_TRUE);
         expected.addAll(DEFAULT_FALSE);
         expected.addAll(DEFAULT_OP);
-        assertEquals(expected, permissions.getKeys(false));
+        assertEquals(expected, declaredPermissions(permissions));
 
         DEFAULT_TRUE.forEach(permission ->
                 assertEquals(Boolean.TRUE, permissions.get(permission + ".default"), permission));
@@ -78,6 +79,13 @@ class PluginSurfaceContractTest {
                 assertEquals(Boolean.FALSE, permissions.get(permission + ".default"), permission));
         DEFAULT_OP.forEach(permission ->
                 assertEquals("op", permissions.get(permission + ".default"), permission));
+    }
+
+    private static Set<String> declaredPermissions(ConfigurationSection permissions) {
+        return permissions.getKeys(true).stream()
+                .filter(key -> key.endsWith(".default"))
+                .map(key -> key.substring(0, key.length() - ".default".length()))
+                .collect(Collectors.toSet());
     }
 
     private static YamlConfiguration descriptor() {
