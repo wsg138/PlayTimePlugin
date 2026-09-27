@@ -33,6 +33,7 @@ public final class PlaytimeReadService {
     private static final int MAX_QUERY_LIMIT = 100;
     private static final int DEFAULT_MAX_PAGES = 100;
     private static final int DEFAULT_MAX_CACHE_ENTRIES = 512;
+    private static final long PLAYER_GENERATION = -1L;
 
     private final PlayTimePlugin plugin;
     private final PlaytimeRepository repository;
@@ -73,7 +74,7 @@ public final class PlaytimeReadService {
 
     public Optional<PlaytimeSnapshot> getLifetime(UUID uuid) {
         CacheEntry<Optional<PlaytimeSnapshot>> cached = getCached(lifetimeCache, uuid, Optional.empty(),
-                () -> repository.getLifetime(uuid), 0L);
+                () -> loadLifetime(uuid), PLAYER_GENERATION);
         Optional<PlaytimeSnapshot> base = cached.value();
         RangeTotals pending = writeQueue.getPendingTotals(uuid);
         if (base.isEmpty()) {
@@ -91,12 +92,20 @@ public final class PlaytimeReadService {
         String normalizedRange = normalizeRange(rangeId);
         String key = uuid + ":" + normalizedRange;
         CacheEntry<RangeTotals> cached = getCached(rangeCache, key, new RangeTotals(0, 0, 0),
-                () -> repository.getRangeTotals(uuid, Instant.now(), normalizedRange), 0L);
+                () -> query(() -> repository.getRangeTotalsStrict(uuid, Instant.now(), normalizedRange)), PLAYER_GENERATION);
         RangeTotals base = cached.value();
         if (!rangeIncludesPending(normalizedRange)) return base;
         RangeTotals pending = writeQueue.getPendingTotals(uuid);
         return new RangeTotals(base.activeMinutes + pending.activeMinutes,
                 base.afkMinutes + pending.afkMinutes, base.totalMinutes + pending.totalMinutes);
+    }
+
+    private Optional<PlaytimeSnapshot> loadLifetime(UUID uuid) {
+        PlaytimeRepository.LifetimeRead read = repository.readLifetimeStrict(uuid);
+        if (read.status() == PlaytimeRepository.LifetimeReadStatus.FAILED) {
+            throw new IllegalStateException("Lifetime playtime read failed for " + uuid);
+        }
+        return Optional.ofNullable(read.snapshot());
     }
 
     public LeaderboardPage getLeaderboardPage(String metric, String range, int page, int pageSize) {
@@ -119,7 +128,7 @@ public final class PlaytimeReadService {
         String key = normalizedMetric + ":" + normalizedRange + ":" + safeLimit + ":" + safeOffset;
         long generation = sharedGeneration.get();
         return getCached(leaderboardCache, key, List.of(),
-                () -> repository.getLeaderboard(normalizedMetric, normalizedRange, Instant.now(), safeLimit, safeOffset),
+                () -> query(() -> repository.getLeaderboardStrict(normalizedMetric, normalizedRange, Instant.now(), safeLimit, safeOffset)),
                 generation).value();
     }
 
@@ -130,7 +139,7 @@ public final class PlaytimeReadService {
         String key = normalizedMetric + ":" + normalizedRange + ":" + safeLimit;
         long generation = sharedGeneration.get();
         return getCached(publicLeaderboardCache, key, List.of(),
-                () -> repository.getPublicLeaderboard(normalizedMetric, normalizedRange, Instant.now(), safeLimit),
+                () -> query(() -> repository.getPublicLeaderboardStrict(normalizedMetric, normalizedRange, Instant.now(), safeLimit)),
                 generation).value();
     }
 
@@ -144,18 +153,34 @@ public final class PlaytimeReadService {
         return base;
     }
 
+    private static <T> T query(java.util.concurrent.Callable<T> loader) {
+        try {
+            return loader.call();
+        } catch (Exception exception) {
+            throw new IllegalStateException("Playtime display query failed", exception);
+        }
+    }
+
     public void invalidatePlayer(UUID uuid) {
-        lifetimeCache.remove(uuid);
+        expire(lifetimeCache.get(uuid));
         for (String range : List.of(RANGE_TODAY, RANGE_7D, RANGE_30D, RANGE_ALL)) {
-            rangeCache.remove(uuid + ":" + range);
+            expire(rangeCache.get(uuid + ":" + range));
         }
         sharedGeneration.incrementAndGet();
     }
 
     public void invalidateAll() {
-        lifetimeCache.clear();
-        rangeCache.clear();
+        lifetimeCache.values().forEach(this::expire);
+        rangeCache.values().forEach(this::expire);
         sharedGeneration.incrementAndGet();
+    }
+
+    private void expire(CacheEntry<?> entry) {
+        if (entry == null) return;
+        synchronized (entry) {
+            entry.loadedAtMillis = 0L;
+            entry.revision++;
+        }
     }
 
     public boolean isLoading() {
@@ -203,39 +228,53 @@ public final class PlaytimeReadService {
 
     private <K, T> CacheEntry<T> getCached(Map<K, CacheEntry<T>> cache, K key, T emptyValue,
                                             Supplier<T> loader, long generation) {
-        CacheEntry<T> current = cache.get(key);
-        if (current == null || current.generation != generation) {
-            CacheEntry<T> created = new CacheEntry<>(emptyValue, 0L, generation);
-            CacheEntry<T> existing = cache.put(key, created);
-            current = existing != null && existing.generation == generation ? existing : created;
-            counters.dbReadCacheMisses.increment();
-            evictIfOversize(cache);
-        } else if (!current.isExpired(ttlMillis)) {
+        CacheEntry<T> current = cache.computeIfAbsent(key, ignored -> new CacheEntry<>(emptyValue, 0L, generation));
+        synchronized (current) {
+            if (current.generation != generation) {
+                current.generation = generation;
+                current.loadedAtMillis = 0L;
+                current.revision++;
+            }
+        }
+        if (!current.isExpired(ttlMillis)) {
             counters.dbReadCacheHits.increment();
             return current;
         } else {
             counters.dbReadCacheMisses.increment();
         }
         if (current.isExpired(ttlMillis)) refreshAsync(cache, key, current, loader, generation);
+        evictIfOversize(cache);
         return current;
     }
 
     private <K, T> void refreshAsync(Map<K, CacheEntry<T>> cache, K key, CacheEntry<T> entry,
                                       Supplier<T> loader, long generation) {
-        if (!plugin.isEnabled() || !entry.refreshing.compareAndSet(false, true)) return;
+        final long revision;
+        synchronized (entry) {
+            if (!plugin.isEnabled() || !entry.refreshing.compareAndSet(false, true)) return;
+            revision = entry.revision;
+        }
         counters.asyncRefreshesStarted.increment();
         try {
             Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
                 try {
                     T value = loader.get();
-                    cache.put(key, new CacheEntry<>(value, System.currentTimeMillis(), generation));
+                    synchronized (entry) {
+                        // A delayed read must not replace a newer invalidation or resurrect an evicted key.
+                        if (entry.revision == revision && entry.generation == generation && cache.get(key) == entry
+                                && (generation == PLAYER_GENERATION || sharedGeneration.get() == generation)) {
+                            entry.cachedValue = value;
+                            entry.loadedAtMillis = System.currentTimeMillis();
+                        }
+                    }
                     evictIfOversize(cache);
                     counters.asyncRefreshesCompleted.increment();
                 } catch (Exception exception) {
-                    entry.refreshing.set(false);
                     counters.asyncRefreshesFailed.increment();
                     plugin.getLogger().log(Level.WARNING,
                             "Failed to refresh playtime display cache for " + key + ".", exception);
+                } finally {
+                    entry.refreshing.set(false);
                 }
             });
         } catch (IllegalPluginAccessException exception) {
@@ -308,8 +347,9 @@ public final class PlaytimeReadService {
     }
 
     private static final class CacheEntry<T> {
-        private final T cachedValue;
-        private final long generation;
+        private volatile T cachedValue;
+        private volatile long generation;
+        private long revision;
         private volatile long loadedAtMillis;
         private final AtomicBoolean refreshing = new AtomicBoolean(false);
 

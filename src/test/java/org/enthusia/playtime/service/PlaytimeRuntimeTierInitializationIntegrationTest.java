@@ -89,6 +89,13 @@ class PlaytimeRuntimeTierInitializationIntegrationTest {
 
         resumeRead.countDown();
         assertTrue(firstSqlDone.await(ASYNC_TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        // A concurrent flush may invalidate all three SQL attempts. Production then
+        // releases initialization and schedules a retry rather than a main completion.
+        if (!firstMainScheduled.await(100L, TimeUnit.MILLISECONDS)) {
+            for (int attempt = 0; attempt < 10 && firstMainScheduled.getCount() > 0; attempt++) {
+                runtime.performTierInitializationReadForTesting(uuid, true);
+            }
+        }
         assertTrue(firstMainScheduled.await(ASYNC_TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));
         assertNotNull(mainCompletions.peek());
         mainCompletions.remove().run();
