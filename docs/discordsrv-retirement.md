@@ -12,7 +12,9 @@ The legacy adapter remains the active compatibility implementation while the sha
 
 ## Multi-linked identities
 
-A provider identity is reconciled from all Minecraft UUIDs currently linked to it. PlayTime reads authoritative active minutes for every linked UUID and applies the highest effective numeral tier. An unlink therefore does not remove a numeral role when another linked Minecraft UUID still establishes that tier. If any authoritative read or linked-membership snapshot is unavailable/stale, reconciliation fails before role mutation and is retried. Link membership is confirmed again after asynchronous role reads so a link/unlink that arrives while Discord state is being fetched cannot apply a destructive stale snapshot.
+A provider identity is reconciled from all Minecraft UUIDs currently linked to it. PlayTime reads authoritative active minutes for every linked UUID and applies the highest effective numeral tier. An unlink therefore does not remove a numeral role when another linked Minecraft UUID already establishes that tier. Failed authoritative reads and a membership snapshot that changes while effective playtime is being calculated fail before role mutation and are retried.
+
+The compatibility adapter does not attempt to make DiscordSRV link state and an asynchronous Discord role read atomic. The final Staff contract removes that transport-time race structurally: PlayTime publishes complete desired Minecraft membership snapshots and the platform resolves canonical links before applying Discord state.
 
 ## Next contract step
 
