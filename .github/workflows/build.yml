@@ -26,6 +26,16 @@ jobs:
           java-version: '21'
           cache: maven
 
+      - name: Print Codacy issue diagnostics
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 30
+        shell: bash
+        run: |
+          set +e
+          curl --fail-with-body --silent --show-error \
+            'https://api.codacy.com/api/v3/analysis/organizations/gh/wsg138/repositories/PlayTimePlugin/pull-requests/30/issues?status=new&limit=100' \
+            | python3 -m json.tool
+          exit 0
+
       - name: Build and test
         shell: bash
         run: |
