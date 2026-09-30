@@ -63,15 +63,11 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
                 requestUnlink(account);
             }
         });
-
-        boolean scheduled = false;
         try {
             task = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, this::drain, 20L, 20L);
-            scheduled = true;
-        } finally {
-            if (!scheduled) {
-                provider.close();
-            }
+        } catch (RuntimeException | LinkageError failure) {
+            provider.close();
+            throw failure;
         }
     }
 
@@ -99,12 +95,11 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
 
     private void sweepLinksWhenDue() {
         secondsSinceSweep++;
-        if (secondsSinceSweep < SWEEP_INTERVAL_SECONDS) return;
+        if (secondsSinceSweep < SWEEP_INTERVAL_SECONDS || !provider.linksAvailable()) return;
         try {
-            if (!provider.linksAvailable()) return;
             provider.linkedMinecraftAccounts().forEach(this::request);
             secondsSinceSweep = 0;
-        } catch (IllegalStateException | LinkageError exception) {
+        } catch (RuntimeException exception) {
             secondsSinceSweep = SWEEP_INTERVAL_SECONDS - 30;
             plugin.getLogger().log(Level.WARNING,
                     "Could not enumerate linked numeral-role accounts; retrying.", exception);
@@ -188,7 +183,7 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
         if (task != null) task.cancel();
         try {
             provider.close();
-        } catch (IllegalStateException | LinkageError exception) {
+        } catch (RuntimeException exception) {
             plugin.getLogger().log(Level.WARNING, "Failed to close numeral role provider.", exception);
         }
         persistUnlinks(true);
