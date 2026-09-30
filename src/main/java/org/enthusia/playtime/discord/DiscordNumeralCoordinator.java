@@ -65,7 +65,7 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
         });
         try {
             task = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, this::drain, 20L, 20L);
-        } catch (RuntimeException | Error failure) {
+        } catch (RuntimeException | LinkageError failure) {
             provider.close();
             throw failure;
         }
