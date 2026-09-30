@@ -206,6 +206,11 @@ class NumeralRoleSyncServiceTest {
         public void start(LinkListener listener) { }
 
         @Override
+        public boolean linksAvailable() {
+            return true;
+        }
+
+        @Override
         public Set<UUID> linkedMinecraftAccounts() {
             return Set.copyOf(links.keySet());
         }

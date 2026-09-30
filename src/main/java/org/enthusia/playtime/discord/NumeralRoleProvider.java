@@ -16,6 +16,9 @@ import java.util.concurrent.CompletableFuture;
 public interface NumeralRoleProvider extends AutoCloseable {
     void start(LinkListener listener);
 
+    /** Returns whether linked-identity enumeration can be attempted without provider startup backoff. */
+    boolean linksAvailable();
+
     Set<UUID> linkedMinecraftAccounts() throws Exception;
 
     Optional<NumeralRoleAccountRef> accountFor(UUID uuid) throws Exception;

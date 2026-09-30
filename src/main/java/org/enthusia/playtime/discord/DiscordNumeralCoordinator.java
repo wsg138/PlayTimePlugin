@@ -96,7 +96,7 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
 
     private void sweepLinksWhenDue() {
         secondsSinceSweep++;
-        if (secondsSinceSweep < SWEEP_INTERVAL_SECONDS) return;
+        if (secondsSinceSweep < SWEEP_INTERVAL_SECONDS || !provider.linksAvailable()) return;
         try {
             provider.linkedMinecraftAccounts().forEach(this::request);
             secondsSinceSweep = 0;

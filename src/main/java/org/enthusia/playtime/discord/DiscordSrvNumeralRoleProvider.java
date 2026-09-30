@@ -40,6 +40,12 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
     }
 
     @Override
+    public boolean linksAvailable() {
+        return DiscordSRV.isReady && DiscordSRV.getPlugin() != null
+                && DiscordSRV.getPlugin().getAccountLinkManager() != null;
+    }
+
+    @Override
     public Set<UUID> linkedMinecraftAccounts() {
         requireLinksAvailable();
         return Set.copyOf(DiscordSRV.getPlugin().getAccountLinkManager().getLinkedAccounts().values());
@@ -160,9 +166,8 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
         return new NumeralRoleAccountRef(discordId);
     }
 
-    private static void requireLinksAvailable() {
-        if (!DiscordSRV.isReady || DiscordSRV.getPlugin() == null
-                || DiscordSRV.getPlugin().getAccountLinkManager() == null) {
+    private void requireLinksAvailable() {
+        if (!linksAvailable()) {
             throw new IllegalStateException("DiscordSRV account links unavailable");
         }
     }
