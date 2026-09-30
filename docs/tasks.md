@@ -1,6 +1,6 @@
 # SPEAR work: numeral Discord roles
 
-1. **Spec:** Keep authoritative active-playtime/highest-earned numeral policy in PlayTime and preserve the twelve configured numeral tiers. Requirements NR-01 through NR-07.
+1. **Spec:** Keep authoritative active-playtime/highest-earned numeral policy in PlayTime and preserve the twelve configured numeral tiers. Requirements NR-01 through NR-08.
 2. **Prove:** Keep focused tests for tier selection, link/unlink identity, failed reads, stale membership, duplicate reconciliation, restart persistence, and multi-linked-account behavior.
 3. **Boundary:** Route numeral orchestration through a provider-neutral contract. DiscordSRV-specific account-link events/lookups and JDA mutations belong only in the temporary compatibility adapter.
 4. **Orchestrate:** Keep startup/periodic/join/link/tier reconciliation, bounded retry/idempotency, and persisted unlink cleanup independent of provider transport.
