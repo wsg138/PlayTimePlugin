@@ -1,24 +1,23 @@
 # Numeral Discord roles: current evidence and test plan
 
-The Google task-list entry is under the Playtime section of the Enthusia SMP master task list.
+Tracking: PlayTimePlugin #29. Umbrella architecture: EnthusiaStaff #264. Shared managed-role contract: EnthusiaStaff #266.
 
-## Local evidence
+## Verified repository evidence
 
-- Requirements NR-01 through NR-06 recorded before implementation.
-- `NumeralRolePolicyTest`, `NumeralRoleSyncServiceTest`, and `NumeralDiscordConfigTest` each failed to compile before their respective implementation was added, then passed.
-- `DiscordSrvNumeralGateway` compiles against DiscordSRV 1.28.0 as a provided soft dependency.
-- The config is disabled by default and rejects incomplete role ID mappings when enabled.
-- The twelve supplied IDs are mapped in order from I through z and checked by a resource configuration test.
-- A clean `mvn verify` completed with 210 tests, 0 failures, 0 errors, and 0 skipped after addressing CodeRabbit's seven review findings. Added checks for per-account unlink ordering, zero-hour tier cleanup, unknown-member responses, and dotted tier labels. The existing tier-initialization race test was made to exercise its retry path under suite load; the same fix is already present in the separate `/seen` work.
+- The tested PR #27 implementation remains the policy/configuration baseline: authoritative active playtime selects one highest-earned numeral tier and all twelve configured role IDs remain opt-in.
+- Application orchestration now depends on the public provider-neutral `NumeralRoleProvider` boundary and opaque `NumeralRoleAccountRef` DTO. DiscordSRV account-link events/lookups and shaded JDA role mutations are isolated in `DiscordSrvNumeralRoleProvider`.
+- `NumeralRoleSyncService` reconciles the effective highest tier across every Minecraft UUID currently linked to the same provider identity. Unlink cleanup keeps a numeral role when another linked UUID still establishes that effective tier.
+- Failed authoritative playtime reads, unavailable provider state, and link membership changing during reconciliation fail before role mutation so queued work can retry rather than infer a destructive state.
+- Focused tests cover successful reconciliation, unavailable provider/read failure, unlink cleanup, serialized duplicate work, stale-link snapshots, zero-minute tiers, idempotent duplicate reconciliation, and multiple Minecraft UUIDs sharing one provider identity.
+- The configuration remains disabled by default and rejects incomplete role ID mappings when enabled.
+- The migration PR CI runs `mvn --batch-mode --no-transfer-progress -DreuseForks=false clean verify`, validates the packaged plugin JAR, and prepares the Sentinel regression artifact. The exact migration head must remain green before review handoff.
 
-## Remaining verification
+## Compatibility checkpoint
 
-- The server owner confirmed highest-earned-only mode and supplied the configured role IDs. The feature remains disabled until enabled on the test server.
-- Exercise the live checks below before claiming production readiness.
+DiscordSRV 1.28.0 remains a provided soft dependency only for the legacy compatibility provider while EnthusiaStaff #266 is draft. No PlayTime-specific replacement Discord transport is introduced here. No production cutover or deployment is part of this checkpoint.
 
-## Test server checks
+## Remaining verification before final platform cutover
 
-- Link and unlink Java and Floodgate accounts; confirm role ownership follows UUID rather than username.
-- Advance active minutes across numeral thresholds; confirm the highest earned role replaces lower managed numeral roles.
-- Restart during queued role changes and Discord outage; confirm eventual convergence without removing unrelated roles.
-- Check missing role IDs, bot role hierarchy, Discord member absence, and rate limits.
+- Reconcile against the stabilized Staff #266 contract and replace the compatibility provider with complete desired membership snapshots for managed namespace `playtime-numerals`.
+- Exercise Java/Floodgate link and unlink behavior against the shared canonical identity service, including one Discord account associated with multiple Minecraft UUIDs.
+- Exercise restart, provider outage/recovery, stale identity data, role hierarchy failures, missing remote members, duplicate reconciliation, and rate limiting on a test environment before production readiness is claimed.
