@@ -6,9 +6,9 @@ Tracking: PlayTimePlugin #29. Umbrella architecture: EnthusiaStaff #264. Shared 
 
 - The tested PR #27 implementation remains the policy/configuration baseline: authoritative active playtime selects one highest-earned numeral tier and all twelve configured role IDs remain opt-in.
 - Application orchestration now depends on the public provider-neutral `NumeralRoleProvider` boundary and opaque `NumeralRoleAccountRef` DTO. DiscordSRV account-link events/lookups and shaded JDA role mutations are isolated in `DiscordSrvNumeralRoleProvider`.
-- `NumeralRoleSyncService` reconciles the effective highest tier across every Minecraft UUID currently linked to the same provider identity. Unlink cleanup keeps a numeral role when another linked UUID still establishes that effective tier.
-- Failed authoritative playtime reads, unavailable provider state, and link membership changing during reconciliation fail before role mutation so queued work can retry rather than infer a destructive state. Membership is re-confirmed after asynchronous role reads before any grant/revoke is calculated.
-- Focused tests cover successful reconciliation, unavailable provider/read failure, unlink cleanup, serialized duplicate work, stale-link snapshots, link changes during asynchronous role reads, zero-minute tiers, idempotent duplicate reconciliation, and multiple Minecraft UUIDs sharing one provider identity.
+- `NumeralRoleSyncService` reconciles the effective highest tier across every Minecraft UUID currently linked to the same provider identity. Unlink cleanup keeps a numeral role when another linked UUID already establishes that effective tier.
+- Failed authoritative playtime reads, unavailable provider state, and membership snapshots that change while effective playtime is calculated fail before role mutation so queued work can retry rather than infer a destructive state.
+- Focused tests cover successful reconciliation, unavailable provider/read failure, unlink cleanup, serialized duplicate work, stale-link snapshots, zero-minute tiers, idempotent duplicate reconciliation, and multiple Minecraft UUIDs sharing one provider identity.
 - Versioned pending-work state prevents an older success or retry completion from erasing a newer request for the same player/account.
 - Pending unlink reconciliation survives restart and accepts the legacy persisted Discord-ID key during migration.
 - The configuration remains disabled by default and rejects incomplete role ID mappings when enabled.
@@ -17,6 +17,8 @@ Tracking: PlayTimePlugin #29. Umbrella architecture: EnthusiaStaff #264. Shared 
 ## Compatibility checkpoint
 
 DiscordSRV 1.28.0 remains a provided soft dependency only for the legacy compatibility provider. EnthusiaStaff #266 is now an open, non-draft shared-contract checkpoint, but it is not yet merged and the final managed-role runtime/distribution path is not available to PlayTime. No PlayTime-specific replacement Discord transport is introduced here. No production cutover or deployment is part of this checkpoint.
+
+The compatibility adapter intentionally does not claim atomicity between DiscordSRV link state and an asynchronous Discord role read. The final Staff complete-snapshot contract is the architectural fix for that transport-time race.
 
 ## Remaining verification before final platform cutover
 
