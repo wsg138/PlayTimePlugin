@@ -53,26 +53,18 @@ public final class NumeralRoleSyncService {
     private CompletableFuture<Void> reconcileAccount(NumeralRoleAccountRef account) {
         Set<UUID> linkedAccounts = linkedAccounts(account);
         if (linkedAccounts.isEmpty()) {
-            return provider.currentRoles(account).thenCompose(current -> {
-                ensureMembershipUnchanged(account, linkedAccounts);
-                return apply(account,
-                        policy.revokeAllManaged(Objects.requireNonNull(current, "Provider roles unavailable")));
-            });
+            return provider.currentRoles(account).thenCompose(current -> apply(account,
+                    policy.revokeAllManaged(Objects.requireNonNull(current, "Provider roles unavailable"))));
         }
 
         long effectiveActiveMinutes = effectiveActiveMinutes(linkedAccounts);
-        ensureMembershipUnchanged(account, linkedAccounts);
-        return provider.currentRoles(account).thenCompose(current -> {
-            ensureMembershipUnchanged(account, linkedAccounts);
-            return apply(account, policy.reconcile(
-                    Objects.requireNonNull(current, "Provider roles unavailable"), effectiveActiveMinutes));
-        });
-    }
-
-    private void ensureMembershipUnchanged(NumeralRoleAccountRef account, Set<UUID> expected) {
-        if (!linkedAccounts(account).equals(expected)) {
+        Set<UUID> confirmedLinks = linkedAccounts(account);
+        if (!confirmedLinks.equals(linkedAccounts)) {
             throw new IllegalStateException("Linked account membership changed during numeral reconciliation");
         }
+
+        return provider.currentRoles(account).thenCompose(current -> apply(account, policy.reconcile(
+                Objects.requireNonNull(current, "Provider roles unavailable"), effectiveActiveMinutes)));
     }
 
     private Set<UUID> linkedAccounts(NumeralRoleAccountRef account) {
