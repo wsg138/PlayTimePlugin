@@ -35,7 +35,7 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
         this.listener = listener;
         try {
             DiscordSRV.api.subscribe(this);
-        } catch (RuntimeException | Error failure) {
+        } catch (RuntimeException | LinkageError failure) {
             this.listener = null;
             started.set(false);
             throw failure;
