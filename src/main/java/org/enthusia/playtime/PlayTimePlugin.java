@@ -10,6 +10,7 @@ import org.enthusia.playtime.command.SeenCommand;
 import org.enthusia.playtime.config.ConfigMigrator;
 import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.discord.DiscordNumeralCoordinator;
+import org.enthusia.playtime.discord.DiscordSrvNumeralRoleProvider;
 import org.enthusia.playtime.discord.NumeralDiscordConfig;
 import org.enthusia.playtime.gui.GuiListener;
 import org.enthusia.playtime.joins.FirstJoinWelcomeListener;
@@ -270,13 +271,15 @@ public class PlayTimePlugin extends JavaPlugin {
             Optional<NumeralDiscordConfig> discordConfig = NumeralDiscordConfig.load(getConfig(), config.numerals().catalog());
             if (discordConfig.isEmpty()) return;
             if (Bukkit.getPluginManager().getPlugin("DiscordSRV") == null) {
-                getLogger().warning("Numeral Discord roles are enabled, but DiscordSRV is unavailable.");
+                getLogger().warning("Numeral Discord roles are enabled, but DiscordSRV compatibility provider is unavailable.");
                 return;
             }
-            DiscordNumeralCoordinator coordinator = new DiscordNumeralCoordinator(this, discordConfig.get().policy());
+            DiscordSrvNumeralRoleProvider provider = new DiscordSrvNumeralRoleProvider();
+            DiscordNumeralCoordinator coordinator = new DiscordNumeralCoordinator(
+                    this, discordConfig.get().policy(), provider);
             coordinator.start();
             discordNumerals = Optional.of(coordinator);
-            getLogger().info("Discord numeral role synchronization started.");
+            getLogger().info("Discord numeral role synchronization started through the legacy DiscordSRV provider.");
         } catch (Exception | LinkageError exception) {
             getLogger().log(Level.SEVERE, "Discord numeral role synchronization could not start.", exception);
         }

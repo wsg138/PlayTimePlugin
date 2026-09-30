@@ -1,90 +1,122 @@
 package org.enthusia.playtime.discord;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.Map;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
-/** Reconciles a Discord member from an authoritative playtime snapshot. */
+/** Reconciles one provider identity from authoritative active-playtime snapshots. */
 public final class NumeralRoleSyncService {
-    @FunctionalInterface public interface LinkProvider { String discordId(UUID uuid) throws Exception; }
-    @FunctionalInterface public interface ActiveMinutes { long read(UUID uuid) throws Exception; }
-    public interface RoleGateway {
-        CompletableFuture<Set<String>> currentRoles(String discordId);
-        CompletableFuture<Void> grant(String discordId, String roleId);
-        CompletableFuture<Void> revoke(String discordId, String roleId);
+    @FunctionalInterface
+    public interface ActiveMinutes {
+        long read(UUID uuid) throws Exception;
     }
 
     private final NumeralRolePolicy policy;
-    private final LinkProvider links;
     private final ActiveMinutes playtime;
-    private final RoleGateway roles;
+    private final NumeralRoleProvider provider;
     private final Object queueLock = new Object();
-    private final Map<String, CompletableFuture<Void>> memberWork = new ConcurrentHashMap<>();
+    private final Map<NumeralRoleAccountRef, CompletableFuture<Void>> accountWork = new ConcurrentHashMap<>();
 
-    public NumeralRoleSyncService(NumeralRolePolicy policy, LinkProvider links,
-                                  ActiveMinutes playtime, RoleGateway roles) {
+    public NumeralRoleSyncService(
+            NumeralRolePolicy policy, ActiveMinutes playtime, NumeralRoleProvider provider) {
         this.policy = Objects.requireNonNull(policy);
-        this.links = Objects.requireNonNull(links);
         this.playtime = Objects.requireNonNull(playtime);
-        this.roles = Objects.requireNonNull(roles);
+        this.provider = Objects.requireNonNull(provider);
     }
 
     public CompletableFuture<Void> reconcile(UUID uuid) {
         try {
-            String discordId = links.discordId(uuid);
-            if (discordId == null) return CompletableFuture.completedFuture(null);
-            return serialize(discordId, () -> reconcileLinked(uuid, discordId));
+            Optional<NumeralRoleAccountRef> account = provider.accountFor(uuid);
+            if (account.isEmpty()) return CompletableFuture.completedFuture(null);
+            return serialize(account.get(), () -> reconcileAccount(account.get()));
         } catch (Exception exception) {
             return CompletableFuture.failedFuture(exception);
         }
     }
 
-    private CompletableFuture<Void> reconcileLinked(UUID uuid, String discordId) {
+    /**
+     * Reconciles the captured identity after unlink. Remaining Minecraft links keep their effective
+     * highest numeral; only an identity with no remaining links loses all managed numeral roles.
+     */
+    public CompletableFuture<Void> unlink(NumeralRoleAccountRef account) {
+        if (account == null) return CompletableFuture.completedFuture(null);
+        return serialize(account, () -> reconcileAccount(account));
+    }
+
+    private CompletableFuture<Void> reconcileAccount(NumeralRoleAccountRef account) {
         try {
-            if (!discordId.equals(links.discordId(uuid))) return CompletableFuture.completedFuture(null);
-            long active = playtime.read(uuid);
-            if (active < 0) throw new IllegalStateException("Authoritative active playtime is unavailable");
-            return roles.currentRoles(discordId).thenCompose(current -> apply(discordId, policy.reconcile(
-                    Objects.requireNonNull(current, "Discord member roles unavailable"), active)));
+            Set<UUID> linkedAccounts = linkedAccounts(account);
+            if (linkedAccounts.isEmpty()) {
+                return provider.currentRoles(account).thenCompose(current -> apply(account,
+                        policy.revokeAllManaged(Objects.requireNonNull(current, "Provider roles unavailable"))));
+            }
+
+            long effectiveActiveMinutes = effectiveActiveMinutes(linkedAccounts);
+            Set<UUID> confirmedLinks = linkedAccounts(account);
+            if (!confirmedLinks.equals(linkedAccounts)) {
+                throw new IllegalStateException("Linked account membership changed during numeral reconciliation");
+            }
+
+            return provider.currentRoles(account).thenCompose(current -> apply(account, policy.reconcile(
+                    Objects.requireNonNull(current, "Provider roles unavailable"), effectiveActiveMinutes)));
         } catch (Exception exception) {
             return CompletableFuture.failedFuture(exception);
         }
     }
 
-    /** The captured Discord ID survives removal of the UUID-to-Discord link. */
-    public CompletableFuture<Void> unlink(String discordId) {
-        if (discordId == null || discordId.isBlank()) return CompletableFuture.completedFuture(null);
-        return serialize(discordId, () -> roles.currentRoles(discordId).thenCompose(current -> apply(discordId,
-                policy.revokeAllManaged(Objects.requireNonNull(current, "Discord member roles unavailable")))));
+    private Set<UUID> linkedAccounts(NumeralRoleAccountRef account) throws Exception {
+        return Set.copyOf(Objects.requireNonNull(
+                provider.minecraftAccounts(account), "Provider linked accounts unavailable"));
     }
 
-    private CompletableFuture<Void> apply(String discordId, NumeralRolePolicy.Change change) {
+    private long effectiveActiveMinutes(Set<UUID> linkedAccounts) throws Exception {
+        long effective = 0L;
+        for (UUID uuid : linkedAccounts) {
+            long active = playtime.read(uuid);
+            if (active < 0) {
+                throw new IllegalStateException("Authoritative active playtime is unavailable");
+            }
+            effective = Math.max(effective, active);
+        }
+        return effective;
+    }
+
+    private CompletableFuture<Void> apply(NumeralRoleAccountRef account, NumeralRolePolicy.Change change) {
         List<CompletableFuture<Void>> work = new ArrayList<>();
         for (String roleId : change.revoke()) {
-            work.add(roles.revoke(discordId, roleId));
+            work.add(provider.revoke(account, roleId));
         }
         for (String roleId : change.grant()) {
-            work.add(roles.grant(discordId, roleId));
+            work.add(provider.grant(account, roleId));
         }
         return CompletableFuture.allOf(work.toArray(CompletableFuture[]::new));
     }
 
-    private CompletableFuture<Void> serialize(String discordId, Supplier<CompletableFuture<Void>> operation) {
+    private CompletableFuture<Void> serialize(
+            NumeralRoleAccountRef account, Supplier<CompletableFuture<Void>> operation) {
         synchronized (queueLock) {
-            CompletableFuture<Void> prior = memberWork.getOrDefault(discordId, CompletableFuture.completedFuture(null));
-            CompletableFuture<Void> current = prior.handle((ignored, failure) -> null).thenComposeAsync(ignored -> {
-                try { return operation.get(); }
-                catch (RuntimeException failure) { return CompletableFuture.failedFuture(failure); }
-            });
-            memberWork.put(discordId, current);
+            CompletableFuture<Void> prior = accountWork.getOrDefault(
+                    account, CompletableFuture.completedFuture(null));
+            CompletableFuture<Void> current = prior.handle((ignored, failure) -> null)
+                    .thenComposeAsync(ignored -> {
+                        try {
+                            return operation.get();
+                        } catch (RuntimeException failure) {
+                            return CompletableFuture.failedFuture(failure);
+                        }
+                    });
+            accountWork.put(account, current);
             current.whenComplete((ignored, failure) -> {
-                synchronized (queueLock) { memberWork.remove(discordId, current); }
+                synchronized (queueLock) {
+                    accountWork.remove(account, current);
+                }
             });
             return current;
         }
