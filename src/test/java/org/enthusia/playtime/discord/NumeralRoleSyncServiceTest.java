@@ -100,7 +100,8 @@ class NumeralRoleSyncServiceTest {
         assertFalse(unlink.isDone());
         heldRoles.complete(Set.of(TIER_ONE_ROLE, STAFF_ROLE));
 
-        CompletableFuture.allOf(reconcile, unlink).join();
+        assertThrows(CompletionException.class, reconcile::join);
+        unlink.join();
         assertEquals(Set.of(STAFF_ROLE), provider.roles);
     }
 
@@ -144,6 +145,30 @@ class NumeralRoleSyncServiceTest {
         service.unlink(ACCOUNT).join();
 
         assertEquals(Set.of(TIER_TWO_ROLE, STAFF_ROLE), provider.roles);
+    }
+
+    @Test
+    void unlinkDoesNotRevokeWhenNewLinkAppearsDuringRoleRead() throws Exception {
+        UUID second = UUID.randomUUID();
+        CountDownLatch readStarted = new CountDownLatch(1);
+        CompletableFuture<Set<String>> heldRoles = new CompletableFuture<>();
+        FakeProvider provider = new FakeProvider(Set.of(TIER_TWO_ROLE, STAFF_ROLE)) {
+            @Override
+            public CompletableFuture<Set<String>> currentRoles(NumeralRoleAccountRef account) {
+                readStarted.countDown();
+                return heldRoles;
+            }
+        };
+        NumeralRoleSyncService service = service(provider, uuid -> 480L);
+
+        CompletableFuture<Void> unlink = service.unlink(ACCOUNT);
+        assertTrue(readStarted.await(5, TimeUnit.SECONDS));
+        provider.link(second, ACCOUNT);
+        heldRoles.complete(Set.of(TIER_TWO_ROLE, STAFF_ROLE));
+
+        assertThrows(CompletionException.class, unlink::join);
+        assertEquals(Set.of(TIER_TWO_ROLE, STAFF_ROLE), provider.roles);
+        assertEquals(0, provider.revokes.get());
     }
 
     @Test
