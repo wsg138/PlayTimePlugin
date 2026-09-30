@@ -32,13 +32,12 @@ public final class NumeralRoleSyncService {
     }
 
     public CompletableFuture<Void> reconcile(UUID uuid) {
-        try {
+        return CompletableFuture.completedFuture(null).thenCompose(ignored -> {
             Optional<NumeralRoleAccountRef> account = provider.accountFor(uuid);
             if (account.isEmpty()) return CompletableFuture.completedFuture(null);
-            return serialize(account.get(), () -> reconcileAccount(account.get()));
-        } catch (RuntimeException | LinkageError exception) {
-            return CompletableFuture.failedFuture(exception);
-        }
+            NumeralRoleAccountRef resolvedAccount = account.get();
+            return serialize(resolvedAccount, () -> reconcileAccount(resolvedAccount));
+        });
     }
 
     /**
@@ -104,13 +103,7 @@ public final class NumeralRoleSyncService {
             CompletableFuture<Void> prior = accountWork.getOrDefault(
                     account, CompletableFuture.completedFuture(null));
             CompletableFuture<Void> current = prior.handle((ignored, failure) -> null)
-                    .thenComposeAsync(ignored -> {
-                        try {
-                            return operation.get();
-                        } catch (RuntimeException | LinkageError failure) {
-                            return CompletableFuture.failedFuture(failure);
-                        }
-                    });
+                    .thenComposeAsync(ignored -> operation.get());
             accountWork.put(account, current);
             current.whenComplete((ignored, failure) -> {
                 synchronized (queueLock) {
