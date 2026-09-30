@@ -1,9 +1,10 @@
 # SPEAR work: numeral Discord roles
 
-1. **Spec:** Verify the active-playtime tier source, DiscordSRV account-link API, role ownership, and the confirmed highest-earned-only policy. Requirements NR-01 through NR-07.
-2. **Prove:** Write focused tests for pure tier-to-role selection, link/unlink identity, stale-role cleanup, failed reads, and retry behavior before runtime wiring.
-3. **Engine:** Add an opt-in DiscordSRV gateway and role reconciler; use current configured numeral thresholds and UUID-based links.
-4. **Arch:** Wire tier advancement, account-link events, startup/reload reconciliation, and a bounded retry queue without running Discord API calls on the server thread.
-5. **Refine:** Run focused tests, full clean build, packaging, and test-server checks with actual DiscordSRV, JDA permissions, Java and Bedrock links, restart, unlink, and outage recovery.
+1. **Spec:** Keep authoritative active-playtime/highest-earned numeral policy in PlayTime and preserve the twelve configured numeral tiers. Requirements NR-01 through NR-07.
+2. **Prove:** Keep focused tests for tier selection, link/unlink identity, failed reads, stale membership, duplicate reconciliation, restart persistence, and multi-linked-account behavior.
+3. **Boundary:** Route numeral orchestration through a provider-neutral contract. DiscordSRV-specific account-link events/lookups and JDA mutations belong only in the temporary compatibility adapter.
+4. **Orchestrate:** Keep startup/periodic/join/link/tier reconciliation, bounded retry/idempotency, and persisted unlink cleanup independent of provider transport.
+5. **Platform cutover:** Once EnthusiaStaff #266 stabilizes, replace the compatibility provider with the shared managed-role client and publish complete desired membership snapshots for namespace `playtime-numerals`. Do not create a PlayTime-specific Discord transport.
+6. **Verify:** Require `mvn clean verify`, packaging/Sentinel checks, hosted static analysis, and test-environment checks before any production cutover.
 
-Current state: The server owner supplied 12 existing role IDs, mapped in order to I through z, and confirmed that linked players keep only their highest earned numeral role. The opt-in integration listens for DiscordSRV link/unlink events, requests sync on tier gain, sweeps linked accounts at startup and every five minutes, bounds dispatch to eight requests per second, retries failures, and persists unlink cleanup IDs across restart. Local build and test packaging pass; live DiscordSRV/JDA, Bedrock, role hierarchy, outage, and restart checks remain for the test server.
+Current checkpoint: `integration/enthusia-discord-platform` preserves PR #27 behavior while isolating DiscordSRV behind `DiscordSrvNumeralRoleProvider`. One provider identity is reconciled from all currently linked Minecraft UUIDs, using the highest authoritative active-playtime tier. Staff #266 remains the dependency for the final shared transport/identity implementation; no production deployment or automatic merge is authorized by this checkpoint.
