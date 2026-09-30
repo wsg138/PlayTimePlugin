@@ -9,6 +9,8 @@ import org.enthusia.playtime.command.PlaytimeCommand;
 import org.enthusia.playtime.command.SeenCommand;
 import org.enthusia.playtime.config.ConfigMigrator;
 import org.enthusia.playtime.config.PlaytimeConfig;
+import org.enthusia.playtime.discord.DiscordNumeralCoordinator;
+import org.enthusia.playtime.discord.NumeralDiscordConfig;
 import org.enthusia.playtime.gui.GuiListener;
 import org.enthusia.playtime.joins.FirstJoinWelcomeListener;
 import org.enthusia.playtime.joins.JoinLogListener;
@@ -19,6 +21,7 @@ import org.enthusia.playtime.util.AsyncWriteQueue;
 
 import java.io.File;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.function.Consumer;
@@ -54,6 +57,7 @@ public class PlayTimePlugin extends JavaPlugin {
     };
 
     private BedrockSupport bedrockSupport;
+    private volatile Optional<DiscordNumeralCoordinator> discordNumerals = Optional.empty();
 
     @Override
     public void onEnable() {
@@ -79,6 +83,7 @@ public class PlayTimePlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        closeDiscordNumerals();
         this.allowInitialSqliteCreation = false;
         this.sqliteStartupBackupPending.set(false);
         placeholderExpansion.ifPresent(PlaytimePlaceholderExpansion::unregister);
@@ -191,6 +196,7 @@ public class PlayTimePlugin extends JavaPlugin {
             this.activeRuntime = Optional.of(newRuntime);
             reloadProbe.accept(ReloadStage.CANDIDATE_PUBLISHED);
             configMigrator.markCurrentConfigGood();
+            refreshDiscordNumerals(config);
             if (oldRuntime != null) {
                 try {
                     oldRuntime.close(true);
@@ -251,6 +257,38 @@ public class PlayTimePlugin extends JavaPlugin {
 
     public PlaytimeRuntime runtime() {
         return activeRuntime.orElse(null);
+    }
+
+    public void requestDiscordNumeralSync(UUID uuid) {
+        discordNumerals.ifPresent(current -> current.request(uuid));
+    }
+
+    private void refreshDiscordNumerals(PlaytimeConfig config) {
+        closeDiscordNumerals();
+        if (!config.numerals().enabled()) return;
+        try {
+            Optional<NumeralDiscordConfig> discordConfig = NumeralDiscordConfig.load(getConfig(), config.numerals().catalog());
+            if (discordConfig.isEmpty()) return;
+            if (Bukkit.getPluginManager().getPlugin("DiscordSRV") == null) {
+                getLogger().warning("Numeral Discord roles are enabled, but DiscordSRV is unavailable.");
+                return;
+            }
+            DiscordNumeralCoordinator coordinator = new DiscordNumeralCoordinator(this, discordConfig.get().policy());
+            coordinator.start();
+            discordNumerals = Optional.of(coordinator);
+            getLogger().info("Discord numeral role synchronization started.");
+        } catch (Exception | LinkageError exception) {
+            getLogger().log(Level.SEVERE, "Discord numeral role synchronization could not start.", exception);
+        }
+    }
+
+    private void closeDiscordNumerals() {
+        Optional<DiscordNumeralCoordinator> existing = discordNumerals;
+        discordNumerals = Optional.empty();
+        existing.ifPresent(coordinator -> {
+            try { coordinator.close(); }
+            catch (Exception exception) { getLogger().log(Level.WARNING, "Failed to close Discord numeral sync.", exception); }
+        });
     }
 
     public PlaytimeConfig getRuntimeConfig() {
