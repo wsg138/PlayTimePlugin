@@ -21,6 +21,7 @@ import org.enthusia.playtime.service.PlaytimeRuntime;
 import org.enthusia.playtime.util.AsyncWriteQueue;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -280,7 +281,7 @@ public class PlayTimePlugin extends JavaPlugin {
             coordinator.start();
             discordNumerals = Optional.of(coordinator);
             getLogger().info("Discord numeral role synchronization started through the legacy DiscordSRV provider.");
-        } catch (Exception | LinkageError exception) {
+        } catch (IOException | RuntimeException | LinkageError exception) {
             getLogger().log(Level.SEVERE, "Discord numeral role synchronization could not start.", exception);
         }
     }
@@ -289,8 +290,11 @@ public class PlayTimePlugin extends JavaPlugin {
         Optional<DiscordNumeralCoordinator> existing = discordNumerals;
         discordNumerals = Optional.empty();
         existing.ifPresent(coordinator -> {
-            try { coordinator.close(); }
-            catch (Exception exception) { getLogger().log(Level.WARNING, "Failed to close Discord numeral sync.", exception); }
+            try {
+                coordinator.close();
+            } catch (RuntimeException exception) {
+                getLogger().log(Level.WARNING, "Failed to close Discord numeral sync.", exception);
+            }
         });
     }
 
