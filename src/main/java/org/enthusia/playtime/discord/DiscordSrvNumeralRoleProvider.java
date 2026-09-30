@@ -8,6 +8,7 @@ import github.scarsz.discordsrv.dependencies.jda.api.entities.Guild;
 import github.scarsz.discordsrv.dependencies.jda.api.entities.Role;
 import github.scarsz.discordsrv.dependencies.jda.api.exceptions.ErrorResponseException;
 import github.scarsz.discordsrv.dependencies.jda.api.requests.ErrorResponse;
+import github.scarsz.discordsrv.objects.managers.AccountLinkManager;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -16,6 +17,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -27,19 +29,14 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
     private volatile LinkListener listener;
 
     @Override
-    public void start(LinkListener listener) {
+    public synchronized void start(LinkListener listener) {
         Objects.requireNonNull(listener, "listener");
-        if (!started.compareAndSet(false, true)) {
+        if (started.get()) {
             throw new IllegalStateException("DiscordSRV numeral role provider is already started");
         }
+        DiscordSRV.api.subscribe(this);
         this.listener = listener;
-        try {
-            DiscordSRV.api.subscribe(this);
-        } catch (RuntimeException | LinkageError failure) {
-            this.listener = null;
-            started.set(false);
-            throw failure;
-        }
+        started.set(true);
     }
 
     @Override
@@ -50,15 +47,13 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
 
     @Override
     public Set<UUID> linkedMinecraftAccounts() {
-        requireLinksAvailable();
-        return Set.copyOf(DiscordSRV.getPlugin().getAccountLinkManager().getLinkedAccounts().values());
+        return Set.copyOf(linkManager().getLinkedAccounts().values());
     }
 
     @Override
     public Optional<NumeralRoleAccountRef> accountFor(UUID uuid) {
         Objects.requireNonNull(uuid, "uuid");
-        requireLinksAvailable();
-        String discordId = DiscordSRV.getPlugin().getAccountLinkManager().getDiscordId(uuid);
+        String discordId = linkManager().getDiscordId(uuid);
         if (discordId == null) return Optional.empty();
         return Optional.of(discordAccount(discordId));
     }
@@ -66,8 +61,7 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
     @Override
     public Set<UUID> minecraftAccounts(NumeralRoleAccountRef account) {
         Objects.requireNonNull(account, "account");
-        requireLinksAvailable();
-        return DiscordSRV.getPlugin().getAccountLinkManager().getLinkedAccounts().entrySet().stream()
+        return linkManager().getLinkedAccounts().entrySet().stream()
                 .filter(entry -> account.value().equals(entry.getKey()))
                 .map(java.util.Map.Entry::getValue)
                 .collect(Collectors.toUnmodifiableSet());
@@ -75,38 +69,32 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
 
     @Override
     public CompletableFuture<Set<String>> currentRoles(NumeralRoleAccountRef account) {
-        try {
+        return captureFailure(() -> {
             Guild guild = guild();
             CompletableFuture<Set<String>> future = guild.retrieveMemberById(account.value()).submit()
                     .thenApply(member -> member.getRoles().stream()
                             .map(Role::getId)
                             .collect(Collectors.toUnmodifiableSet()));
             return normalizeUnknownMember(future, Set.of());
-        } catch (RuntimeException exception) {
-            return CompletableFuture.failedFuture(exception);
-        }
+        });
     }
 
     @Override
     public CompletableFuture<Void> grant(NumeralRoleAccountRef account, String roleId) {
-        try {
+        return captureFailure(() -> {
             Guild guild = guild();
             return normalizeUnknownMember(
                     guild.addRoleToMember(account.value(), role(guild, roleId)).submit(), null);
-        } catch (RuntimeException exception) {
-            return CompletableFuture.failedFuture(exception);
-        }
+        });
     }
 
     @Override
     public CompletableFuture<Void> revoke(NumeralRoleAccountRef account, String roleId) {
-        try {
+        return captureFailure(() -> {
             Guild guild = guild();
             return normalizeUnknownMember(
                     guild.removeRoleFromMember(account.value(), role(guild, roleId)).submit(), null);
-        } catch (RuntimeException exception) {
-            return CompletableFuture.failedFuture(exception);
-        }
+        });
     }
 
     @Subscribe
@@ -126,7 +114,7 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         listener = null;
         if (started.compareAndSet(true, false)) {
             DiscordSRV.api.unsubscribe(this);
@@ -137,6 +125,11 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
         Throwable cause = unwrap(error);
         return cause instanceof ErrorResponseException response
                 && response.getErrorResponse() == ErrorResponse.UNKNOWN_MEMBER;
+    }
+
+    private static <T> CompletableFuture<T> captureFailure(
+            Supplier<CompletableFuture<T>> operation) {
+        return CompletableFuture.completedFuture(null).thenCompose(ignored -> operation.get());
     }
 
     private static <T> CompletableFuture<T> normalizeUnknownMember(
@@ -169,10 +162,12 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
         return new NumeralRoleAccountRef(discordId);
     }
 
-    private void requireLinksAvailable() {
-        if (!linksAvailable()) {
+    private static AccountLinkManager linkManager() {
+        if (!DiscordSRV.isReady || DiscordSRV.getPlugin() == null
+                || DiscordSRV.getPlugin().getAccountLinkManager() == null) {
             throw new IllegalStateException("DiscordSRV account links unavailable");
         }
+        return DiscordSRV.getPlugin().getAccountLinkManager();
     }
 
     private static Guild guild() {
