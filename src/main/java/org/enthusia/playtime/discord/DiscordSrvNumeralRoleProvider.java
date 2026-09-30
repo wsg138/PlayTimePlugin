@@ -25,11 +25,18 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
 
     @Override
     public void start(LinkListener listener) {
-        this.listener = Objects.requireNonNull(listener, "listener");
+        Objects.requireNonNull(listener, "listener");
         if (!started.compareAndSet(false, true)) {
             throw new IllegalStateException("DiscordSRV numeral role provider is already started");
         }
-        DiscordSRV.api.subscribe(this);
+        this.listener = listener;
+        try {
+            DiscordSRV.api.subscribe(this);
+        } catch (RuntimeException | Error failure) {
+            this.listener = null;
+            started.set(false);
+            throw failure;
+        }
     }
 
     @Override
