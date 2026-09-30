@@ -36,7 +36,7 @@ public final class NumeralRoleSyncService {
             Optional<NumeralRoleAccountRef> account = provider.accountFor(uuid);
             if (account.isEmpty()) return CompletableFuture.completedFuture(null);
             return serialize(account.get(), () -> reconcileAccount(account.get()));
-        } catch (RuntimeException exception) {
+        } catch (RuntimeException | LinkageError exception) {
             return CompletableFuture.failedFuture(exception);
         }
     }
@@ -107,7 +107,7 @@ public final class NumeralRoleSyncService {
                     .thenComposeAsync(ignored -> {
                         try {
                             return operation.get();
-                        } catch (RuntimeException failure) {
+                        } catch (RuntimeException | LinkageError failure) {
                             return CompletableFuture.failedFuture(failure);
                         }
                     });
