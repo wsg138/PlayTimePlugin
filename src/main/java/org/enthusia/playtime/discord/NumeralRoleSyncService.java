@@ -32,12 +32,13 @@ public final class NumeralRoleSyncService {
     }
 
     public CompletableFuture<Void> reconcile(UUID uuid) {
-        return CompletableFuture.completedFuture(null).thenCompose(ignored -> {
+        try {
             Optional<NumeralRoleAccountRef> account = provider.accountFor(uuid);
             if (account.isEmpty()) return CompletableFuture.completedFuture(null);
-            NumeralRoleAccountRef resolvedAccount = account.get();
-            return serialize(resolvedAccount, () -> reconcileAccount(resolvedAccount));
-        });
+            return serialize(account.get(), () -> reconcileAccount(account.get()));
+        } catch (RuntimeException exception) {
+            return CompletableFuture.failedFuture(exception);
+        }
     }
 
     /**
@@ -51,15 +52,20 @@ public final class NumeralRoleSyncService {
 
     private CompletableFuture<Void> reconcileAccount(NumeralRoleAccountRef account) {
         Set<UUID> linkedAccounts = linkedAccounts(account);
-        long effectiveActiveMinutes = linkedAccounts.isEmpty() ? 0L : effectiveActiveMinutes(linkedAccounts);
+        if (linkedAccounts.isEmpty()) {
+            return provider.currentRoles(account).thenCompose(current -> {
+                ensureMembershipUnchanged(account, linkedAccounts);
+                return apply(account,
+                        policy.revokeAllManaged(Objects.requireNonNull(current, "Provider roles unavailable")));
+            });
+        }
 
+        long effectiveActiveMinutes = effectiveActiveMinutes(linkedAccounts);
+        ensureMembershipUnchanged(account, linkedAccounts);
         return provider.currentRoles(account).thenCompose(current -> {
             ensureMembershipUnchanged(account, linkedAccounts);
-            Set<String> currentRoles = Objects.requireNonNull(current, "Provider roles unavailable");
-            NumeralRolePolicy.Change change = linkedAccounts.isEmpty()
-                    ? policy.revokeAllManaged(currentRoles)
-                    : policy.reconcile(currentRoles, effectiveActiveMinutes);
-            return apply(account, change);
+            return apply(account, policy.reconcile(
+                    Objects.requireNonNull(current, "Provider roles unavailable"), effectiveActiveMinutes));
         });
     }
 
@@ -103,7 +109,13 @@ public final class NumeralRoleSyncService {
             CompletableFuture<Void> prior = accountWork.getOrDefault(
                     account, CompletableFuture.completedFuture(null));
             CompletableFuture<Void> current = prior.handle((ignored, failure) -> null)
-                    .thenComposeAsync(ignored -> operation.get());
+                    .thenComposeAsync(ignored -> {
+                        try {
+                            return operation.get();
+                        } catch (RuntimeException failure) {
+                            return CompletableFuture.failedFuture(failure);
+                        }
+                    });
             accountWork.put(account, current);
             current.whenComplete((ignored, failure) -> {
                 synchronized (queueLock) {
