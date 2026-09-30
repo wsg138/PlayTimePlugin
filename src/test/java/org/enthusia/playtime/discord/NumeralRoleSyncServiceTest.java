@@ -100,8 +100,7 @@ class NumeralRoleSyncServiceTest {
         assertFalse(unlink.isDone());
         heldRoles.complete(Set.of(TIER_ONE_ROLE, STAFF_ROLE));
 
-        assertThrows(CompletionException.class, reconcile::join);
-        unlink.join();
+        CompletableFuture.allOf(reconcile, unlink).join();
         assertEquals(Set.of(STAFF_ROLE), provider.roles);
     }
 
@@ -149,17 +148,12 @@ class NumeralRoleSyncServiceTest {
 
     @Test
     void staleLinkSnapshotFailsBeforeRoleMutation() {
-        AtomicInteger roleReads = new AtomicInteger();
+        AtomicInteger membershipReads = new AtomicInteger();
         FakeProvider provider = new FakeProvider(Set.of(TIER_ONE_ROLE)) {
             @Override
             public Set<UUID> minecraftAccounts(NumeralRoleAccountRef account) {
-                return roleReads.get() == 0 ? Set.of(player) : Set.of();
-            }
-
-            @Override
-            public CompletableFuture<Set<String>> currentRoles(NumeralRoleAccountRef account) {
-                roleReads.incrementAndGet();
-                return super.currentRoles(account);
+                if (membershipReads.getAndIncrement() == 0) return Set.of(player);
+                return Set.of();
             }
         };
         provider.link(player, ACCOUNT);
