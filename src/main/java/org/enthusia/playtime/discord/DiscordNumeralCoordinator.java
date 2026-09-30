@@ -15,7 +15,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
-import java.util.stream.Collectors;
 
 /** Bounded, retrying orchestration for numeral-role reconciliation over a provider-neutral port. */
 public final class DiscordNumeralCoordinator implements AutoCloseable {
@@ -47,8 +46,8 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
             if (runtime == null) throw new IllegalStateException("Playtime runtime unavailable");
             return runtime.readAuthoritativeActiveMinutes(uuid);
         }, provider);
-        for (String value : unlinkStore.load()) {
-            pendingUnlinks.request(new NumeralRoleAccountRef(value));
+        for (NumeralRoleAccountRef account : unlinkStore.load()) {
+            pendingUnlinks.request(account);
         }
     }
 
@@ -170,10 +169,7 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
         synchronized (fileLock) {
             if (closed.get() && !closing) return;
             try {
-                Set<String> values = pendingUnlinks.keys().stream()
-                        .map(NumeralRoleAccountRef::value)
-                        .collect(Collectors.toUnmodifiableSet());
-                unlinkStore.save(values);
+                unlinkStore.save(pendingUnlinks.keys());
             } catch (IOException exception) {
                 plugin.getLogger().log(Level.SEVERE,
                         "Could not persist numeral role unlink reconciliation queue.", exception);
