@@ -16,10 +16,13 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /** Legacy DiscordSRV compatibility adapter. No DiscordSRV/JDA type escapes this class. */
 public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider {
+    private static final Pattern DISCORD_ID = Pattern.compile("[0-9]{1,20}");
+
     private final AtomicBoolean started = new AtomicBoolean();
     private volatile LinkListener listener;
 
@@ -79,7 +82,7 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
                             .map(Role::getId)
                             .collect(Collectors.toUnmodifiableSet()));
             return normalizeUnknownMember(future, Set.of());
-        } catch (Exception exception) {
+        } catch (RuntimeException exception) {
             return CompletableFuture.failedFuture(exception);
         }
     }
@@ -90,7 +93,7 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
             Guild guild = guild();
             return normalizeUnknownMember(
                     guild.addRoleToMember(account.value(), role(guild, roleId)).submit(), null);
-        } catch (Exception exception) {
+        } catch (RuntimeException exception) {
             return CompletableFuture.failedFuture(exception);
         }
     }
@@ -101,7 +104,7 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
             Guild guild = guild();
             return normalizeUnknownMember(
                     guild.removeRoleFromMember(account.value(), role(guild, roleId)).submit(), null);
-        } catch (Exception exception) {
+        } catch (RuntimeException exception) {
             return CompletableFuture.failedFuture(exception);
         }
     }
@@ -118,7 +121,7 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
     public void unlinked(AccountUnlinkedEvent event) {
         LinkListener current = listener;
         String discordId = event.getDiscordId();
-        if (current == null || discordId == null || !discordId.matches("[0-9]{1,20}")) return;
+        if (current == null || discordId == null || !DISCORD_ID.matcher(discordId).matches()) return;
         current.unlinked(new NumeralRoleAccountRef(discordId));
     }
 
@@ -160,7 +163,7 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
     }
 
     private static NumeralRoleAccountRef discordAccount(String discordId) {
-        if (!discordId.matches("[0-9]{1,20}")) {
+        if (!DISCORD_ID.matcher(discordId).matches()) {
             throw new IllegalStateException("DiscordSRV returned an invalid linked Discord account ID");
         }
         return new NumeralRoleAccountRef(discordId);

@@ -11,7 +11,8 @@ import java.util.concurrent.CompletableFuture;
  * <p>The application layer owns active-playtime and tier policy. Implementations own linked-identity
  * lookup, link-change events and role transport. Account references are opaque outside the provider.
  * Missing remote members must be treated as an idempotent completed operation rather than leaked as
- * provider-specific exceptions.
+ * provider-specific exceptions. Synchronous provider-state failures are runtime exceptions; remote
+ * role-operation failures complete the returned future exceptionally.
  */
 public interface NumeralRoleProvider extends AutoCloseable {
     void start(LinkListener listener);
@@ -19,11 +20,11 @@ public interface NumeralRoleProvider extends AutoCloseable {
     /** Returns whether linked-identity enumeration can be attempted without provider startup backoff. */
     boolean linksAvailable();
 
-    Set<UUID> linkedMinecraftAccounts() throws Exception;
+    Set<UUID> linkedMinecraftAccounts();
 
-    Optional<NumeralRoleAccountRef> accountFor(UUID uuid) throws Exception;
+    Optional<NumeralRoleAccountRef> accountFor(UUID uuid);
 
-    Set<UUID> minecraftAccounts(NumeralRoleAccountRef account) throws Exception;
+    Set<UUID> minecraftAccounts(NumeralRoleAccountRef account);
 
     CompletableFuture<Set<String>> currentRoles(NumeralRoleAccountRef account);
 

@@ -99,7 +99,7 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
         try {
             provider.linkedMinecraftAccounts().forEach(this::request);
             secondsSinceSweep = 0;
-        } catch (Exception exception) {
+        } catch (RuntimeException exception) {
             secondsSinceSweep = SWEEP_INTERVAL_SECONDS - 30;
             plugin.getLogger().log(Level.WARNING,
                     "Could not enumerate linked numeral-role accounts; retrying.", exception);

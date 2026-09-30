@@ -15,7 +15,7 @@ import java.util.function.Supplier;
 public final class NumeralRoleSyncService {
     @FunctionalInterface
     public interface ActiveMinutes {
-        long read(UUID uuid) throws Exception;
+        long read(UUID uuid);
     }
 
     private final NumeralRolePolicy policy;
@@ -36,7 +36,7 @@ public final class NumeralRoleSyncService {
             Optional<NumeralRoleAccountRef> account = provider.accountFor(uuid);
             if (account.isEmpty()) return CompletableFuture.completedFuture(null);
             return serialize(account.get(), () -> reconcileAccount(account.get()));
-        } catch (Exception exception) {
+        } catch (RuntimeException exception) {
             return CompletableFuture.failedFuture(exception);
         }
     }
@@ -51,32 +51,28 @@ public final class NumeralRoleSyncService {
     }
 
     private CompletableFuture<Void> reconcileAccount(NumeralRoleAccountRef account) {
-        try {
-            Set<UUID> linkedAccounts = linkedAccounts(account);
-            if (linkedAccounts.isEmpty()) {
-                return provider.currentRoles(account).thenCompose(current -> apply(account,
-                        policy.revokeAllManaged(Objects.requireNonNull(current, "Provider roles unavailable"))));
-            }
-
-            long effectiveActiveMinutes = effectiveActiveMinutes(linkedAccounts);
-            Set<UUID> confirmedLinks = linkedAccounts(account);
-            if (!confirmedLinks.equals(linkedAccounts)) {
-                throw new IllegalStateException("Linked account membership changed during numeral reconciliation");
-            }
-
-            return provider.currentRoles(account).thenCompose(current -> apply(account, policy.reconcile(
-                    Objects.requireNonNull(current, "Provider roles unavailable"), effectiveActiveMinutes)));
-        } catch (Exception exception) {
-            return CompletableFuture.failedFuture(exception);
+        Set<UUID> linkedAccounts = linkedAccounts(account);
+        if (linkedAccounts.isEmpty()) {
+            return provider.currentRoles(account).thenCompose(current -> apply(account,
+                    policy.revokeAllManaged(Objects.requireNonNull(current, "Provider roles unavailable"))));
         }
+
+        long effectiveActiveMinutes = effectiveActiveMinutes(linkedAccounts);
+        Set<UUID> confirmedLinks = linkedAccounts(account);
+        if (!confirmedLinks.equals(linkedAccounts)) {
+            throw new IllegalStateException("Linked account membership changed during numeral reconciliation");
+        }
+
+        return provider.currentRoles(account).thenCompose(current -> apply(account, policy.reconcile(
+                Objects.requireNonNull(current, "Provider roles unavailable"), effectiveActiveMinutes)));
     }
 
-    private Set<UUID> linkedAccounts(NumeralRoleAccountRef account) throws Exception {
+    private Set<UUID> linkedAccounts(NumeralRoleAccountRef account) {
         return Set.copyOf(Objects.requireNonNull(
                 provider.minecraftAccounts(account), "Provider linked accounts unavailable"));
     }
 
-    private long effectiveActiveMinutes(Set<UUID> linkedAccounts) throws Exception {
+    private long effectiveActiveMinutes(Set<UUID> linkedAccounts) {
         long effective = 0L;
         for (UUID uuid : linkedAccounts) {
             long active = playtime.read(uuid);
