@@ -14,7 +14,6 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -28,12 +27,11 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
     private final NumeralRoleProvider provider;
     private final NumeralRoleSyncService sync;
     private final PendingUnlinkStore unlinkStore;
-    private final Map<UUID, PendingPlayer> pendingPlayers = new ConcurrentHashMap<>();
-    private final Map<NumeralRoleAccountRef, Long> pendingUnlinks = new ConcurrentHashMap<>();
+    private final PendingReconciliationQueue<UUID> pendingPlayers = new PendingReconciliationQueue<>();
+    private final PendingReconciliationQueue<NumeralRoleAccountRef> pendingUnlinks = new PendingReconciliationQueue<>();
     private final Set<UUID> activePlayers = ConcurrentHashMap.newKeySet();
     private final Set<NumeralRoleAccountRef> activeUnlinks = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
-    private final AtomicLong requestSequence = new AtomicLong();
     private final Object fileLock = new Object();
     private BukkitTask task;
     private int secondsSinceSweep = SWEEP_INTERVAL_SECONDS;
@@ -50,7 +48,7 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
             return runtime.readAuthoritativeActiveMinutes(uuid);
         }, provider);
         for (String value : unlinkStore.load()) {
-            pendingUnlinks.put(new NumeralRoleAccountRef(value), Long.MIN_VALUE);
+            pendingUnlinks.request(new NumeralRoleAccountRef(value));
         }
     }
 
@@ -76,14 +74,14 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
 
     public void request(UUID uuid) {
         if (!closed.get() && uuid != null) {
-            pendingPlayers.put(uuid, new PendingPlayer(Long.MIN_VALUE, requestSequence.incrementAndGet()));
+            pendingPlayers.request(uuid);
         }
     }
 
     private void requestUnlink(NumeralRoleAccountRef account) {
         synchronized (fileLock) {
             if (closed.get()) return;
-            pendingUnlinks.put(account, Long.MIN_VALUE);
+            pendingUnlinks.request(account);
             persistUnlinks(false);
         }
     }
@@ -111,35 +109,38 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
 
     private int dispatchUnlinks(long now) {
         int dispatched = 0;
-        for (Map.Entry<NumeralRoleAccountRef, Long> entry : pendingUnlinks.entrySet()) {
+        for (Map.Entry<NumeralRoleAccountRef, PendingReconciliationQueue.Pending> entry
+                : pendingUnlinks.snapshot().entrySet()) {
             if (dispatched >= MAX_REQUESTS_PER_SECOND) break;
             NumeralRoleAccountRef account = entry.getKey();
-            if (entry.getValue() > now || !activeUnlinks.add(account)) continue;
+            PendingReconciliationQueue.Pending pending = entry.getValue();
+            if (pending.dueNanos() > now || !activeUnlinks.add(account)) continue;
             dispatched++;
-            observeUnlink(account, sync.unlink(account));
+            observeUnlink(account, pending, sync.unlink(account));
         }
         return dispatched;
     }
 
     private void dispatchPlayers(long now, int limit) {
         int dispatched = 0;
-        for (Map.Entry<UUID, PendingPlayer> entry : pendingPlayers.entrySet()) {
+        for (Map.Entry<UUID, PendingReconciliationQueue.Pending> entry
+                : pendingPlayers.snapshot().entrySet()) {
             if (dispatched >= limit) break;
             UUID uuid = entry.getKey();
-            PendingPlayer pending = entry.getValue();
+            PendingReconciliationQueue.Pending pending = entry.getValue();
             if (pending.dueNanos() > now || !activePlayers.add(uuid)) continue;
             dispatched++;
             observePlayer(uuid, pending, sync.reconcile(uuid));
         }
     }
 
-    private void observePlayer(UUID uuid, PendingPlayer pending, CompletableFuture<Void> future) {
+    private void observePlayer(
+            UUID uuid, PendingReconciliationQueue.Pending pending, CompletableFuture<Void> future) {
         future.whenComplete((ignored, error) -> {
             if (error == null) {
-                pendingPlayers.remove(uuid, pending);
+                pendingPlayers.complete(uuid, pending);
             } else {
-                pendingPlayers.replace(uuid, pending,
-                        new PendingPlayer(System.nanoTime() + RETRY_NANOS, pending.version()));
+                pendingPlayers.retry(uuid, pending, System.nanoTime() + RETRY_NANOS);
                 plugin.getLogger().log(Level.WARNING,
                         "Numeral role sync failed for " + uuid + "; retrying.", error);
             }
@@ -147,13 +148,17 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
         });
     }
 
-    private void observeUnlink(NumeralRoleAccountRef account, CompletableFuture<Void> future) {
+    private void observeUnlink(
+            NumeralRoleAccountRef account,
+            PendingReconciliationQueue.Pending pending,
+            CompletableFuture<Void> future) {
         future.whenComplete((ignored, error) -> {
             if (error == null) {
-                pendingUnlinks.remove(account);
-                persistUnlinks(false);
+                if (pendingUnlinks.complete(account, pending)) {
+                    persistUnlinks(false);
+                }
             } else {
-                pendingUnlinks.put(account, System.nanoTime() + RETRY_NANOS);
+                pendingUnlinks.retry(account, pending, System.nanoTime() + RETRY_NANOS);
                 plugin.getLogger().log(Level.WARNING,
                         "Numeral role unlink reconciliation failed; retrying.", error);
             }
@@ -165,7 +170,7 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
         synchronized (fileLock) {
             if (closed.get() && !closing) return;
             try {
-                Set<String> values = pendingUnlinks.keySet().stream()
+                Set<String> values = pendingUnlinks.keys().stream()
                         .map(NumeralRoleAccountRef::value)
                         .collect(Collectors.toUnmodifiableSet());
                 unlinkStore.save(values);
@@ -187,6 +192,4 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
         }
         persistUnlinks(true);
     }
-
-    private record PendingPlayer(long dueNanos, long version) { }
 }
