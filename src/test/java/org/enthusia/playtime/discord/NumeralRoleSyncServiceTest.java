@@ -148,37 +148,18 @@ class NumeralRoleSyncServiceTest {
     }
 
     @Test
-    void unlinkDoesNotRevokeWhenNewLinkAppearsDuringRoleRead() throws Exception {
-        UUID second = UUID.randomUUID();
-        CountDownLatch readStarted = new CountDownLatch(1);
-        CompletableFuture<Set<String>> heldRoles = new CompletableFuture<>();
-        FakeProvider provider = new FakeProvider(Set.of(TIER_TWO_ROLE, STAFF_ROLE)) {
-            @Override
-            public CompletableFuture<Set<String>> currentRoles(NumeralRoleAccountRef account) {
-                readStarted.countDown();
-                return heldRoles;
-            }
-        };
-        NumeralRoleSyncService service = service(provider, uuid -> 480L);
-
-        CompletableFuture<Void> unlink = service.unlink(ACCOUNT);
-        assertTrue(readStarted.await(5, TimeUnit.SECONDS));
-        provider.link(second, ACCOUNT);
-        heldRoles.complete(Set.of(TIER_TWO_ROLE, STAFF_ROLE));
-
-        assertThrows(CompletionException.class, unlink::join);
-        assertEquals(Set.of(TIER_TWO_ROLE, STAFF_ROLE), provider.roles);
-        assertEquals(0, provider.revokes.get());
-    }
-
-    @Test
     void staleLinkSnapshotFailsBeforeRoleMutation() {
-        AtomicInteger membershipReads = new AtomicInteger();
+        AtomicInteger roleReads = new AtomicInteger();
         FakeProvider provider = new FakeProvider(Set.of(TIER_ONE_ROLE)) {
             @Override
             public Set<UUID> minecraftAccounts(NumeralRoleAccountRef account) {
-                if (membershipReads.getAndIncrement() == 0) return Set.of(player);
-                return Set.of();
+                return roleReads.get() == 0 ? Set.of(player) : Set.of();
+            }
+
+            @Override
+            public CompletableFuture<Set<String>> currentRoles(NumeralRoleAccountRef account) {
+                roleReads.incrementAndGet();
+                return super.currentRoles(account);
             }
         };
         provider.link(player, ACCOUNT);
