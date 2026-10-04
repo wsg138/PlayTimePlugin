@@ -317,6 +317,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         reads.invalidateAll();
         tierProgress.reconnect(uuid);
         initializeTierProgress(uuid);
+        plugin.requestDiscordNumeralSync(uuid);
         return firstKnownJoin;
     }
 
@@ -597,7 +598,22 @@ public final class PlaytimeRuntime implements AutoCloseable {
         TierProgressTracker.ActiveUpdate update =
                 tierProgress.acceptActiveMinutes(uuid, acceptedActiveMinutes);
         announceTierAdvance(player, update.reachedTier());
+        if (update.reachedTier().isPresent()) plugin.requestDiscordNumeralSync(uuid);
         reads.invalidatePlayer(uuid);
+    }
+
+    /** Call from an async task; a failed storage read never becomes zero progress. */
+    public long readAuthoritativeActiveMinutes(UUID uuid) {
+        if (closed.get() || tierProgressHandedOff.get()) {
+            throw new IllegalStateException("Playtime runtime is unavailable");
+        }
+        return storageQueue.getEffectiveActiveMinutes(uuid, () -> {
+            LifetimeRead read = playtimeRepository.readLifetimeStrict(uuid);
+            if (read.status() == LifetimeReadStatus.FAILED) {
+                throw new IllegalStateException("Authoritative active playtime read failed");
+            }
+            return read.status() == LifetimeReadStatus.FOUND ? read.snapshot().activeMinutes : 0L;
+        });
     }
 
     TierProgressTracker.ProgressState tierProgressForTesting(UUID uuid) {
@@ -701,6 +717,7 @@ public final class PlaytimeRuntime implements AutoCloseable {
         TierProgressTracker.InitializationResult result = completed.get();
         tierInitializationRetries.remove(request.uuid());
         UUID uuid = request.uuid();
+        plugin.requestDiscordNumeralSync(uuid);
         Player player = Bukkit.getPlayer(uuid);
         if (player != null && result.connected()) {
             announceTierAdvance(player, result.reachedTier());

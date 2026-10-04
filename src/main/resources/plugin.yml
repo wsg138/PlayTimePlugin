@@ -9,6 +9,7 @@ softdepend:
   - Plan
   - PlaceholderAPI
   - ProtocolLib
+  - DiscordSRV
   - floodgate
   - Geyser-Spigot
 
