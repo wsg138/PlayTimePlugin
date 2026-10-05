@@ -493,10 +493,6 @@ public final class PlaytimeRuntime implements AutoCloseable {
                     storageQueue.enqueuePlayerProfile(profileFor(player, Instant.now())));
             playerHeadCache.updateHeadDebounced(player);
         }
-        if (reads.isLoading()) {
-            reads.invalidatePlayer(player.getUniqueId());
-            repaired = true;
-        }
         if (repaired) {
             performanceCounters.backstopRepairs.increment();
             if (runtimeConfig.playtimeAudit().debugLogRepairs()) {

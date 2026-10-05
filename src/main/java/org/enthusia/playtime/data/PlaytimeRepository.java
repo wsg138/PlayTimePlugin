@@ -592,9 +592,20 @@ public final class PlaytimeRepository {
     }
 
     public RangeTotals getRangeTotals(UUID uuid, Instant now, String rangeId) {
+        try {
+            return getRangeTotalsStrict(uuid, now, rangeId);
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed getRangeTotals: " + exception.getMessage());
+            return new RangeTotals(0, 0, 0);
+        }
+    }
+
+    public RangeTotals getRangeTotalsStrict(UUID uuid, Instant now, String rangeId) throws SQLException {
         String range = normalizeRange(rangeId);
         if (range.equals(RANGE_ALL)) {
-            return getLifetime(uuid)
+            LifetimeRead read = readLifetimeStrict(uuid);
+            if (read.status() == LifetimeReadStatus.FAILED) throw new SQLException("Lifetime read failed");
+            return Optional.ofNullable(read.snapshot())
                     .map(snapshot -> new RangeTotals(snapshot.activeMinutes, snapshot.afkMinutes, snapshot.totalMinutes))
                     .orElseGet(() -> new RangeTotals(0, 0, 0));
         }
@@ -623,9 +634,6 @@ public final class PlaytimeRepository {
                         resultSet.getLong(COL_TOTAL)
                 );
             }
-        } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load range totals (" + range + ") for " + uuid + ": " + exception.getMessage());
-            return new RangeTotals(0, 0, 0);
         }
     }
 
@@ -657,6 +665,15 @@ public final class PlaytimeRepository {
     }
 
     public List<LeaderboardEntry> getLeaderboard(String metricId, String rangeId, Instant now, int limit, int offset) {
+        try {
+            return getLeaderboardStrict(metricId, rangeId, now, limit, offset);
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed getLeaderboard: " + exception.getMessage());
+            return List.of();
+        }
+    }
+
+    public List<LeaderboardEntry> getLeaderboardStrict(String metricId, String rangeId, Instant now, int limit, int offset) throws SQLException {
         List<LeaderboardEntry> leaderboard = new ArrayList<>();
         String metric = normalizeMetric(metricId);
         String range = normalizeRange(rangeId);
@@ -674,8 +691,6 @@ public final class PlaytimeRepository {
                 statement.setInt(1, safeLimit);
                 statement.setInt(2, safeOffset);
                 appendLeaderboardRows(leaderboard, statement, safeOffset);
-            } catch (SQLException exception) {
-                plugin.getLogger().warning("Failed to load leaderboard (" + metric + ", " + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
             }
             return leaderboard;
         }
@@ -701,14 +716,21 @@ public final class PlaytimeRepository {
             statement.setInt(3, safeLimit);
             statement.setInt(4, safeOffset);
             appendLeaderboardRows(leaderboard, statement, safeOffset);
-        } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load leaderboard (" + metric + ", " + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
         }
 
         return leaderboard;
     }
 
     public List<PublicLeaderboardEntry> getPublicLeaderboard(String metricId, String rangeId, Instant now, int limit) {
+        try {
+            return getPublicLeaderboardStrict(metricId, rangeId, now, limit);
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed getPublicLeaderboard: " + exception.getMessage());
+            return List.of();
+        }
+    }
+
+    public List<PublicLeaderboardEntry> getPublicLeaderboardStrict(String metricId, String rangeId, Instant now, int limit) throws SQLException {
         String metric = normalizeMetric(metricId);
         String range = normalizeRange(rangeId);
         int safeLimit = Math.max(1, Math.min(limit, 500));
@@ -718,7 +740,7 @@ public final class PlaytimeRepository {
         return getRangedPublicLeaderboard(metric, range, now, safeLimit);
     }
 
-    private List<PublicLeaderboardEntry> getAllTimePublicLeaderboard(String metric, String range, int safeLimit) {
+    private List<PublicLeaderboardEntry> getAllTimePublicLeaderboard(String metric, String range, int safeLimit) throws SQLException {
         List<PublicLeaderboardEntry> leaderboard = new ArrayList<>();
         String sql = """
                 SELECT l.player_uuid,
@@ -739,13 +761,11 @@ public final class PlaytimeRepository {
              PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setInt(1, safeLimit);
             appendPublicLeaderboardRows(leaderboard, statement, metric);
-        } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load public leaderboard (" + metric + ", " + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
         }
         return leaderboard;
     }
 
-    private List<PublicLeaderboardEntry> getRangedPublicLeaderboard(String metric, String range, Instant now, int safeLimit) {
+    private List<PublicLeaderboardEntry> getRangedPublicLeaderboard(String metric, String range, Instant now, int safeLimit) throws SQLException {
         List<PublicLeaderboardEntry> leaderboard = new ArrayList<>();
         DateRange dateRange = dateRangeFor(range, now);
         String sql = """
@@ -778,8 +798,6 @@ public final class PlaytimeRepository {
             statement.setString(2, dateRange.end().toString());
             statement.setInt(3, safeLimit);
             appendPublicLeaderboardRows(leaderboard, statement, metric);
-        } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load public leaderboard (" + metric + ", " + range + LOG_CONTEXT_SEPARATOR + exception.getMessage());
         }
         return leaderboard;
     }
