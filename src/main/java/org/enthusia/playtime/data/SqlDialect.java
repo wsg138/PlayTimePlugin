@@ -128,7 +128,7 @@ public enum SqlDialect {
             case MYSQL -> """
                 CREATE TABLE IF NOT EXISTS player_profiles (
                   player_uuid CHAR(36) NOT NULL,
-                  username VARCHAR(16) NOT NULL,
+                  username VARCHAR(64) NOT NULL,
                   display_name VARCHAR(64) NULL,
                   first_seen TIMESTAMP NOT NULL,
                   last_seen TIMESTAMP NOT NULL,
@@ -137,6 +137,31 @@ public enum SqlDialect {
                   INDEX idx_player_profiles_username (username)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """;
+        };
+    }
+
+    public String playerNameHistoryCreateTable() {
+        return switch (this) {
+            case SQLITE -> "CREATE TABLE IF NOT EXISTS player_name_history (player_uuid TEXT NOT NULL, name_key TEXT NOT NULL, username TEXT NOT NULL, first_seen TIMESTAMP NOT NULL, last_seen TIMESTAMP NOT NULL, PRIMARY KEY (player_uuid, name_key));";
+            case MYSQL -> "CREATE TABLE IF NOT EXISTS player_name_history (player_uuid CHAR(36) NOT NULL, name_key VARCHAR(64) NOT NULL, username VARCHAR(64) NOT NULL, first_seen TIMESTAMP NOT NULL, last_seen TIMESTAMP NOT NULL, PRIMARY KEY (player_uuid, name_key), INDEX idx_player_name_history_key (name_key)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+        };
+    }
+
+    public String playerNameHistoryIndex() {
+        return this == SQLITE ? "CREATE INDEX IF NOT EXISTS idx_player_name_history_key ON player_name_history (name_key);" : NOOP_QUERY;
+    }
+
+    public String playerNameHistoryBackfill() {
+        return switch (this) {
+            case SQLITE -> "INSERT OR IGNORE INTO player_name_history (player_uuid, name_key, username, first_seen, last_seen) SELECT player_uuid, lower(username), username, first_seen, last_seen FROM player_profiles WHERE username IS NOT NULL AND username <> '';";
+            case MYSQL -> "INSERT IGNORE INTO player_name_history (player_uuid, name_key, username, first_seen, last_seen) SELECT player_uuid, lower(username), username, first_seen, last_seen FROM player_profiles WHERE username IS NOT NULL AND username <> '';";
+        };
+    }
+
+    public String playerNameHistoryUpsert() {
+        return switch (this) {
+            case SQLITE -> "INSERT INTO player_name_history (player_uuid, name_key, username, first_seen, last_seen) VALUES (?, ?, ?, ?, ?) ON CONFLICT(player_uuid, name_key) DO UPDATE SET username = CASE WHEN last_seen <= excluded.last_seen THEN excluded.username ELSE username END, first_seen = MIN(first_seen, excluded.first_seen), last_seen = MAX(last_seen, excluded.last_seen);";
+            case MYSQL -> "INSERT INTO player_name_history (player_uuid, name_key, username, first_seen, last_seen) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE username = IF(last_seen <= VALUES(last_seen), VALUES(username), username), first_seen = LEAST(first_seen, VALUES(first_seen)), last_seen = GREATEST(last_seen, VALUES(last_seen));";
         };
     }
 

@@ -10,9 +10,11 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.IllegalPluginAccessException;
 import org.enthusia.playtime.PlayTimePlugin;
+import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 import org.enthusia.playtime.util.TimeFormats;
 
+import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
@@ -23,15 +25,10 @@ import java.util.Optional;
 import java.util.UUID;
 
 public final class SeenCommand implements CommandExecutor, TabCompleter {
-
     private static final String PREFIX = ChatColor.GOLD + "[Playtime] " + ChatColor.YELLOW;
-    private static final int TARGET_ARG_COUNT = 1;
-
     private final PlayTimePlugin plugin;
 
-    public SeenCommand(PlayTimePlugin plugin) {
-        this.plugin = plugin;
-    }
+    public SeenCommand(PlayTimePlugin plugin) { this.plugin = plugin; }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
@@ -39,107 +36,102 @@ public final class SeenCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(PREFIX + ChatColor.RED + "You don't have permission to use this command.");
             return true;
         }
-
         PlaytimeRuntime runtime = plugin.runtime();
         if (runtime == null) {
             sender.sendMessage(PREFIX + ChatColor.RED + "Playtime runtime is not available.");
             return true;
         }
-
-        if (args.length == 0) {
-            if (!(sender instanceof Player player)) {
-                sender.sendMessage(PREFIX + ChatColor.RED + "Usage: /" + label + " <player>");
-                return true;
-            }
-            showSeen(sender, runtime, player.getUniqueId(), player.getName(), true);
+        if (args.length == 0 && !(sender instanceof Player)) {
+            sender.sendMessage(PREFIX + ChatColor.RED + "Usage: /" + label + " <player>");
             return true;
         }
-
-        showTargetSeen(sender, runtime, args[0]);
+        String queried = args.length == 0 ? sender.getName() : args[0];
+        Player online = args.length == 0 ? (Player) sender : Bukkit.getPlayerExact(queried);
+        if (online != null && sender instanceof Player viewer && !viewer.canSee(online)) {
+            sender.sendMessage(PREFIX + ChatColor.RED + "Player is unavailable.");
+            return true;
+        }
+        UUID knownId = online == null ? null : online.getUniqueId();
+        if (knownId == null) {
+            OfflinePlayer cached = Bukkit.getOfflinePlayerIfCached(queried);
+            if (cached != null) knownId = cached.getUniqueId();
+        }
+        if (knownId == null) knownId = runtime.headCache().findUuidByName(queried);
+        UUID candidate = knownId;
+        if (!plugin.isEnabled()) return true;
+        try {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> lookup(sender, runtime, queried, candidate));
+        } catch (IllegalPluginAccessException exception) {
+            if (plugin.isEnabled()) throw exception;
+        }
         return true;
     }
 
-    private void showTargetSeen(CommandSender sender, PlaytimeRuntime runtime, String targetName) {
-        Player online = Bukkit.getPlayerExact(targetName);
-        if (online != null) {
-            showSeen(sender, runtime, online.getUniqueId(), online.getName(), true);
-            return;
-        }
-
-        OfflinePlayer offline = Bukkit.getOfflinePlayerIfCached(targetName);
-        UUID cachedUuid = runtime.headCache().findUuidByName(targetName);
-        if (offline == null || offline.getUniqueId() == null) {
-            if (cachedUuid != null) {
-                showSeen(sender, runtime, cachedUuid, targetName, false);
+    private void lookup(CommandSender sender, PlaytimeRuntime runtime, String queried, UUID candidate) {
+        try {
+            Optional<UUID> observed = runtime.repository().findPlayerByObservedName(queried);
+            UUID uuid = observed.orElse(candidate);
+            if (uuid == null) {
+                reply(runtime, () -> sender.sendMessage(PREFIX + ChatColor.RED + "Player '" + queried + "' has never joined."));
                 return;
             }
-            sender.sendMessage(PREFIX + ChatColor.RED + "Player '" + targetName + "' has never joined.");
-            return;
+            List<PlaytimeRepository.ObservedName> names = runtime.repository().getObservedNames(uuid);
+            String currentName = runtime.repository().getCurrentUsernameStrict(uuid).orElse(queried);
+            Optional<Instant> lastSeen = runtime.repository().getLastSeenStrict(uuid);
+            reply(runtime, () -> sendSeen(sender, runtime, uuid, currentName, names, lastSeen));
+        } catch (PlaytimeRepository.AmbiguousNameException exception) {
+            reply(runtime, () -> sender.sendMessage(PREFIX + ChatColor.RED + "That username belongs to multiple server records. Use a current name."));
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed /seen lookup: " + exception.getMessage());
+            reply(runtime, () -> sender.sendMessage(PREFIX + ChatColor.RED + "Username history is temporarily unavailable. Try again later."));
         }
-
-        showSeen(sender, runtime, offline.getUniqueId(), offline.getName() != null ? offline.getName() : targetName, false);
     }
 
-    private void showSeen(CommandSender sender, PlaytimeRuntime runtime, UUID uuid, String name, boolean online) {
-        if (online) {
-            sender.sendMessage(PREFIX + ChatColor.AQUA + name + ChatColor.YELLOW + " is currently online.");
-            return;
-        }
-
-        if (!plugin.isEnabled()) {
-            return;
-        }
+    private void reply(PlaytimeRuntime runtime, Runnable message) {
+        if (!plugin.isEnabled()) return;
         try {
-            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-                Optional<Instant> lastSeenOpt = runtime.repository().getLastSeen(uuid);
-                if (!plugin.isEnabled()) {
-                    return;
-                }
-                try {
-                    Bukkit.getScheduler().runTask(plugin, () -> sendSeen(sender, runtime, name, lastSeenOpt));
-                } catch (IllegalPluginAccessException exception) {
-                    if (plugin.isEnabled()) {
-                        throw exception;
-                    }
-                }
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                if (plugin.runtime() == runtime) message.run();
             });
         } catch (IllegalPluginAccessException exception) {
-            if (plugin.isEnabled()) {
-                throw exception;
-            }
+            if (plugin.isEnabled()) throw exception;
         }
     }
 
-    private void sendSeen(CommandSender sender, PlaytimeRuntime runtime, String name, Optional<Instant> lastSeenOpt) {
-        PlaytimeRuntime current = plugin.runtime();
-        if (current != runtime) {
+    private void sendSeen(CommandSender sender, PlaytimeRuntime runtime, UUID uuid, String currentName,
+                          List<PlaytimeRepository.ObservedName> names, Optional<Instant> lastSeen) {
+        Player online = Bukkit.getPlayer(uuid);
+        if (online != null && sender instanceof Player viewer && !viewer.canSee(online)) {
+            sender.sendMessage(PREFIX + ChatColor.RED + "Player is unavailable.");
             return;
         }
-        if (lastSeenOpt.isEmpty()) {
-            sender.sendMessage(PREFIX + ChatColor.RED + "No last-seen record found for " + name + ".");
-            return;
+        String current = online != null ? online.getName() : currentName;
+        if (online != null) {
+            sender.sendMessage(PREFIX + ChatColor.AQUA + current + ChatColor.YELLOW + " is currently online.");
+        } else if (lastSeen.isPresent()) {
+            Instant seen = lastSeen.get();
+            long ago = Math.max(0L, Duration.between(seen, Instant.now()).toMillis());
+            DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, uuuu h:mm a z", Locale.US).withZone(runtime.config().joins().zoneId());
+            sender.sendMessage(PREFIX + current + ChatColor.GRAY + " | " + ChatColor.YELLOW + "Last seen "
+                    + ChatColor.AQUA + TimeFormats.formatDurationMillis(ago) + ChatColor.YELLOW + " ago "
+                    + ChatColor.GRAY + "(" + ChatColor.WHITE + formatter.format(seen) + ChatColor.GRAY + ")");
+        } else {
+            sender.sendMessage(PREFIX + ChatColor.RED + "No last-seen record found for " + current + ".");
         }
-
-        Instant lastSeen = lastSeenOpt.get();
-        Instant now = Instant.now();
-        long agoMillis = Math.max(0L, Duration.between(lastSeen, now).toMillis());
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, uuuu h:mm a z", Locale.US).withZone(runtime.config().joins().zoneId());
-
-        sender.sendMessage(PREFIX + name + ChatColor.GRAY + " | "
-                + ChatColor.YELLOW + "Last seen " + ChatColor.AQUA + TimeFormats.formatDurationMillis(agoMillis)
-                + ChatColor.YELLOW + " ago "
-                + ChatColor.GRAY + "(" + ChatColor.WHITE + formatter.format(lastSeen) + ChatColor.GRAY + ")");
+        List<String> previous = names.stream().map(PlaytimeRepository.ObservedName::name)
+                .filter(name -> !name.equalsIgnoreCase(current)).toList();
+        sender.sendMessage(PREFIX + ChatColor.GRAY + "Previous observed names: " + ChatColor.WHITE
+                + (previous.isEmpty() ? "none recorded" : String.join(", ", previous)));
     }
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> result = new ArrayList<>();
-        if (args.length == TARGET_ARG_COUNT) {
+        if (args.length == 1) {
             String prefix = args[0].toLowerCase(Locale.ROOT);
             for (Player player : Bukkit.getOnlinePlayers()) {
-                if (player.getName().toLowerCase(Locale.ROOT).startsWith(prefix)) {
-                    result.add(player.getName());
-                }
+                if ((!(sender instanceof Player viewer) || viewer.canSee(player))
+                        && player.getName().toLowerCase(Locale.ROOT).startsWith(prefix)) result.add(player.getName());
             }
         }
         return result;

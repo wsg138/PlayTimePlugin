@@ -75,6 +75,8 @@ public final class PlaytimeRepository {
                 statement.execute(dialect.lifetimeAggCreateTable());
                 statement.execute(dialect.joinsLogCreateTable());
                 statement.execute(dialect.playerProfilesCreateTable());
+                ensurePlayerProfileNameWidth(connection, statement);
+                statement.execute(dialect.playerNameHistoryCreateTable());
                 statement.execute(dialect.playerSkinProfilesCreateTable());
                 statement.execute(dialect.appliedBatchesCreateTable());
                 statement.execute(dialect.dailyAggIndexes());
@@ -82,6 +84,8 @@ public final class PlaytimeRepository {
                 statement.execute(dialect.lifetimeAggIndexes());
                 statement.execute(dialect.joinsLogIndexes());
                 statement.execute(dialect.playerProfilesIndexes());
+                statement.execute(dialect.playerNameHistoryIndex());
+                statement.execute(dialect.playerNameHistoryBackfill());
                 ensureLastSeenColumn(connection, statement);
             }
             return null;
@@ -225,8 +229,10 @@ public final class PlaytimeRepository {
         }
 
         withSqliteRetry(() -> {
-            try (Connection connection = provider.getConnection();
-                 PreparedStatement statement = connection.prepareStatement(dialect.playerProfileUpsert())) {
+            try (Connection connection = provider.getConnection()) {
+                connection.setAutoCommit(false);
+                try (PreparedStatement statement = connection.prepareStatement(dialect.playerProfileUpsert());
+                     PreparedStatement names = connection.prepareStatement(dialect.playerNameHistoryUpsert())) {
                 for (PlayerProfile profile : profiles) {
                     if (profile.uuid() == null || profile.username() == null || profile.username().isBlank()) {
                         continue;
@@ -239,8 +245,12 @@ public final class PlaytimeRepository {
                     statement.setTimestamp(5, seenAt);
                     statement.setTimestamp(6, Timestamp.from(Instant.now()));
                     statement.addBatch();
+                    addObservedName(names, profile);
                 }
                 statement.executeBatch();
+                names.executeBatch();
+                }
+                connection.commit();
             }
             return null;
         });
@@ -298,15 +308,76 @@ public final class PlaytimeRepository {
 
     private void applyRecoveryProfiles(Connection connection, java.util.Collection<PlayerProfile> profiles) throws SQLException {
         if (profiles.isEmpty()) return;
-        try (PreparedStatement statement = connection.prepareStatement(dialect.playerProfileUpsert())) {
+        try (PreparedStatement statement = connection.prepareStatement(dialect.playerProfileUpsert());
+             PreparedStatement names = connection.prepareStatement(dialect.playerNameHistoryUpsert())) {
             for (PlayerProfile profile : profiles) {
                 if (profile.uuid() == null || profile.username() == null || profile.username().isBlank()) continue;
                 Timestamp seenAt = Timestamp.from(profile.seenAt());
                 statement.setString(1, profile.uuid().toString()); statement.setString(2, profile.username());
                 statement.setString(3, blankToNull(profile.displayName())); statement.setTimestamp(4, seenAt);
                 statement.setTimestamp(5, seenAt); statement.setTimestamp(6, Timestamp.from(Instant.now())); statement.addBatch();
+                addObservedName(names, profile);
             }
             statement.executeBatch();
+            names.executeBatch();
+        }
+    }
+
+    private void ensurePlayerProfileNameWidth(Connection connection, Statement statement) throws SQLException {
+        if (dialect != SqlDialect.MYSQL) return;
+        try (ResultSet columns = connection.getMetaData().getColumns(connection.getCatalog(), null, "player_profiles", "username")) {
+            if (columns.next() && columns.getInt("COLUMN_SIZE") >= 64) return;
+        }
+        statement.execute("ALTER TABLE player_profiles MODIFY COLUMN username VARCHAR(64) NOT NULL");
+    }
+
+    private static void addObservedName(PreparedStatement statement, PlayerProfile profile) throws SQLException {
+        Timestamp seenAt = Timestamp.from(profile.seenAt());
+        statement.setString(1, profile.uuid().toString());
+        statement.setString(2, profile.username().toLowerCase(Locale.ROOT));
+        statement.setString(3, profile.username());
+        statement.setTimestamp(4, seenAt);
+        statement.setTimestamp(5, seenAt);
+        statement.addBatch();
+    }
+
+    public record ObservedName(String name, Instant firstSeen, Instant lastSeen) { }
+
+    public static final class AmbiguousNameException extends RuntimeException { }
+
+    public List<ObservedName> getObservedNames(UUID uuid) throws SQLException {
+        try (Connection connection = provider.getConnection();
+             PreparedStatement statement = connection.prepareStatement("SELECT username, first_seen, last_seen FROM player_name_history WHERE player_uuid = ? ORDER BY first_seen, name_key")) {
+            statement.setString(1, uuid.toString());
+            List<ObservedName> result = new ArrayList<>();
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) result.add(new ObservedName(rows.getString(1), rows.getTimestamp(2).toInstant(), rows.getTimestamp(3).toInstant()));
+            }
+            return List.copyOf(result);
+        }
+    }
+
+    public Optional<String> getCurrentUsernameStrict(UUID uuid) throws SQLException {
+        try (Connection connection = provider.getConnection();
+             PreparedStatement statement = connection.prepareStatement("SELECT username FROM player_profiles WHERE player_uuid = ?")) {
+            statement.setString(1, uuid.toString());
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? Optional.of(rows.getString(1)) : Optional.empty();
+            }
+        }
+    }
+
+    public Optional<UUID> findPlayerByObservedName(String name) throws SQLException {
+        try (Connection connection = provider.getConnection();
+             PreparedStatement statement = connection.prepareStatement("SELECT h.player_uuid, CASE WHEN lower(p.username) = h.name_key THEN 1 ELSE 0 END AS current_match FROM player_name_history h LEFT JOIN player_profiles p ON p.player_uuid = h.player_uuid WHERE h.name_key = ? ORDER BY current_match DESC LIMIT 2")) {
+            statement.setString(1, name.toLowerCase(Locale.ROOT));
+            try (ResultSet rows = statement.executeQuery()) {
+                if (!rows.next()) return Optional.empty();
+                UUID found = UUID.fromString(rows.getString(1));
+                boolean current = rows.getInt(2) == 1;
+                if (rows.next() && (!current || rows.getInt(2) == 1)) throw new AmbiguousNameException();
+                return Optional.of(found);
+            }
         }
     }
 
@@ -513,6 +584,15 @@ public final class PlaytimeRepository {
     }
 
     public Optional<Instant> getLastSeen(UUID uuid) {
+        try {
+            return getLastSeenStrict(uuid);
+        } catch (SQLException exception) {
+            plugin.getLogger().warning("Failed to load last seen: " + exception.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    public Optional<Instant> getLastSeenStrict(UUID uuid) throws SQLException {
         String sql = "SELECT last_seen, last_join FROM lifetime_agg WHERE player_uuid = ?";
         try (Connection connection = provider.getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -528,9 +608,6 @@ public final class PlaytimeRepository {
                 Timestamp lastJoin = resultSet.getTimestamp("last_join");
                 return Optional.ofNullable(lastJoin).map(Timestamp::toInstant);
             }
-        } catch (SQLException exception) {
-            plugin.getLogger().warning("Failed to load last seen: " + exception.getMessage());
-            return Optional.empty();
         }
     }
 

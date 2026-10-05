@@ -89,6 +89,13 @@ class PlaytimeRuntimeTierInitializationIntegrationTest {
 
         resumeRead.countDown();
         assertTrue(firstSqlDone.await(ASYNC_TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        if (!firstMainScheduled.await(1, TimeUnit.SECONDS)) {
+            // A concurrent writer may change the commit generation for all three snapshot attempts.
+            // In that case the runtime schedules a retry rather than posting a stale completion.
+            for (int attempt = 0; attempt < 10 && firstMainScheduled.getCount() > 0; attempt++) {
+                runtime.performTierInitializationReadForTesting(uuid, true);
+            }
+        }
         assertTrue(firstMainScheduled.await(ASYNC_TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));
         assertNotNull(mainCompletions.peek());
         mainCompletions.remove().run();
