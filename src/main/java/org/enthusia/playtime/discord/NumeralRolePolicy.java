@@ -59,5 +59,14 @@ public final class NumeralRolePolicy {
 
     public Set<String> managedRoleIds() { return managedIds; }
 
+    public Map<String, String> roleIdsByTier() {
+        return roleIds;
+    }
+
+    public java.util.Optional<String> desiredTierLabel(long activeMinutes) {
+        if (activeMinutes < 0) throw new IllegalArgumentException("Active minutes must be known and nonnegative");
+        return catalog.tierForMinutes(activeMinutes).map(NumeralTierCatalog.Tier::label);
+    }
+
     public record Change(Set<String> grant, Set<String> revoke) { }
 }
