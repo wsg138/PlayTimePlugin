@@ -12,6 +12,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -19,6 +20,7 @@ import java.util.logging.Level;
 /** Bounded, retrying orchestration for numeral-role reconciliation over a provider-neutral port. */
 public final class DiscordNumeralCoordinator implements AutoCloseable {
     private static final long RETRY_NANOS = 30_000_000_000L;
+    private static final long SNAPSHOT_RETRY_NANOS = 1_000_000_000L;
     private static final int MAX_REQUESTS_PER_SECOND = 8;
     private static final int SWEEP_INTERVAL_SECONDS = 300;
 
@@ -139,9 +141,12 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
             if (error == null) {
                 pendingPlayers.complete(uuid, pending);
             } else {
-                pendingPlayers.retry(uuid, pending, System.nanoTime() + RETRY_NANOS);
-                plugin.getLogger().log(Level.WARNING,
-                        "Numeral role sync failed for " + uuid + "; retrying.", error);
+                long retryDelay = retryDelayNanos(error);
+                pendingPlayers.retry(uuid, pending, System.nanoTime() + retryDelay);
+                if (retryDelay != SNAPSHOT_RETRY_NANOS) {
+                    plugin.getLogger().log(Level.WARNING,
+                            "Numeral role sync failed for " + uuid + "; retrying.", error);
+                }
             }
             activePlayers.remove(uuid);
         });
@@ -163,6 +168,19 @@ public final class DiscordNumeralCoordinator implements AutoCloseable {
             }
             activeUnlinks.remove(account);
         });
+    }
+
+    static long retryDelayNanos(Throwable error) {
+        return unwrap(error) instanceof NumeralRoleSyncService.SnapshotPendingException
+                ? SNAPSHOT_RETRY_NANOS : RETRY_NANOS;
+    }
+
+    private static Throwable unwrap(Throwable error) {
+        Throwable cause = error;
+        while (cause instanceof CompletionException && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
     }
 
     private void persistUnlinks(boolean closing) {
