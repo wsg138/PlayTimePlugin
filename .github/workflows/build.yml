@@ -14,7 +14,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      STAFF_SOURCE_COMMIT: bd894c35a452b766736657f3803001a726aa5e06
+      STAFF_SOURCE_COMMIT: d978c32e665f72ab0a81ec0c035f8f9dfc3117e7
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
