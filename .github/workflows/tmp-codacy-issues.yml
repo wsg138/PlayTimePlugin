@@ -1,4 +1,5 @@
 name: Temporary Codacy issue inspection
+# refreshed after hosted analysis
 
 on:
   push:
