@@ -24,7 +24,7 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
     private static final Pattern DISCORD_ID = Pattern.compile("[0-9]{1,20}");
 
     private final AtomicBoolean started = new AtomicBoolean();
-    private volatile LinkListener listener;
+    private volatile Optional<LinkListener> listener = Optional.empty();
 
     @Override
     public void start(LinkListener listener) {
@@ -32,11 +32,11 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
         if (!started.compareAndSet(false, true)) {
             throw new IllegalStateException("DiscordSRV numeral role provider is already started");
         }
-        this.listener = listener;
+        this.listener = Optional.of(listener);
         try {
             DiscordSRV.api.subscribe(this);
         } catch (RuntimeException | LinkageError failure) {
-            this.listener = null;
+            this.listener = Optional.empty();
             started.set(false);
             throw failure;
         }
@@ -111,23 +111,23 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
 
     @Subscribe
     public void linked(AccountLinkedEvent event) {
-        LinkListener current = listener;
-        if (current != null && event.getPlayer() != null) {
-            current.linked(event.getPlayer().getUniqueId());
+        Optional<LinkListener> current = listener;
+        if (event.getPlayer() != null) {
+            current.ifPresent(value -> value.linked(event.getPlayer().getUniqueId()));
         }
     }
 
     @Subscribe
     public void unlinked(AccountUnlinkedEvent event) {
-        LinkListener current = listener;
+        Optional<LinkListener> current = listener;
         String discordId = event.getDiscordId();
-        if (current == null || discordId == null || !DISCORD_ID.matcher(discordId).matches()) return;
-        current.unlinked(new NumeralRoleAccountRef(discordId));
+        if (current.isEmpty() || discordId == null || !DISCORD_ID.matcher(discordId).matches()) return;
+        current.orElseThrow().unlinked(new NumeralRoleAccountRef(discordId));
     }
 
     @Override
     public void close() {
-        listener = null;
+        listener = Optional.empty();
         if (started.compareAndSet(true, false)) {
             DiscordSRV.api.unsubscribe(this);
         }
