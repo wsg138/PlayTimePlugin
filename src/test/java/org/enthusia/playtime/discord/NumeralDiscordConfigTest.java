@@ -30,6 +30,18 @@ class NumeralDiscordConfigTest {
         assertThrows(IllegalArgumentException.class, () -> NumeralDiscordConfig.load(yaml, catalog));
     }
 
+    @Test void enthusiaShadowIsExplicitOptIn() {
+        YamlConfiguration yaml = new YamlConfiguration();
+        yaml.set("numerals.discord-roles.enabled", true);
+        yaml.set("numerals.discord-roles.role-ids.I", "101");
+        NumeralTierCatalog catalog = new NumeralTierCatalog(
+                List.of(new NumeralTierCatalog.Tier("I", 60, "gray")));
+
+        assertFalse(NumeralDiscordConfig.load(yaml, catalog).orElseThrow().enthusiaShadowEnabled());
+        yaml.set("numerals.discord-roles.enthusia-shadow-enabled", true);
+        assertTrue(NumeralDiscordConfig.load(yaml, catalog).orElseThrow().enthusiaShadowEnabled());
+    }
+
     @Test void suppliedRoleIdsFollowTierOrder() {
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(new InputStreamReader(
                 getClass().getResourceAsStream("/config.yml"), StandardCharsets.UTF_8));
