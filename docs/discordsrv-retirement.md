@@ -1,6 +1,6 @@
 # DiscordSRV retirement: PlayTime numeral roles
 
-Tracking: PlayTimePlugin #29. Umbrella: EnthusiaStaff #264. Shared managed-role contract: EnthusiaStaff #266.
+Tracking: PlayTimePlugin #29. Umbrella: EnthusiaStaff #264. Shared managed-role contract: EnthusiaStaff #266. Managed-role provider/shadow runtime: EnthusiaStaff #342.
 
 ## Provider-neutral checkpoint
 
@@ -8,7 +8,7 @@ The tested PR #27 numeral policy remains authoritative: active playtime selects 
 
 Application orchestration now depends on `NumeralRoleProvider` and the opaque `NumeralRoleAccountRef` DTO. DiscordSRV link events, account-link lookups, shaded JDA types, guild/member access, role mutation and UNKNOWN_MEMBER handling are confined to `DiscordSrvNumeralRoleProvider`.
 
-The legacy adapter remains the active compatibility implementation while the shared Enthusia managed-role contract in Staff #266 is review-ready but not yet merged or backed by the final runtime. No production cutover or DiscordSRV removal is authorized by this checkpoint.
+The legacy DiscordSRV adapter remains the active mutation implementation during SHADOW. EnthusiaStaff #266 (provider-neutral contract) and #342 (Paper provider + StaffBot shadow runtime) are merged. This branch publishes complete desired Minecraft membership snapshots to that merged runtime while DiscordSRV continues the live writes. No production writer cutover or DiscordSRV removal is authorized by this checkpoint.
 
 ## Multi-linked identities
 
@@ -18,4 +18,4 @@ The compatibility adapter does not attempt to make DiscordSRV link state and an 
 
 ## Next contract step
 
-Once EnthusiaStaff #266 is merged and the runtime implementation/distribution path is available, replace the compatibility adapter with the shared managed-role client and move from opaque per-identity reconciliation to complete desired membership snapshots for namespace `playtime-numerals`. Do not introduce a separate PlayTime Discord transport.
+Current SHADOW implementation publishes complete desired membership snapshots through the shared managed-role client for namespace `playtime-numerals`, compiled against the exact merged #342 runtime commit. The remaining step is production parity evidence before any writer cutover; do not introduce a separate PlayTime Discord transport.
