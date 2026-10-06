@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class EnthusiaNumeralShadowPublisherTest {
+    private static final String ROLE_ONE_ID = "10001";
+    private static final String ROLE_TWO_ID = "10002";
     @Test
     void publishesEveryTierWithCompleteAuthoritativeMembership() {
         NumeralRolePolicy policy = policy();
@@ -34,7 +36,7 @@ class EnthusiaNumeralShadowPublisherTest {
 
         EnthusiaNumeralShadowPublisher.Summary summary = publisher.publish(
                 client,
-                Map.of("I", "10001", "II", "10002"),
+                Map.of("I", ROLE_ONE_ID, "II", ROLE_TWO_ID),
                 Set.of(below, tierOne, tierTwo),
                 playerId -> {
                     if (playerId.equals(below)) return 30L;
@@ -50,8 +52,8 @@ class EnthusiaNumeralShadowPublisherTest {
         ManagedRoleClaim first = client.claimByName("Playtime I");
         ManagedRoleClaim second = client.claimByName("Playtime II");
         assertEquals("playtime-numerals", first.key().namespace().value());
-        assertEquals(java.util.Optional.of("10001"), first.existingDiscordRoleId());
-        assertEquals(java.util.Optional.of("10002"), second.existingDiscordRoleId());
+        assertEquals(java.util.Optional.of(ROLE_ONE_ID), first.existingDiscordRoleId());
+        assertEquals(java.util.Optional.of(ROLE_TWO_ID), second.existingDiscordRoleId());
         assertEquals(Set.of(tierOne), first.desiredMinecraftAccounts());
         assertEquals(Set.of(tierTwo), second.desiredMinecraftAccounts());
     }
@@ -64,7 +66,7 @@ class EnthusiaNumeralShadowPublisherTest {
 
         publisher.publish(
                 client,
-                Map.of("I", "10001", "II", "10002"),
+                Map.of("I", ROLE_ONE_ID, "II", ROLE_TWO_ID),
                 Set.of(tierOne),
                 ignored -> 60L
         ).join();
@@ -81,7 +83,7 @@ class EnthusiaNumeralShadowPublisherTest {
 
         assertThrows(RuntimeException.class, () -> publisher.publish(
                 client,
-                Map.of("I", "10001", "II", "10002"),
+                Map.of("I", ROLE_ONE_ID, "II", ROLE_TWO_ID),
                 Set.of(first, second),
                 playerId -> {
                     if (playerId.equals(second)) throw new IllegalStateException("storage unavailable");
@@ -97,7 +99,7 @@ class EnthusiaNumeralShadowPublisherTest {
                         new NumeralTierCatalog.Tier("I", 60L, "gray"),
                         new NumeralTierCatalog.Tier("II", 120L, "white")
                 )),
-                Map.of("I", "10001", "II", "10002")
+                Map.of("I", ROLE_ONE_ID, "II", ROLE_TWO_ID)
         );
     }
 
