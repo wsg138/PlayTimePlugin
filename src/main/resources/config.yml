@@ -30,6 +30,9 @@ numerals:
     # Set all tier role IDs before enabling; the plugin never creates or deletes Discord roles.
     enabled: false
     mode: highest-only
+    # Migration-only dual publish. DiscordSRV remains authoritative for mutations.
+    # EnthusiaStaff receives complete UUID snapshots and performs read-only parity checks.
+    enthusia-shadow-enabled: false
     role-ids:
       I: "1552382278712168448"
       II: "1552382306587775068"
