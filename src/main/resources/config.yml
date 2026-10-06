@@ -26,8 +26,9 @@ numerals:
     enabled: false
     message: "&6%player% &ehas reached playtime tier %tier_color%%tier_label%&e!"
   discord-roles:
-    # Requires DiscordSRV account linking and Manage Roles permission in its main guild.
-    # Set all tier role IDs before enabling; the plugin never creates or deletes Discord roles.
+    # Legacy live mutations use DiscordSRV while it is installed.
+    # Set all tier role IDs before enabling; shadow mode can publish these exact existing role IDs
+    # to EnthusiaStaff without relying on DiscordSRV/JDA role-name lookups.
     enabled: false
     mode: highest-only
     # Migration-only dual publish. DiscordSRV remains authoritative for mutations.
