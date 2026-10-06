@@ -112,7 +112,7 @@
         <dependency>
             <groupId>com.github.wsg138.EnthusiaStaff</groupId>
             <artifactId>discord-platform-api</artifactId>
-            <version>4e208e38d5bb96b5a7065b6405781904c54e4949</version>
+            <version>986852c6577a90e1649e1e66e80fad9fda77761f</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
