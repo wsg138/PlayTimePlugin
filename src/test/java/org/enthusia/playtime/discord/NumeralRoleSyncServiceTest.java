@@ -116,7 +116,9 @@ class NumeralRoleSyncServiceTest {
         assertFalse(unlink.isDone());
         heldRoles.complete(Set.of(TIER_ONE_ROLE, STAFF_ROLE));
 
-        CompletableFuture.allOf(reconcile, unlink).join();
+        CompletableFuture.allOf(reconcile.handle((ignored, failure) -> null), unlink).join();
+        CompletionException failure = assertThrows(CompletionException.class, reconcile::join);
+        assertInstanceOf(NumeralRoleSyncService.SnapshotPendingException.class, failure.getCause());
         assertEquals(Set.of(STAFF_ROLE), provider.roles);
     }
 
@@ -176,6 +178,26 @@ class NumeralRoleSyncServiceTest {
 
         CompletionException failure = assertThrows(
                 CompletionException.class, () -> service(provider, uuid -> 480L).reconcile(player).join());
+        assertInstanceOf(NumeralRoleSyncService.SnapshotPendingException.class, failure.getCause());
+        assertEquals(Set.of(TIER_ONE_ROLE), provider.roles);
+        assertEquals(0, provider.grants.get());
+        assertEquals(0, provider.revokes.get());
+    }
+
+    @Test
+    void membershipChangeAfterCurrentRoleReadFailsBeforeRoleMutation() {
+        AtomicInteger membershipReads = new AtomicInteger();
+        FakeProvider provider = new FakeProvider(Set.of(TIER_ONE_ROLE)) {
+            @Override
+            public Set<UUID> minecraftAccounts(NumeralRoleAccountRef account) {
+                return membershipReads.getAndIncrement() < 2 ? Set.of(player) : Set.of();
+            }
+        };
+        provider.link(player, ACCOUNT);
+
+        CompletionException failure = assertThrows(
+                CompletionException.class, () -> service(provider, uuid -> 480L).reconcile(player).join());
+
         assertInstanceOf(NumeralRoleSyncService.SnapshotPendingException.class, failure.getCause());
         assertEquals(Set.of(TIER_ONE_ROLE), provider.roles);
         assertEquals(0, provider.grants.get());
