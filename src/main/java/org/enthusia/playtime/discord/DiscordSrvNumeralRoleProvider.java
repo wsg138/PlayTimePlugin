@@ -73,14 +73,6 @@ public final class DiscordSrvNumeralRoleProvider implements NumeralRoleProvider 
                 .collect(Collectors.toUnmodifiableSet());
     }
 
-    /**
-     * Migration-only metadata lookup. The provider-neutral shadow claim receives the role name,
-     * never this legacy Discord role ID.
-     */
-    public String roleName(String roleId) {
-        return role(guild(), roleId).getName();
-    }
-
     @Override
     public CompletableFuture<Set<String>> currentRoles(NumeralRoleAccountRef account) {
         try {
