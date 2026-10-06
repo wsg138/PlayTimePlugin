@@ -31,7 +31,7 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
     private final AtomicBoolean inFlight = new AtomicBoolean();
     private final AtomicBoolean requestQueued = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
-    private BukkitTask task;
+    private Optional<BukkitTask> task = Optional.empty();
 
     public EnthusiaNumeralShadowCoordinator(
             PlayTimePlugin plugin,
@@ -43,10 +43,10 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
     }
 
     public void start() {
-        if (closed.get() || task != null) {
+        if (closed.get() || task.isPresent()) {
             throw new IllegalStateException("Enthusia numeral shadow coordinator cannot be started");
         }
-        task = Bukkit.getScheduler().runTaskTimer(plugin, this::trigger, INITIAL_DELAY_TICKS, PERIOD_TICKS);
+        task = Optional.of(Bukkit.getScheduler().runTaskTimer(plugin, this::trigger, INITIAL_DELAY_TICKS, PERIOD_TICKS));
         plugin.getLogger().info(
                 "Enthusia numeral-role shadow publication enabled; DiscordSRV remains authoritative for mutations.");
     }
@@ -149,10 +149,8 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
-        BukkitTask current = task;
-        task = null;
-        if (current != null) {
-            current.cancel();
-        }
+        Optional<BukkitTask> current = task;
+        task = Optional.empty();
+        current.ifPresent(BukkitTask::cancel);
     }
 }
