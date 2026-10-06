@@ -24,6 +24,13 @@ class NumeralRolePolicyTest {
         assertEquals(Set.of("103"), policy.desiredRoles(1200));
     }
 
+    @Test void exposesStableTierMappingForCompleteShadowSnapshots() {
+        NumeralRolePolicy policy = new NumeralRolePolicy(catalog, roleIds);
+        assertEquals(roleIds, policy.roleIdsByTier());
+        assertEquals(java.util.Optional.empty(), policy.desiredTierLabel(59));
+        assertEquals(java.util.Optional.of("II"), policy.desiredTierLabel(480));
+    }
+
     @Test void reconciliationChangesOnlyManagedRoles() {
         NumeralRolePolicy policy = new NumeralRolePolicy(catalog, roleIds);
         NumeralRolePolicy.Change change = policy.reconcile(Set.of(TIER_ONE_ROLE, "unrelated"), 480);
