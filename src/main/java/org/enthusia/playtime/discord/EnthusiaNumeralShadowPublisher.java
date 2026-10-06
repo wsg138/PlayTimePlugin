@@ -18,6 +18,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -51,12 +52,12 @@ public final class EnthusiaNumeralShadowPublisher {
 
     public CompletableFuture<Summary> publish(
             ManagedRoleClient client,
-            Map<String, String> roleNamesByTier,
+            Map<String, String> roleIdsByTier,
             Set<UUID> knownPlayers,
             ActiveMinutes activeMinutes
     ) {
         Objects.requireNonNull(client, "client");
-        Objects.requireNonNull(roleNamesByTier, "roleNamesByTier");
+        Objects.requireNonNull(roleIdsByTier, "roleIdsByTier");
         Objects.requireNonNull(knownPlayers, "knownPlayers");
         Objects.requireNonNull(activeMinutes, "activeMinutes");
         if (!NAMESPACE.equals(client.namespace())
@@ -65,12 +66,13 @@ public final class EnthusiaNumeralShadowPublisher {
                     new IllegalStateException("Enthusia numeral managed-role client is unavailable"));
         }
 
-        Map<String, Set<UUID>> desired = buildDesired(roleNamesByTier, knownPlayers, activeMinutes);
+        Map<String, Set<UUID>> desired = buildDesired(roleIdsByTier, knownPlayers, activeMinutes);
         List<CompletableFuture<Void>> publications = new ArrayList<>();
         for (String tier : sortedTiers()) {
             ManagedRoleClaim claim = new ManagedRoleClaim(
                     key(tier),
-                    roleNamesByTier.get(tier),
+                    displayName(tier),
+                    Optional.of(roleIdsByTier.get(tier)),
                     desired.get(tier)
             );
             publications.add(client.reconcile(claim).toCompletableFuture().thenApply(result -> {
@@ -88,13 +90,13 @@ public final class EnthusiaNumeralShadowPublisher {
     }
 
     private Map<String, Set<UUID>> buildDesired(
-            Map<String, String> roleNamesByTier,
+            Map<String, String> roleIdsByTier,
             Set<UUID> knownPlayers,
             ActiveMinutes activeMinutes
     ) {
         List<String> tiers = sortedTiers();
-        if (!roleNamesByTier.keySet().containsAll(tiers)) {
-            throw new IllegalArgumentException("Every numeral tier requires a resolved Discord role name");
+        if (!roleIdsByTier.keySet().containsAll(tiers)) {
+            throw new IllegalArgumentException("Every numeral tier requires a configured Discord role ID");
         }
 
         Map<String, Set<UUID>> mutable = new LinkedHashMap<>();
@@ -120,6 +122,10 @@ public final class EnthusiaNumeralShadowPublisher {
 
     private List<String> sortedTiers() {
         return policy.roleIdsByTier().keySet().stream().sorted().toList();
+    }
+
+    private static String displayName(String tierLabel) {
+        return "Playtime " + tierLabel;
     }
 
     static ManagedRoleNamespace namespace() {
