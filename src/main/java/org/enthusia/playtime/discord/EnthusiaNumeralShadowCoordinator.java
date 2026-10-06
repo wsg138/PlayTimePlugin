@@ -8,7 +8,6 @@ import org.bukkit.scheduler.BukkitTask;
 import org.enthusia.playtime.PlayTimePlugin;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -19,8 +18,8 @@ import java.util.logging.Level;
 /**
  * Migration-only scheduler for provider-neutral numeral-role parity claims.
  *
- * DiscordSRV remains authoritative for role mutations. This coordinator only resolves the existing
- * role names and publishes complete Minecraft UUID snapshots to EnthusiaStaff.
+ * DiscordSRV remains authoritative for role mutations. This coordinator publishes complete
+ * Minecraft UUID snapshots plus the already-configured legacy role IDs to EnthusiaStaff.
  */
 public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
     private static final long INITIAL_DELAY_TICKS = 20L * 15L;
@@ -28,7 +27,6 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
 
     private final PlayTimePlugin plugin;
     private final NumeralRolePolicy policy;
-    private final DiscordSrvNumeralRoleProvider legacyProvider;
     private final EnthusiaNumeralShadowPublisher publisher;
     private final AtomicBoolean inFlight = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -36,12 +34,10 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
 
     public EnthusiaNumeralShadowCoordinator(
             PlayTimePlugin plugin,
-            NumeralRolePolicy policy,
-            DiscordSrvNumeralRoleProvider legacyProvider
+            NumeralRolePolicy policy
     ) {
         this.plugin = java.util.Objects.requireNonNull(plugin, "plugin");
         this.policy = java.util.Objects.requireNonNull(policy, "policy");
-        this.legacyProvider = java.util.Objects.requireNonNull(legacyProvider, "legacyProvider");
         this.publisher = new EnthusiaNumeralShadowPublisher(policy);
     }
 
@@ -66,10 +62,8 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
             return;
         }
 
-        final Map<String, String> roleNames;
         final Set<UUID> players;
         try {
-            roleNames = roleNames();
             players = runtime.knownPlayerIds();
         } catch (RuntimeException exception) {
             inFlight.set(false);
@@ -77,17 +71,20 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
             return;
         }
 
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> publish(client, runtime, roleNames, players));
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> publish(client, runtime, players));
     }
 
     private void publish(
             ManagedRoleClient client,
             PlaytimeRuntime runtime,
-            Map<String, String> roleNames,
             Set<UUID> players
     ) {
         try {
-            publisher.publish(client, roleNames, players, runtime::readAuthoritativeActiveMinutes)
+            publisher.publish(
+                    client,
+                    policy.roleIdsByTier(),
+                    players,
+                    runtime::readAuthoritativeActiveMinutes)
                     .whenComplete((summary, error) -> {
                         if (error != null) {
                             logFailure("publish", unwrap(error));
@@ -113,12 +110,6 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
         }
         Optional<ManagedRoleClient> client = platform.clientFor(EnthusiaNumeralShadowPublisher.namespace());
         return client.filter(value -> value.availability() != DiscordPlatformAvailability.UNAVAILABLE).orElse(null);
-    }
-
-    private Map<String, String> roleNames() {
-        Map<String, String> names = new LinkedHashMap<>();
-        policy.roleIdsByTier().forEach((tier, roleId) -> names.put(tier, legacyProvider.roleName(roleId)));
-        return Map.copyOf(names);
     }
 
     private void logFailure(String stage, Throwable error) {
