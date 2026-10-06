@@ -24,12 +24,14 @@ import java.util.logging.Level;
 public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
     private static final long INITIAL_DELAY_TICKS = 20L * 15L;
     private static final long PERIOD_TICKS = 20L * 60L * 5L;
+    private static final long EVENT_COOLDOWN_TICKS = 20L * 5L;
 
     private final PlayTimePlugin plugin;
     private final NumeralRolePolicy policy;
     private final EnthusiaNumeralShadowPublisher publisher;
     private final AtomicBoolean inFlight = new AtomicBoolean();
     private final AtomicBoolean requestQueued = new AtomicBoolean();
+    private final AtomicBoolean rerunRequested = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
     private Optional<BukkitTask> task = Optional.empty();
 
@@ -46,7 +48,8 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
         if (closed.get() || task.isPresent()) {
             throw new IllegalStateException("Enthusia numeral shadow coordinator cannot be started");
         }
-        task = Optional.of(Bukkit.getScheduler().runTaskTimer(plugin, this::trigger, INITIAL_DELAY_TICKS, PERIOD_TICKS));
+        task = Optional.of(Bukkit.getScheduler().runTaskTimer(
+                plugin, () -> trigger(false), INITIAL_DELAY_TICKS, PERIOD_TICKS));
         plugin.getLogger().info(
                 "Enthusia numeral-role shadow publication enabled; DiscordSRV remains authoritative for mutations.");
     }
@@ -56,25 +59,31 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
             return;
         }
         try {
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
                 requestQueued.set(false);
-                trigger();
-            });
+                trigger(true);
+            }, EVENT_COOLDOWN_TICKS);
         } catch (RuntimeException | LinkageError failure) {
             requestQueued.set(false);
             throw failure;
         }
     }
 
-    private void trigger() {
-        if (closed.get() || !inFlight.compareAndSet(false, true)) {
+    private void trigger(boolean rerunIfBusy) {
+        if (closed.get()) {
+            return;
+        }
+        if (!inFlight.compareAndSet(false, true)) {
+            if (rerunIfBusy) {
+                rerunRequested.set(true);
+            }
             return;
         }
 
         ManagedRoleClient client = client();
         PlaytimeRuntime runtime = plugin.runtime();
         if (client == null || runtime == null) {
-            inFlight.set(false);
+            finishPass();
             return;
         }
 
@@ -82,7 +91,7 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
         try {
             players = runtime.knownPlayerIds();
         } catch (RuntimeException exception) {
-            inFlight.set(false);
+            finishPass();
             logFailure("metadata", exception);
             return;
         }
@@ -109,11 +118,22 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
                                     "Enthusia numeral-role shadow published " + summary.claimsPublished()
                                             + " claim(s) for " + summary.playersEvaluated() + " known player(s).");
                         }
-                        inFlight.set(false);
+                        finishPass();
                     });
         } catch (RuntimeException exception) {
-            inFlight.set(false);
+            finishPass();
             logFailure("snapshot", exception);
+        }
+    }
+
+    private void finishPass() {
+        inFlight.set(false);
+        if (closed.get()) {
+            rerunRequested.set(false);
+            return;
+        }
+        if (rerunRequested.getAndSet(false)) {
+            request();
         }
     }
 
@@ -149,6 +169,7 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
+        rerunRequested.set(false);
         Optional<BukkitTask> current = task;
         task = Optional.empty();
         current.ifPresent(BukkitTask::cancel);
