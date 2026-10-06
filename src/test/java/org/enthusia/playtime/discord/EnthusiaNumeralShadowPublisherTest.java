@@ -34,7 +34,7 @@ class EnthusiaNumeralShadowPublisherTest {
 
         EnthusiaNumeralShadowPublisher.Summary summary = publisher.publish(
                 client,
-                Map.of("I", "Playtime I", "II", "Playtime II"),
+                Map.of("I", "10001", "II", "10002"),
                 Set.of(below, tierOne, tierTwo),
                 playerId -> {
                     if (playerId.equals(below)) return 30L;
@@ -64,7 +64,7 @@ class EnthusiaNumeralShadowPublisherTest {
 
         publisher.publish(
                 client,
-                Map.of("I", "Playtime I", "II", "Playtime II"),
+                Map.of("I", "10001", "II", "10002"),
                 Set.of(tierOne),
                 ignored -> 60L
         ).join();
@@ -81,7 +81,7 @@ class EnthusiaNumeralShadowPublisherTest {
 
         assertThrows(RuntimeException.class, () -> publisher.publish(
                 client,
-                Map.of("I", "Playtime I", "II", "Playtime II"),
+                Map.of("I", "10001", "II", "10002"),
                 Set.of(first, second),
                 playerId -> {
                     if (playerId.equals(second)) throw new IllegalStateException("storage unavailable");
