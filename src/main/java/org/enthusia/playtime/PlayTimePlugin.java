@@ -265,30 +265,38 @@ public class PlayTimePlugin extends JavaPlugin {
 
     public void requestDiscordNumeralSync(UUID uuid) {
         discordNumerals.ifPresent(current -> current.request(uuid));
+        enthusiaNumeralShadow.ifPresent(EnthusiaNumeralShadowCoordinator::request);
     }
 
     private void refreshDiscordNumerals(PlaytimeConfig config) {
         closeDiscordNumerals();
         if (!config.numerals().enabled()) return;
         try {
-            Optional<NumeralDiscordConfig> discordConfig = NumeralDiscordConfig.load(getConfig(), config.numerals().catalog());
+            Optional<NumeralDiscordConfig> discordConfig = NumeralDiscordConfig.load(
+                    getConfig(),
+                    config.numerals().catalog());
             if (discordConfig.isEmpty()) return;
-            if (Bukkit.getPluginManager().getPlugin("DiscordSRV") == null) {
-                getLogger().warning("Numeral Discord roles are enabled, but DiscordSRV compatibility provider is unavailable.");
-                return;
+
+            NumeralDiscordConfig active = discordConfig.orElseThrow();
+            if (Bukkit.getPluginManager().getPlugin("DiscordSRV") != null) {
+                DiscordSrvNumeralRoleProvider provider = new DiscordSrvNumeralRoleProvider();
+                DiscordNumeralCoordinator coordinator = new DiscordNumeralCoordinator(
+                        this, active.policy(), provider);
+                coordinator.start();
+                discordNumerals = Optional.of(coordinator);
+                getLogger().info(
+                        "Discord numeral role synchronization started through the legacy DiscordSRV provider.");
+            } else {
+                getLogger().warning(
+                        "DiscordSRV numeral-role mutation provider is unavailable; legacy role mutation is disabled.");
             }
-            DiscordSrvNumeralRoleProvider provider = new DiscordSrvNumeralRoleProvider();
-            DiscordNumeralCoordinator coordinator = new DiscordNumeralCoordinator(
-                    this, discordConfig.get().policy(), provider);
-            coordinator.start();
-            discordNumerals = Optional.of(coordinator);
-            if (discordConfig.get().enthusiaShadowEnabled()) {
+
+            if (active.enthusiaShadowEnabled()) {
                 EnthusiaNumeralShadowCoordinator shadow = new EnthusiaNumeralShadowCoordinator(
-                        this, discordConfig.get().policy(), provider);
+                        this, active.policy());
                 shadow.start();
                 enthusiaNumeralShadow = Optional.of(shadow);
             }
-            getLogger().info("Discord numeral role synchronization started through the legacy DiscordSRV provider.");
         } catch (IOException | RuntimeException | LinkageError exception) {
             getLogger().log(Level.SEVERE, "Discord numeral role synchronization could not start.", exception);
         }
