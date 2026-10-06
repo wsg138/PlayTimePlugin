@@ -62,8 +62,8 @@ public final class NumeralRoleSyncService {
     private CompletableFuture<Void> reconcileAccount(NumeralRoleAccountRef account) {
         Set<UUID> linkedAccounts = linkedAccounts(account);
         if (linkedAccounts.isEmpty()) {
-            return provider.currentRoles(account).thenCompose(current -> apply(account,
-                    policy.revokeAllManaged(Objects.requireNonNull(current, "Provider roles unavailable"))));
+            return currentRolesAfterStableMembership(account, linkedAccounts).thenCompose(current -> apply(account,
+                    policy.revokeAllManaged(current)));
         }
 
         long effectiveActiveMinutes = effectiveActiveMinutes(linkedAccounts);
@@ -72,8 +72,21 @@ public final class NumeralRoleSyncService {
             throw new SnapshotPendingException("Linked account membership changed during numeral reconciliation");
         }
 
-        return provider.currentRoles(account).thenCompose(current -> apply(account, policy.reconcile(
-                Objects.requireNonNull(current, "Provider roles unavailable"), effectiveActiveMinutes)));
+        return currentRolesAfterStableMembership(account, linkedAccounts).thenCompose(current -> apply(account,
+                policy.reconcile(current, effectiveActiveMinutes)));
+    }
+
+    private CompletableFuture<Set<String>> currentRolesAfterStableMembership(
+            NumeralRoleAccountRef account, Set<UUID> expectedLinks) {
+        return provider.currentRoles(account).thenCompose(current -> {
+            Set<UUID> confirmedLinks = linkedAccounts(account);
+            if (!confirmedLinks.equals(expectedLinks)) {
+                return CompletableFuture.failedFuture(
+                        new SnapshotPendingException("Linked account membership changed during numeral reconciliation"));
+            }
+            return CompletableFuture.completedFuture(
+                    Objects.requireNonNull(current, "Provider roles unavailable"));
+        });
     }
 
     private Set<UUID> linkedAccounts(NumeralRoleAccountRef account) {
