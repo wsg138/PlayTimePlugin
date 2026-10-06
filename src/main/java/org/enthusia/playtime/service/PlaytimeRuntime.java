@@ -298,6 +298,11 @@ public final class PlaytimeRuntime implements AutoCloseable {
         return knownPlayers.contains(uuid);
     }
 
+    /** Stable snapshot used by bounded migration/reconciliation jobs. */
+    public Set<UUID> knownPlayerIds() {
+        return Set.copyOf(knownPlayers);
+    }
+
     public boolean handleJoinRecorded(Player player, Instant joinedAt) {
         UUID uuid = player.getUniqueId();
         accrualTracker.connect(uuid, monotonicNanos.getAsLong(), joinedAt, activities.getSuspiciousResetMarker(uuid));
