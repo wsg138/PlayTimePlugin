@@ -1,0 +1,19 @@
+name: Temporary Codacy issue inspection
+
+on:
+  push:
+    branches:
+      - integration/enthusia-discord-platform
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read public Codacy PR issues
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl --fail --silent --show-error             "https://api.codacy.com/api/v3/analysis/organizations/gh/wsg138/repositories/PlayTimePlugin/pull-requests/30/issues?status=new&limit=100"             | jq .
