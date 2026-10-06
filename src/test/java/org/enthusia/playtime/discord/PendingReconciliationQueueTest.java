@@ -7,33 +7,34 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PendingReconciliationQueueTest {
+    private static final String ACCOUNT = "account";
     @Test
     void newerRequestSurvivesOlderSuccessfulCompletion() {
         PendingReconciliationQueue<String> queue = new PendingReconciliationQueue<>();
-        PendingReconciliationQueue.Pending older = queue.request("account");
-        PendingReconciliationQueue.Pending newer = queue.request("account");
+        PendingReconciliationQueue.Pending older = queue.request(ACCOUNT);
+        PendingReconciliationQueue.Pending newer = queue.request(ACCOUNT);
 
-        assertFalse(queue.complete("account", older));
-        assertEquals(newer, queue.snapshot().get("account"));
+        assertFalse(queue.complete(ACCOUNT, older));
+        assertEquals(newer, queue.snapshot().get(ACCOUNT));
     }
 
     @Test
     void newerRequestSurvivesOlderRetryCompletion() {
         PendingReconciliationQueue<String> queue = new PendingReconciliationQueue<>();
-        PendingReconciliationQueue.Pending older = queue.request("account");
-        PendingReconciliationQueue.Pending newer = queue.request("account");
+        PendingReconciliationQueue.Pending older = queue.request(ACCOUNT);
+        PendingReconciliationQueue.Pending newer = queue.request(ACCOUNT);
 
-        assertFalse(queue.retry("account", older, 123L));
-        assertEquals(newer, queue.snapshot().get("account"));
+        assertFalse(queue.retry(ACCOUNT, older, 123L));
+        assertEquals(newer, queue.snapshot().get(ACCOUNT));
     }
 
     @Test
     void currentFailureIsRetriedWithoutChangingItsVersion() {
         PendingReconciliationQueue<String> queue = new PendingReconciliationQueue<>();
-        PendingReconciliationQueue.Pending current = queue.request("account");
+        PendingReconciliationQueue.Pending current = queue.request(ACCOUNT);
 
-        assertTrue(queue.retry("account", current, 123L));
-        PendingReconciliationQueue.Pending retry = queue.snapshot().get("account");
+        assertTrue(queue.retry(ACCOUNT, current, 123L));
+        PendingReconciliationQueue.Pending retry = queue.snapshot().get(ACCOUNT);
         assertEquals(123L, retry.dueNanos());
         assertEquals(current.version(), retry.version());
     }
