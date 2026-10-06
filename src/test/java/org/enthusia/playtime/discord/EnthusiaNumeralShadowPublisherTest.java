@@ -50,6 +50,8 @@ class EnthusiaNumeralShadowPublisherTest {
         ManagedRoleClaim first = client.claimByName("Playtime I");
         ManagedRoleClaim second = client.claimByName("Playtime II");
         assertEquals("playtime-numerals", first.key().namespace().value());
+        assertEquals(java.util.Optional.of("10001"), first.existingDiscordRoleId());
+        assertEquals(java.util.Optional.of("10002"), second.existingDiscordRoleId());
         assertEquals(Set.of(tierOne), first.desiredMinecraftAccounts());
         assertEquals(Set.of(tierTwo), second.desiredMinecraftAccounts());
     }
@@ -95,7 +97,7 @@ class EnthusiaNumeralShadowPublisherTest {
                         new NumeralTierCatalog.Tier("I", 60L, "gray"),
                         new NumeralTierCatalog.Tier("II", 120L, "white")
                 )),
-                Map.of("I", "101", "II", "102")
+                Map.of("I", "10001", "II", "10002")
         );
     }
 
