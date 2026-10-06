@@ -110,9 +110,9 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
-            <groupId>com.github.wsg138.EnthusiaStaff</groupId>
+            <groupId>net.enthusia.staff</groupId>
             <artifactId>discord-platform-api</artifactId>
-            <version>986852c6577a90e1649e1e66e80fad9fda77761f</version>
+            <version>0.1.0-SNAPSHOT</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
