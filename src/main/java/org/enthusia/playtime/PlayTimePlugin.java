@@ -11,6 +11,7 @@ import org.enthusia.playtime.config.ConfigMigrator;
 import org.enthusia.playtime.config.PlaytimeConfig;
 import org.enthusia.playtime.discord.DiscordNumeralCoordinator;
 import org.enthusia.playtime.discord.DiscordSrvNumeralRoleProvider;
+import org.enthusia.playtime.discord.EnthusiaNumeralShadowCoordinator;
 import org.enthusia.playtime.discord.NumeralDiscordConfig;
 import org.enthusia.playtime.gui.GuiListener;
 import org.enthusia.playtime.joins.FirstJoinWelcomeListener;
@@ -60,6 +61,7 @@ public class PlayTimePlugin extends JavaPlugin {
 
     private BedrockSupport bedrockSupport;
     private volatile Optional<DiscordNumeralCoordinator> discordNumerals = Optional.empty();
+    private volatile Optional<EnthusiaNumeralShadowCoordinator> enthusiaNumeralShadow = Optional.empty();
 
     @Override
     public void onEnable() {
@@ -280,6 +282,12 @@ public class PlayTimePlugin extends JavaPlugin {
                     this, discordConfig.get().policy(), provider);
             coordinator.start();
             discordNumerals = Optional.of(coordinator);
+            if (discordConfig.get().enthusiaShadowEnabled()) {
+                EnthusiaNumeralShadowCoordinator shadow = new EnthusiaNumeralShadowCoordinator(
+                        this, discordConfig.get().policy(), provider);
+                shadow.start();
+                enthusiaNumeralShadow = Optional.of(shadow);
+            }
             getLogger().info("Discord numeral role synchronization started through the legacy DiscordSRV provider.");
         } catch (IOException | RuntimeException | LinkageError exception) {
             getLogger().log(Level.SEVERE, "Discord numeral role synchronization could not start.", exception);
@@ -287,6 +295,16 @@ public class PlayTimePlugin extends JavaPlugin {
     }
 
     private void closeDiscordNumerals() {
+        Optional<EnthusiaNumeralShadowCoordinator> shadow = enthusiaNumeralShadow;
+        enthusiaNumeralShadow = Optional.empty();
+        shadow.ifPresent(coordinator -> {
+            try {
+                coordinator.close();
+            } catch (RuntimeException exception) {
+                getLogger().log(Level.WARNING, "Failed to close Enthusia numeral shadow sync.", exception);
+            }
+        });
+
         Optional<DiscordNumeralCoordinator> existing = discordNumerals;
         discordNumerals = Optional.empty();
         existing.ifPresent(coordinator -> {
