@@ -1,0 +1,142 @@
+package org.enthusia.playtime.discord;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
+
+/** Reconciles one provider identity from authoritative active-playtime snapshots. */
+public final class NumeralRoleSyncService {
+    /** A concurrent authoritative snapshot changed while it was being read; retry shortly without warning noise. */
+    public static final class SnapshotPendingException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        public SnapshotPendingException(String message) {
+            super(message);
+        }
+    }
+
+    @FunctionalInterface
+    public interface ActiveMinutes {
+        long read(UUID uuid);
+    }
+
+    private final NumeralRolePolicy policy;
+    private final ActiveMinutes playtime;
+    private final NumeralRoleProvider provider;
+    private final Object queueLock = new Object();
+    private final Map<NumeralRoleAccountRef, CompletableFuture<Void>> accountWork = new ConcurrentHashMap<>();
+
+    public NumeralRoleSyncService(
+            NumeralRolePolicy policy, ActiveMinutes playtime, NumeralRoleProvider provider) {
+        this.policy = Objects.requireNonNull(policy);
+        this.playtime = Objects.requireNonNull(playtime);
+        this.provider = Objects.requireNonNull(provider);
+    }
+
+    public CompletableFuture<Void> reconcile(UUID uuid) {
+        try {
+            Optional<NumeralRoleAccountRef> account = provider.accountFor(uuid);
+            if (account.isEmpty()) return CompletableFuture.completedFuture(null);
+            return serialize(account.get(), () -> reconcileAccount(account.get()));
+        } catch (RuntimeException exception) {
+            return CompletableFuture.failedFuture(exception);
+        }
+    }
+
+    /**
+     * Reconciles the captured identity after unlink. Remaining Minecraft links keep their effective
+     * highest numeral; only an identity with no remaining links loses all managed numeral roles.
+     */
+    public CompletableFuture<Void> unlink(NumeralRoleAccountRef account) {
+        if (account == null) return CompletableFuture.completedFuture(null);
+        return serialize(account, () -> reconcileAccount(account));
+    }
+
+    private CompletableFuture<Void> reconcileAccount(NumeralRoleAccountRef account) {
+        Set<UUID> linkedAccounts = linkedAccounts(account);
+        if (linkedAccounts.isEmpty()) {
+            return currentRolesAfterStableMembership(account, linkedAccounts).thenCompose(current -> apply(account,
+                    policy.revokeAllManaged(current)));
+        }
+
+        long effectiveActiveMinutes = effectiveActiveMinutes(linkedAccounts);
+        Set<UUID> confirmedLinks = linkedAccounts(account);
+        if (!confirmedLinks.equals(linkedAccounts)) {
+            throw new SnapshotPendingException("Linked account membership changed during numeral reconciliation");
+        }
+
+        return currentRolesAfterStableMembership(account, linkedAccounts).thenCompose(current -> apply(account,
+                policy.reconcile(current, effectiveActiveMinutes)));
+    }
+
+    private CompletableFuture<Set<String>> currentRolesAfterStableMembership(
+            NumeralRoleAccountRef account, Set<UUID> expectedLinks) {
+        return provider.currentRoles(account).thenCompose(current -> {
+            Set<UUID> confirmedLinks = linkedAccounts(account);
+            if (!confirmedLinks.equals(expectedLinks)) {
+                return CompletableFuture.failedFuture(
+                        new SnapshotPendingException("Linked account membership changed during numeral reconciliation"));
+            }
+            return CompletableFuture.completedFuture(
+                    Objects.requireNonNull(current, "Provider roles unavailable"));
+        });
+    }
+
+    private Set<UUID> linkedAccounts(NumeralRoleAccountRef account) {
+        return Set.copyOf(Objects.requireNonNull(
+                provider.minecraftAccounts(account), "Provider linked accounts unavailable"));
+    }
+
+    private long effectiveActiveMinutes(Set<UUID> linkedAccounts) {
+        long effective = 0L;
+        for (UUID uuid : linkedAccounts) {
+            long active = playtime.read(uuid);
+            if (active < 0) {
+                throw new SnapshotPendingException("Authoritative active playtime snapshot is pending");
+            }
+            effective = Math.max(effective, active);
+        }
+        return effective;
+    }
+
+    private CompletableFuture<Void> apply(NumeralRoleAccountRef account, NumeralRolePolicy.Change change) {
+        List<CompletableFuture<Void>> work = new ArrayList<>();
+        for (String roleId : change.revoke()) {
+            work.add(provider.revoke(account, roleId));
+        }
+        for (String roleId : change.grant()) {
+            work.add(provider.grant(account, roleId));
+        }
+        return CompletableFuture.allOf(work.toArray(CompletableFuture[]::new));
+    }
+
+    private CompletableFuture<Void> serialize(
+            NumeralRoleAccountRef account, Supplier<CompletableFuture<Void>> operation) {
+        synchronized (queueLock) {
+            CompletableFuture<Void> prior = accountWork.getOrDefault(
+                    account, CompletableFuture.completedFuture(null));
+            CompletableFuture<Void> current = prior.handle((ignored, failure) -> null)
+                    .thenComposeAsync(ignored -> {
+                        try {
+                            return operation.get();
+                        } catch (RuntimeException failure) {
+                            return CompletableFuture.failedFuture(failure);
+                        }
+                    });
+            accountWork.put(account, current);
+            current.whenComplete((ignored, failure) -> {
+                synchronized (queueLock) {
+                    accountWork.remove(account, current);
+                }
+            });
+            return current;
+        }
+    }
+}

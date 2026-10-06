@@ -13,6 +13,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      STAFF_SOURCE_COMMIT: d978c32e665f72ab0a81ec0c035f8f9dfc3117e7
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -26,11 +28,30 @@ jobs:
           java-version: '21'
           cache: maven
 
+      - name: Install pinned EnthusiaStaff Discord platform API
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/wsg138/EnthusiaStaff.git "$RUNNER_TEMP/enthusia-staff"
+          cd "$RUNNER_TEMP/enthusia-staff"
+          git checkout "$STAFF_SOURCE_COMMIT"
+          mkdir -p "$RUNNER_TEMP/staff-api-classes"
+          javac --release 21 -d "$RUNNER_TEMP/staff-api-classes" \
+            $(find discord-platform-api/src/main/java -type f -name '*.java' | sort)
+          jar cf "$RUNNER_TEMP/discord-platform-api.jar" -C "$RUNNER_TEMP/staff-api-classes" .
+          mvn --batch-mode --no-transfer-progress install:install-file \
+            -Dfile="$RUNNER_TEMP/discord-platform-api.jar" \
+            -DgroupId=net.enthusia.staff \
+            -DartifactId=discord-platform-api \
+            -Dversion=0.1.0-SNAPSHOT \
+            -Dpackaging=jar \
+            -DgeneratePom=true
+
       - name: Build and test
         shell: bash
         run: |
           set -o pipefail
-          mvn --batch-mode --no-transfer-progress -DreuseForks=false clean package 2>&1 | tee build.log
+          mvn --batch-mode --no-transfer-progress -DreuseForks=false clean verify 2>&1 | tee build.log
 
       - name: Upload build log
         if: always()

@@ -1,0 +1,12 @@
+# Playtime numeral Discord roles (SPEAR)
+
+- **NR-01:** WHEN an authoritative active-playtime total establishes a numeral tier, THE SYSTEM SHALL derive the numeral-role entitlement from the same configured tier catalog used by the in-game numeral display. Idle, AFK, and total connected minutes SHALL NOT advance this entitlement.
+- **NR-02:** WHEN a Minecraft UUID is linked through the configured identity provider, THE SYSTEM SHALL reconcile managed numeral roles through a provider-neutral identity reference. A username SHALL NOT be used as the account key.
+- **NR-03:** WHEN multiple Minecraft UUIDs resolve to one provider identity, THE SYSTEM SHALL derive that identity's effective numeral entitlement from the highest qualifying authoritative active-playtime tier among all currently linked UUIDs.
+- **NR-04:** WHEN one link is removed, THE SYSTEM SHALL reconcile the captured provider identity against its remaining linked Minecraft UUIDs. It SHALL NOT remove a managed numeral role that another remaining UUID still establishes; when no qualifying links remain it SHALL revoke the managed numeral roles while leaving unrelated roles untouched.
+- **NR-05:** WHEN a player advances, links, unlinks, joins, restarts, or the integration recovers, THE SYSTEM SHALL eventually reconcile managed numeral roles without creating duplicate grants or allowing an older completion to erase newer pending work.
+- **NR-06:** IF authoritative playtime, identity state, the role provider, role permissions, or role configuration is unavailable or changes during reconciliation, THE SYSTEM SHALL retain/retry pending work and SHALL NOT infer zero playtime or apply destructive role changes from an unverified snapshot.
+- **NR-07:** WHEN identity linking or role configuration is absent, THE SYSTEM SHALL leave numeral-role synchronization disabled without affecting playtime accrual or the existing numeral display and announcements.
+- **NR-08:** PlayTime SHALL own active-playtime/tier policy. The shared Enthusia Discord platform SHALL ultimately own canonical Minecraft-to-Discord identity resolution and Discord role reconciliation using complete desired membership snapshots for managed namespace `playtime-numerals`.
+
+The server owner confirmed highest-earned-only roles and supplied the existing role IDs in tier order. PlayTime uses those configured roles and does not create Discord roles. DiscordSRV may remain only as a compatibility adapter until the shared platform contract is ready.

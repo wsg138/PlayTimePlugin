@@ -25,6 +25,28 @@ numerals:
   tier-up-announcement:
     enabled: false
     message: "&6%player% &ehas reached playtime tier %tier_color%%tier_label%&e!"
+  discord-roles:
+    # Legacy live mutations use DiscordSRV while it is installed.
+    # Set all tier role IDs before enabling; shadow mode can publish these exact existing role IDs
+    # to EnthusiaStaff without relying on DiscordSRV/JDA role-name lookups.
+    enabled: false
+    mode: highest-only
+    # Migration-only dual publish. DiscordSRV remains authoritative for mutations.
+    # EnthusiaStaff receives complete UUID snapshots and performs read-only parity checks.
+    enthusia-shadow-enabled: false
+    role-ids:
+      I: "1552382278712168448"
+      II: "1552382306587775068"
+      III: "1552382344386584576"
+      IV: "1552382374417801298"
+      V: "1552382425005433042"
+      VI: "1552382498611404921"
+      VII: "1552382530622201896"
+      VIII: "1552382560489705472"
+      IX: "1552390114812891226"
+      x: "1552390142428455063"
+      y: "1552390184027299850"
+      z: "1552390213500928122"
   display:
     header: "&6[Playtime] &ePlaytime numeral tiers:"
     current-tier: "&7You (active): &b%playtime% &7-> %tier_color%%tier_label%"
