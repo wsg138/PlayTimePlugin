@@ -29,6 +29,7 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
     private final NumeralRolePolicy policy;
     private final EnthusiaNumeralShadowPublisher publisher;
     private final AtomicBoolean inFlight = new AtomicBoolean();
+    private final AtomicBoolean requestQueued = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
     private BukkitTask task;
 
@@ -48,6 +49,21 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
         task = Bukkit.getScheduler().runTaskTimer(plugin, this::trigger, INITIAL_DELAY_TICKS, PERIOD_TICKS);
         plugin.getLogger().info(
                 "Enthusia numeral-role shadow publication enabled; DiscordSRV remains authoritative for mutations.");
+    }
+
+    public void request() {
+        if (closed.get() || !requestQueued.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                requestQueued.set(false);
+                trigger();
+            });
+        } catch (RuntimeException | LinkageError failure) {
+            requestQueued.set(false);
+            throw failure;
+        }
     }
 
     private void trigger() {
