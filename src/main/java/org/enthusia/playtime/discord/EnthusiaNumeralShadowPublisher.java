@@ -139,7 +139,7 @@ public final class EnthusiaNumeralShadowPublisher {
     }
 
     static ManagedRoleKey key(String tierLabel) {
-        return new ManagedRoleKey(NAMESPACE, "tier:" + digest(tierLabel.toLowerCase(java.util.Locale.ROOT)));
+        return new ManagedRoleKey(ROLE_NAMESPACE, "tier:" + digest(tierLabel.toLowerCase(java.util.Locale.ROOT)));
     }
 
     private static String digest(String value) {
