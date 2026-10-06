@@ -13,8 +13,6 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -22,6 +20,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Builds complete provider-neutral numeral-role snapshots before publishing any claim.
@@ -29,7 +28,7 @@ import java.util.concurrent.CompletableFuture;
  * A failed authoritative playtime read aborts the pass before partial desired state can escape.
  */
 public final class EnthusiaNumeralShadowPublisher {
-    private static final ManagedRoleNamespace NAMESPACE = new ManagedRoleNamespace("playtime-numerals");
+    private static final ManagedRoleNamespace ROLE_NAMESPACE = new ManagedRoleNamespace("playtime-numerals");
 
     @FunctionalInterface
     public interface ActiveMinutes {
@@ -60,7 +59,7 @@ public final class EnthusiaNumeralShadowPublisher {
         Objects.requireNonNull(roleIdsByTier, "roleIdsByTier");
         Objects.requireNonNull(knownPlayers, "knownPlayers");
         Objects.requireNonNull(activeMinutes, "activeMinutes");
-        if (!NAMESPACE.equals(client.namespace())
+        if (!ROLE_NAMESPACE.equals(client.namespace())
                 || client.availability() == DiscordPlatformAvailability.UNAVAILABLE) {
             return CompletableFuture.failedFuture(
                     new IllegalStateException("Enthusia numeral managed-role client is unavailable"));
@@ -69,12 +68,7 @@ public final class EnthusiaNumeralShadowPublisher {
         Map<String, Set<UUID>> desired = buildDesired(roleIdsByTier, knownPlayers, activeMinutes);
         List<CompletableFuture<Void>> publications = new ArrayList<>();
         for (String tier : sortedTiers()) {
-            ManagedRoleClaim claim = new ManagedRoleClaim(
-                    key(tier),
-                    displayName(tier),
-                    Optional.of(roleIdsByTier.get(tier)),
-                    desired.get(tier)
-            );
+            ManagedRoleClaim claim = claimForTier(tier, roleIdsByTier, desired);
             publications.add(client.reconcile(claim).toCompletableFuture().thenApply(result -> {
                 ManagedRoleReconcileStatus status = result.status();
                 if (status == ManagedRoleReconcileStatus.REJECTED
@@ -99,15 +93,27 @@ public final class EnthusiaNumeralShadowPublisher {
             throw new IllegalArgumentException("Every numeral tier requires a configured Discord role ID");
         }
 
-        Map<String, Set<UUID>> mutable = new LinkedHashMap<>();
-        tiers.forEach(tier -> mutable.put(tier, new LinkedHashSet<>()));
+        Map<String, Set<UUID>> mutable = new ConcurrentHashMap<>();
+        tiers.forEach(tier -> mutable.put(tier, ConcurrentHashMap.newKeySet()));
         knownPlayers.stream()
                 .sorted(Comparator.comparing(UUID::toString))
                 .forEach(playerId -> assignPlayer(mutable, playerId, activeMinutes.read(playerId)));
 
-        Map<String, Set<UUID>> immutable = new LinkedHashMap<>();
-        mutable.forEach((tier, players) -> immutable.put(tier, Set.copyOf(players)));
-        return Map.copyOf(immutable);
+        mutable.replaceAll((tier, players) -> Set.copyOf(players));
+        return Map.copyOf(mutable);
+    }
+
+    private static ManagedRoleClaim claimForTier(
+            String tier,
+            Map<String, String> roleIdsByTier,
+            Map<String, Set<UUID>> desired
+    ) {
+        return new ManagedRoleClaim(
+                key(tier),
+                displayName(tier),
+                Optional.of(roleIdsByTier.get(tier)),
+                desired.get(tier)
+        );
     }
 
     private void assignPlayer(Map<String, Set<UUID>> desired, UUID playerId, long activeMinutes) {
@@ -129,7 +135,7 @@ public final class EnthusiaNumeralShadowPublisher {
     }
 
     static ManagedRoleNamespace namespace() {
-        return NAMESPACE;
+        return ROLE_NAMESPACE;
     }
 
     static ManagedRoleKey key(String tierLabel) {
