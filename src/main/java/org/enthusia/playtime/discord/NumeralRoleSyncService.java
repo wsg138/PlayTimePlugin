@@ -13,6 +13,15 @@ import java.util.function.Supplier;
 
 /** Reconciles one provider identity from authoritative active-playtime snapshots. */
 public final class NumeralRoleSyncService {
+    /** A concurrent authoritative snapshot changed while it was being read; retry shortly without warning noise. */
+    public static final class SnapshotPendingException extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        public SnapshotPendingException(String message) {
+            super(message);
+        }
+    }
+
     @FunctionalInterface
     public interface ActiveMinutes {
         long read(UUID uuid);
@@ -60,7 +69,7 @@ public final class NumeralRoleSyncService {
         long effectiveActiveMinutes = effectiveActiveMinutes(linkedAccounts);
         Set<UUID> confirmedLinks = linkedAccounts(account);
         if (!confirmedLinks.equals(linkedAccounts)) {
-            throw new IllegalStateException("Linked account membership changed during numeral reconciliation");
+            throw new SnapshotPendingException("Linked account membership changed during numeral reconciliation");
         }
 
         return provider.currentRoles(account).thenCompose(current -> apply(account, policy.reconcile(
@@ -77,7 +86,7 @@ public final class NumeralRoleSyncService {
         for (UUID uuid : linkedAccounts) {
             long active = playtime.read(uuid);
             if (active < 0) {
-                throw new IllegalStateException("Authoritative active playtime is unavailable");
+                throw new SnapshotPendingException("Authoritative active playtime snapshot is pending");
             }
             effective = Math.max(effective, active);
         }
