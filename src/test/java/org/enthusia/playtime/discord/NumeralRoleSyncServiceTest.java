@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -53,6 +54,21 @@ class NumeralRoleSyncServiceTest {
 
         assertThrows(CompletionException.class, () -> service.reconcile(player).join());
         assertEquals(Set.of(TIER_ONE_ROLE), provider.roles);
+    }
+
+    @Test
+    void pendingAuthoritativeSnapshotUsesTypedRetrySignalWithoutRoleMutation() {
+        FakeProvider provider = new FakeProvider(Set.of(TIER_ONE_ROLE, STAFF_ROLE));
+        provider.link(player, ACCOUNT);
+        NumeralRoleSyncService service = service(provider, uuid -> -1L);
+
+        CompletionException failure = assertThrows(
+                CompletionException.class, () -> service.reconcile(player).join());
+
+        assertInstanceOf(NumeralRoleSyncService.SnapshotPendingException.class, failure.getCause());
+        assertEquals(Set.of(TIER_ONE_ROLE, STAFF_ROLE), provider.roles);
+        assertEquals(0, provider.grants.get());
+        assertEquals(0, provider.revokes.get());
     }
 
     @Test
@@ -158,8 +174,9 @@ class NumeralRoleSyncServiceTest {
         };
         provider.link(player, ACCOUNT);
 
-        assertThrows(CompletionException.class,
-                () -> service(provider, uuid -> 480L).reconcile(player).join());
+        CompletionException failure = assertThrows(
+                CompletionException.class, () -> service(provider, uuid -> 480L).reconcile(player).join());
+        assertInstanceOf(NumeralRoleSyncService.SnapshotPendingException.class, failure.getCause());
         assertEquals(Set.of(TIER_ONE_ROLE), provider.roles);
         assertEquals(0, provider.grants.get());
         assertEquals(0, provider.revokes.get());
