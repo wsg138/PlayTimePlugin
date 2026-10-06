@@ -9,7 +9,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
-public record NumeralDiscordConfig(NumeralRolePolicy policy) {
+public record NumeralDiscordConfig(NumeralRolePolicy policy, boolean enthusiaShadowEnabled) {
     public static Optional<NumeralDiscordConfig> load(ConfigurationSection config, NumeralTierCatalog catalog) {
         String base = "numerals.discord-roles";
         if (!config.getBoolean(base + ".enabled", false)) return Optional.empty();
@@ -22,7 +22,9 @@ public record NumeralDiscordConfig(NumeralRolePolicy policy) {
         Map<String, String> ids = catalog.tiers().stream().collect(Collectors.toUnmodifiableMap(
                 NumeralTierCatalog.Tier::label,
                 tier -> roleIdFor(configuredIds, roleSection, tier.label())));
-        return Optional.of(new NumeralDiscordConfig(new NumeralRolePolicy(catalog, ids)));
+        return Optional.of(new NumeralDiscordConfig(
+                new NumeralRolePolicy(catalog, ids),
+                config.getBoolean(base + ".enthusia-shadow-enabled", false)));
     }
 
     private static String roleIdFor(Map<String, Object> configuredIds, ConfigurationSection roleSection, String label) {
