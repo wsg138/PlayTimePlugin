@@ -19,3 +19,9 @@ The compatibility adapter does not attempt to make DiscordSRV link state and an 
 ## Next contract step
 
 Current SHADOW implementation publishes complete desired membership snapshots through the shared managed-role client for namespace `playtime-numerals`, compiled against the exact merged #342 runtime commit. The remaining step is production parity evidence before any writer cutover; do not introduce a separate PlayTime Discord transport.
+
+## SHADOW failure isolation (October 15, 2026)
+
+The opt-in numeral SHADOW observer is never a live Discord role writer. Periodic startup scheduling, provider discovery, authoritative membership snapshots, task submission, and asynchronous publication can fail without interrupting ordinary PlayTime behavior or permanently retaining its in-flight scan flag. A failed preparation/read sends **no** partial role snapshot. Failure warnings report a sanitized stage and exception class, not arbitrary downstream exception text, UUIDs, Discord role IDs, or secrets.
+
+Failed, unstarted, unavailable-provider or skipped scans are **not** parity evidence. Confirm repeated complete twelve-tier snapshots (including empty tiers), exact saved DiscordSRV role IDs, canonical linked-account union, and zero unexplained drift in an authorized non-production environment while DiscordSRV remains the live writer. No SHADOW result authorizes a Discord role mutation, D13 cutover, or DiscordSRV removal.

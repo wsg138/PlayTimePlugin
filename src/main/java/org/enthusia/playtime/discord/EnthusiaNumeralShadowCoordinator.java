@@ -48,10 +48,15 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
         if (closed.get() || task.isPresent()) {
             throw new IllegalStateException("Enthusia numeral shadow coordinator cannot be started");
         }
-        task = Optional.of(Bukkit.getScheduler().runTaskTimer(
-                plugin, () -> trigger(false), INITIAL_DELAY_TICKS, PERIOD_TICKS));
-        plugin.getLogger().info(
-                "Enthusia numeral-role shadow publication enabled; DiscordSRV remains authoritative for mutations.");
+        try {
+            task = Optional.of(Bukkit.getScheduler().runTaskTimer(
+                    plugin, () -> trigger(false), INITIAL_DELAY_TICKS, PERIOD_TICKS));
+            plugin.getLogger().info(
+                    "Enthusia numeral-role shadow publication enabled; DiscordSRV remains authoritative for mutations.");
+        } catch (RuntimeException | LinkageError failure) {
+            // A migration-only observer must never prevent PlayTime startup.
+            logFailure("startup", failure);
+        }
     }
 
     public void request() {
@@ -65,11 +70,11 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
             }, EVENT_COOLDOWN_TICKS);
         } catch (RuntimeException | LinkageError failure) {
             requestQueued.set(false);
-            throw failure;
+            logFailure("schedule", failure);
         }
     }
 
-    private void trigger(boolean rerunIfBusy) {
+    void trigger(boolean rerunIfBusy) {
         if (closed.get()) {
             return;
         }
@@ -80,23 +85,26 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
             return;
         }
 
-        ManagedRoleClient client = client();
-        PlaytimeRuntime runtime = plugin.runtime();
-        if (client == null || runtime == null) {
-            finishPass();
-            return;
-        }
-
-        final Set<UUID> players;
+        boolean handedOff = false;
         try {
-            players = runtime.knownPlayerIds();
-        } catch (RuntimeException exception) {
-            finishPass();
-            logFailure("metadata", exception);
-            return;
+            // Every synchronous step is a non-authoritative SHADOW probe. Provider
+            // discovery, runtime reads and scheduler rejection must never strand
+            // inFlight or interrupt an ordinary playtime event.
+            ManagedRoleClient client = client();
+            PlaytimeRuntime runtime = plugin.runtime();
+            if (client == null || runtime == null) {
+                return;
+            }
+            Set<UUID> players = Set.copyOf(runtime.knownPlayerIds());
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> publish(client, runtime, players));
+            handedOff = true;
+        } catch (RuntimeException | LinkageError failure) {
+            logFailure("prepare", failure);
+        } finally {
+            if (!handedOff) {
+                finishPass();
+            }
         }
-
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> publish(client, runtime, players));
     }
 
     private void publish(
@@ -111,18 +119,23 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
                     players,
                     runtime::readAuthoritativeActiveMinutes)
                     .whenComplete((summary, error) -> {
-                        if (error != null) {
-                            logFailure("publish", unwrap(error));
-                        } else if (plugin.getLogger().isLoggable(Level.FINE)) {
-                            plugin.getLogger().fine(
-                                    "Enthusia numeral-role shadow published " + summary.claimsPublished()
-                                            + " claim(s) for " + summary.playersEvaluated() + " known player(s).");
+                        try {
+                            if (error != null) {
+                                logFailure("publish", unwrap(error));
+                            } else if (summary == null) {
+                                logFailure("publish", new IllegalStateException("empty shadow publication result"));
+                            } else if (plugin.getLogger().isLoggable(Level.FINE)) {
+                                plugin.getLogger().fine(
+                                        "Enthusia numeral-role shadow published " + summary.claimsPublished()
+                                                + " claim(s) for " + summary.playersEvaluated() + " known player(s).");
+                            }
+                        } finally {
+                            finishPass();
                         }
-                        finishPass();
                     });
-        } catch (RuntimeException exception) {
-            finishPass();
+        } catch (RuntimeException | LinkageError exception) {
             logFailure("snapshot", exception);
+            finishPass();
         }
     }
 
@@ -149,10 +162,12 @@ public final class EnthusiaNumeralShadowCoordinator implements AutoCloseable {
     }
 
     private void logFailure(String stage, Throwable error) {
-        plugin.getLogger().log(
-                Level.WARNING,
-                "Enthusia numeral-role shadow " + stage + " failed; no cutover decision should use this pass.",
-                error
+        // Never forward arbitrary provider exception messages or stack traces,
+        // which could contain private player/role IDs or configuration values.
+        plugin.getLogger().warning(
+                "Enthusia numeral-role shadow " + stage + " failed ("
+                        + unwrap(error).getClass().getSimpleName()
+                        + "); no cutover decision should use this pass."
         );
     }
 
