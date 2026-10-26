@@ -57,6 +57,10 @@ public final class FirstJoinWelcomeListener implements Listener {
         }
 
         if (config.isFirstJoinPingEnabled()) {
+            if (org.enthusia.playtime.infrastructure.sound.CustomSound.play(player,
+                    config.getFirstJoinPingSound(), config.getFirstJoinPingVolume(), config.getFirstJoinPingPitch())) {
+                return;
+            }
             Sound sound = resolveSound(config.getFirstJoinPingSound());
             if (sound != null) {
                 player.playSound(player.getLocation(), sound, config.getFirstJoinPingVolume(), config.getFirstJoinPingPitch());

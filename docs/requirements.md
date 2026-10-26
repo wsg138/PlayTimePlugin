@@ -10,3 +10,5 @@
 - **NR-08:** PlayTime SHALL own active-playtime/tier policy. The shared Enthusia Discord platform SHALL ultimately own canonical Minecraft-to-Discord identity resolution and Discord role reconciliation using complete desired membership snapshots for managed namespace `playtime-numerals`.
 
 The server owner confirmed highest-earned-only roles and supplied the existing role IDs in tier order. PlayTime uses those configured roles and does not create Discord roles. DiscordSRV may remain only as a compatibility adapter until the shared platform contract is ready.
+
+- REQ-SOUND-001: WHEN a configured sound is a valid namespaced resource-pack event THE SYSTEM SHALL play that exact event once at the existing trigger while preserving legacy sound names, gain, pitch, recipients, enablement and invalid-value fallback.

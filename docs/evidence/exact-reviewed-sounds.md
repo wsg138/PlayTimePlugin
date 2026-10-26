@@ -1,0 +1,9 @@
+# Exact reviewed sound support
+
+Spec: REQ-SOUND-001 / TASK-SOUND-001. Add valid namespaced event playback without replacing legacy sound resolution, invalid fallback, trigger enablement, recipients or configurable gain/pitch. No new sound trigger or data migration.
+Prove: installed bytecode and source show vanilla-only registry lookup. Events/Playtime regressions failed compilation before the adapter existed. Tags initial proof run was blocked by missing pinned LoreItems, then an incorrect local JDK; no historical behavioral red is claimed. Votes failed before its Bukkit adapter existed; current main architecture tests also used unsupported Konsist APIs.
+Engine: namespaced keys go directly to the platform String sound overload. Legacy enum handling and existing fallback remain. Tags adds optional step/accent gain/pitch overrides; absent values retain the original pitch curve and gain. Votes isolates audio in a Bukkit adapter behind a use-case port.
+Architecture: no new domain platform imports or persistence paths. Votes repairs the existing unsupported architecture test API without suppressions and supplies read-only settings contracts and an injected scheduling callback; a regression verifies threshold, delay and both persisted party transitions.
+Refine: full local build passed with 242 tests, zero failures/errors/skips. Installed runtime API inspected and Paper String sound API documentation checked. CI/exact-head review, TEST artifact source combination and native player audibility remain separate gates. The browser audition is not in-game acceptance.
+
+Source version and build receipts are recorded in the deployment operations directory. Repository-specific tool availability: Tags has local EARS/state helpers; the other repositories lack a project-local phase/state helper, so this evidence record supplies the bounded SPEAR history. Do not claim unavailable tooling passed.
