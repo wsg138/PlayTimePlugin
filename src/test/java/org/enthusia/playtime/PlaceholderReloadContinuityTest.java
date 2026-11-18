@@ -41,6 +41,19 @@ class PlaceholderReloadContinuityTest {
         assertTrue(lifecycle.registered.get());
     }
 
+    @Test
+    void reloadRetriesAfterPlaceholderApiRejectsRegistration() {
+        MockBukkit.createMockPlugin("PlaceholderAPI");
+        try (var expansions = org.mockito.Mockito.mockConstruction(
+                org.enthusia.playtime.placeholders.PlaytimePlaceholderExpansion.class,
+                (expansion, context) -> org.mockito.Mockito.when(expansion.register()).thenReturn(context.getCount() > 1))) {
+            assertTrue(plugin.reloadPluginRuntime());
+            assertTrue(plugin.reloadPluginRuntime());
+            assertTrue(plugin.reloadPluginRuntime());
+            assertEquals(2, expansions.constructed().size());
+        }
+    }
+
     private static final class CountingPlaceholderLifecycle implements PlayTimePlugin.PlaceholderLifecycle {
         private final AtomicBoolean registered = new AtomicBoolean(true);
         private final AtomicInteger unregisterCalls = new AtomicInteger();

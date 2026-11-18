@@ -22,6 +22,50 @@ import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.Mockito.*;
 
 class ShutdownRecoveryJournalTest {
+    @Test
+    void recoveryRetainsEveryQueuedUsernameObservation() throws Exception {
+        AsyncWriteQueue queue = new AsyncWriteQueue(mock(PlayTimePlugin.class), mock(PlaytimeRepository.class),
+                new PerformanceCounters(), 20L, new AsyncWriteQueue.QueueScheduler() {
+                    @Override public org.bukkit.scheduler.BukkitTask schedulePeriodic(Runnable task, long ticks) { return null; }
+                    @Override public void scheduleImmediate(Runnable task) { }
+                });
+        UUID player = UUID.randomUUID();
+        queue.enqueuePlayerProfile(new PlayerProfile(player, "First", null, Instant.ofEpochSecond(100)));
+        queue.enqueuePlayerProfile(new PlayerProfile(player, "Second", null, Instant.ofEpochSecond(200)));
+        var snapshot = queue.recoverySnapshot();
+        assertEquals(java.util.List.of("First", "Second"), snapshot.batches().get(0).nameObservations()
+                .stream().map(PlayerProfile::username).toList());
+        PlayTimePlugin plugin = mock(PlayTimePlugin.class);
+        when(plugin.getDataFolder()).thenReturn(temp.toFile());
+        ShutdownRecoveryJournal journal = new ShutdownRecoveryJournal(plugin);
+        journal.write(snapshot);
+        PlaytimeRepository repository = mock(PlaytimeRepository.class);
+        when(repository.applyWriteBatch(any())).thenReturn(RecoveryApplyResult.APPLIED);
+        journal.replaySynchronously(repository);
+        var captured = org.mockito.ArgumentCaptor.forClass(WriteBatch.class);
+        verify(repository).applyWriteBatch(captured.capture());
+        assertEquals(java.util.List.of("First", "Second"), captured.getValue().nameObservations()
+                .stream().map(PlayerProfile::username).toList());
+    }
+    @Test
+    void incompleteV5JournalIsRetainedWithoutApplyingWrites() throws Exception {
+        PlayTimePlugin plugin = mock(PlayTimePlugin.class);
+        when(plugin.getDataFolder()).thenReturn(temp.toFile());
+        ShutdownRecoveryJournal journal = new ShutdownRecoveryJournal(plugin);
+        String yaml = """
+                format: 5
+                createdAt: 100
+                batches:
+                - batchId: %s
+                  lastSeen:
+                    %s: 100
+                """.formatted(UUID.randomUUID(), UUID.randomUUID());
+        java.nio.file.Files.writeString(journal.fileForLogging().toPath(), yaml);
+        PlaytimeRepository repository = mock(PlaytimeRepository.class);
+        assertThrows(IllegalStateException.class, () -> journal.replaySynchronously(repository));
+        verifyNoInteractions(repository);
+        assertEquals(yaml, java.nio.file.Files.readString(journal.fileForLogging().toPath()));
+    }
     @TempDir Path temp;
 
     @Test

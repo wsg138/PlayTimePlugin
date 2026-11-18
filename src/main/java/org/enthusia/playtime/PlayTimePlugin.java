@@ -54,8 +54,11 @@ public class PlayTimePlugin extends JavaPlugin {
         }
         @Override public void register() {
             PlaytimePlaceholderExpansion expansion = new PlaytimePlaceholderExpansion(PlayTimePlugin.this);
-            expansion.register();
-            placeholderExpansion = Optional.of(expansion);
+            if (expansion.register()) {
+                placeholderExpansion = Optional.of(expansion);
+            } else {
+                getLogger().warning("PlaceholderAPI declined the playtime expansion. Check for a conflicting identifier and reload Playtime to retry.");
+            }
         }
     };
 
@@ -395,7 +398,9 @@ public class PlayTimePlugin extends JavaPlugin {
         }
         if (!placeholderLifecycle.registered()) {
             placeholderLifecycle.register();
-            getLogger().info("Registered PlaceholderAPI expansion.");
+            if (placeholderLifecycle.registered()) {
+                getLogger().info("Registered PlaceholderAPI expansion.");
+            }
         }
     }
 

@@ -18,7 +18,8 @@ public record WriteBatch(UUID batchId,
                          Map<UUID, PlayerProfile> profiles,
                          List<JoinRecord> joins,
                          Map<MinuteBucket, MinuteDelta> minuteBuckets,
-                         Map<UUID, Instant> lastSeen) {
+                         Map<UUID, Instant> lastSeen,
+                         List<PlayerProfile> nameObservations) {
 
     public WriteBatch {
         minutes = Map.copyOf(minutes);
@@ -26,6 +27,14 @@ public record WriteBatch(UUID batchId,
         joins = List.copyOf(joins);
         minuteBuckets = Map.copyOf(minuteBuckets);
         lastSeen = Map.copyOf(lastSeen);
+        nameObservations = List.copyOf(nameObservations);
+    }
+
+    public WriteBatch(UUID batchId, Instant aggregationTime, Map<UUID, MinuteDelta> minutes,
+                      Map<UUID, PlayerProfile> profiles, List<JoinRecord> joins,
+                      Map<MinuteBucket, MinuteDelta> minuteBuckets, Map<UUID, Instant> lastSeen) {
+        this(batchId, aggregationTime, minutes, profiles, joins, minuteBuckets, lastSeen,
+                List.copyOf(profiles.values()));
     }
 
     /** Backward-compatible constructor used by older tests and format-2/3 journals. */
@@ -37,7 +46,7 @@ public record WriteBatch(UUID batchId,
 
     public boolean isEmpty() {
         return minutes.isEmpty() && profiles.isEmpty() && joins.isEmpty()
-                && minuteBuckets.isEmpty() && lastSeen.isEmpty();
+                && minuteBuckets.isEmpty() && lastSeen.isEmpty() && nameObservations.isEmpty();
     }
 
     private static Map<MinuteBucket, MinuteDelta> bucketsAt(Instant instant,

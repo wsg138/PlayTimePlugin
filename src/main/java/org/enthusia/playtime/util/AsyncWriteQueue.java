@@ -18,6 +18,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CompletableFuture;
@@ -25,6 +26,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.logging.Level;
 import java.util.function.LongSupplier;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class AsyncWriteQueue implements AutoCloseable {
@@ -48,6 +51,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
     private final Object lifecycleLock = new Object();
     /** Lock order is lifecycleLock, writeOwnershipLock, then minuteLedgerLock. Never hold this during I/O. */
     private final Object writeOwnershipLock = new Object();
+    private final List<PlayerProfile> pendingNameObservations = new ArrayList<>();
     private final ConcurrentHashMap<UUID, PlayerProfile> pendingProfiles = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<JoinRecord> pendingJoins = new ConcurrentLinkedQueue<>();
     private final long flushIntervalTicks;
@@ -178,6 +182,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
             if (result != EnqueueResult.ACCEPTED) return result;
             synchronized (writeOwnershipLock) {
                 pendingProfiles.put(uuid, profile);
+                pendingNameObservations.add(profile);
                 pendingJoins.add(new JoinRecord(uuid, joinedAt));
             }
         }
@@ -194,6 +199,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
             if (result != EnqueueResult.ACCEPTED) return result;
             synchronized (writeOwnershipLock) {
                 pendingProfiles.put(profile.uuid(), profile);
+                pendingNameObservations.add(profile);
             }
         }
         scheduleImmediateFlush();
@@ -208,6 +214,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
             if (state == QueueState.CLOSED) return;
             synchronized (writeOwnershipLock) {
                 pendingProfiles.put(profile.uuid(), profile);
+                pendingNameObservations.add(profile);
             }
         }
     }
@@ -216,6 +223,35 @@ public final class AsyncWriteQueue implements AutoCloseable {
         synchronized (writeOwnershipLock) {
             return ownedMinuteDeltaLocked(uuid).toRangeTotals();
         }
+    }
+
+    public <T> Optional<T> readPlayerDisplaySnapshot(UUID uuid, Function<RangeTotals, T> query) {
+        return readDisplaySnapshot(() -> getPendingTotals(uuid), query);
+    }
+
+    public <T> Optional<T> readServerDisplaySnapshot(Function<RangeTotals, T> query) {
+        return readDisplaySnapshot(this::getPendingTotalsForServer, query);
+    }
+
+    private <T> Optional<T> readDisplaySnapshot(Supplier<RangeTotals> pendingTotals, Function<RangeTotals, T> query) {
+        long generation;
+        RangeTotals pending;
+        synchronized (writeOwnershipLock) {
+            if (hasUnsettledWriteLocked()) return Optional.empty();
+            generation = minuteCommitGeneration.get();
+            pending = pendingTotals.get();
+        }
+        T snapshot = query.apply(pending);
+        synchronized (writeOwnershipLock) {
+            // Discard the read if pending ownership may now overlap the SQL snapshot.
+            if (hasUnsettledWriteLocked() || minuteCommitGeneration.get() != generation) return Optional.empty();
+        }
+        return Optional.of(snapshot);
+    }
+
+    private boolean hasUnsettledWriteLocked() {
+        // Failed or recovered batches may already be durable even while the queue owns them.
+        return activeWriteBatch != null || !pendingRecoveryBatches.isEmpty() || !retainedShutdownBatches.isEmpty();
     }
 
     /** Returns a generation-verified durable-plus-uncommitted active total without holding a lock during SQL. */
@@ -345,6 +381,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
         synchronized (writeOwnershipLock) {
             if (pendingRecoveryBatches.peekFirst() == recovery) {
                 pendingRecoveryBatches.removeFirst();
+                minuteCommitGeneration.incrementAndGet();
                 settled = pendingRecoveryBatches.isEmpty();
             }
         }
@@ -360,6 +397,8 @@ public final class AsyncWriteQueue implements AutoCloseable {
             Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>(pendingMinutes);
             Map<MinuteBucket, MinuteDelta> minuteBuckets = new ConcurrentHashMap<>(pendingMinuteBuckets);
             Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>(pendingProfiles);
+            List<PlayerProfile> observations = List.copyOf(pendingNameObservations);
+            pendingNameObservations.clear();
             Map<UUID, Instant> lastSeen = new ConcurrentHashMap<>(pendingLastSeen);
             List<JoinRecord> joins = new ArrayList<>(pendingJoins);
             pendingMinutes.keySet().removeAll(minutes.keySet());
@@ -368,7 +407,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
             pendingLastSeen.keySet().removeAll(lastSeen.keySet());
             pendingJoins.removeAll(joins);
             activeWriteBatch = new WriteBatch(UUID.randomUUID(), Instant.now(), Map.copyOf(minutes),
-                    Map.copyOf(profiles), List.copyOf(joins), Map.copyOf(minuteBuckets), Map.copyOf(lastSeen));
+                    Map.copyOf(profiles), List.copyOf(joins), Map.copyOf(minuteBuckets), Map.copyOf(lastSeen), observations);
             return activeWriteBatch;
         }
     }
@@ -534,6 +573,8 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 Map<UUID, MinuteDelta> minutes = new ConcurrentHashMap<>(pendingMinutes);
                 Map<MinuteBucket, MinuteDelta> minuteBuckets = new ConcurrentHashMap<>(pendingMinuteBuckets);
                 Map<UUID, PlayerProfile> profiles = new ConcurrentHashMap<>(pendingProfiles);
+                List<PlayerProfile> observations = List.copyOf(pendingNameObservations);
+                pendingNameObservations.clear();
                 Map<UUID, Instant> lastSeen = new ConcurrentHashMap<>(pendingLastSeen);
                 List<JoinRecord> joins = new ArrayList<>(pendingJoins);
                 pendingMinutes.keySet().removeAll(minutes.keySet());
@@ -542,7 +583,7 @@ public final class AsyncWriteQueue implements AutoCloseable {
                 pendingLastSeen.keySet().removeAll(lastSeen.keySet());
                 pendingJoins.removeAll(joins);
                 WriteBatch retained = new WriteBatch(UUID.randomUUID(), Instant.now(), Map.copyOf(minutes),
-                        Map.copyOf(profiles), List.copyOf(joins), Map.copyOf(minuteBuckets), Map.copyOf(lastSeen));
+                        Map.copyOf(profiles), List.copyOf(joins), Map.copyOf(minuteBuckets), Map.copyOf(lastSeen), observations);
                 retainedShutdownBatches.addLast(retained);
                 batches.add(retained);
             }

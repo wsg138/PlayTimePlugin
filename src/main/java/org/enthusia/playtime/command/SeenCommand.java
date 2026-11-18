@@ -10,6 +10,7 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.IllegalPluginAccessException;
 import org.enthusia.playtime.PlayTimePlugin;
+import org.enthusia.playtime.data.PlaytimeRepository;
 import org.enthusia.playtime.service.PlaytimeRuntime;
 import org.enthusia.playtime.util.TimeFormats;
 
@@ -25,6 +26,7 @@ import java.util.UUID;
 public final class SeenCommand implements CommandExecutor, TabCompleter {
 
     private static final String PREFIX = ChatColor.GOLD + "[Playtime] " + ChatColor.YELLOW;
+    private static final int UNIQUE_MATCH_COUNT = 1;
     private static final int TARGET_ARG_COUNT = 1;
 
     private final PlayTimePlugin plugin;
@@ -60,53 +62,94 @@ public final class SeenCommand implements CommandExecutor, TabCompleter {
     }
 
     private void showTargetSeen(CommandSender sender, PlaytimeRuntime runtime, String targetName) {
-        Player online = Bukkit.getPlayerExact(targetName);
-        if (online != null) {
-            showSeen(sender, runtime, online.getUniqueId(), online.getName(), true);
-            return;
+        UUID requestedUuid = null;
+        try {
+            requestedUuid = UUID.fromString(targetName);
+        } catch (IllegalArgumentException ignored) {
+            // Most lookups use a username.
         }
-
-        OfflinePlayer offline = Bukkit.getOfflinePlayerIfCached(targetName);
-        UUID cachedUuid = runtime.headCache().findUuidByName(targetName);
-        if (offline == null || offline.getUniqueId() == null) {
-            if (cachedUuid != null) {
-                showSeen(sender, runtime, cachedUuid, targetName, false);
-                return;
-            }
-            sender.sendMessage(PREFIX + ChatColor.RED + "Player '" + targetName + "' has never joined.");
-            return;
-        }
-
-        showSeen(sender, runtime, offline.getUniqueId(), offline.getName() != null ? offline.getName() : targetName, false);
-    }
-
-    private void showSeen(CommandSender sender, PlaytimeRuntime runtime, UUID uuid, String name, boolean online) {
-        if (online) {
-            sender.sendMessage(PREFIX + ChatColor.AQUA + name + ChatColor.YELLOW + " is currently online.");
-            return;
-        }
-
-        if (!plugin.isEnabled()) {
-            return;
-        }
+        UUID uuid = requestedUuid;
+        Player online = uuid == null ? Bukkit.getPlayerExact(targetName) : Bukkit.getPlayer(uuid);
+        OfflinePlayer offline = uuid == null ? Bukkit.getOfflinePlayerIfCached(targetName) : null;
+        UUID fallback = online != null ? online.getUniqueId()
+                : offline != null ? offline.getUniqueId() : runtime.headCache().findUuidByName(targetName);
+        String fallbackName = online != null ? online.getName()
+                : offline != null && offline.getName() != null ? offline.getName() : targetName;
+        if (!plugin.isEnabled()) return;
         try {
             Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-                Optional<Instant> lastSeenOpt = runtime.repository().getLastSeen(uuid);
-                if (!plugin.isEnabled()) {
-                    return;
-                }
                 try {
-                    Bukkit.getScheduler().runTask(plugin, () -> sendSeen(sender, runtime, name, lastSeenOpt));
-                } catch (IllegalPluginAccessException exception) {
-                    if (plugin.isEnabled()) {
-                        throw exception;
+                    var matches = uuid == null ? runtime.repository().findNameObservations(targetName) : List.<PlaytimeRepository.NameObservation>of();
+                    var ids = new ArrayList<>(matches.stream().map(PlaytimeRepository.NameObservation::uuid).distinct().toList());
+                    if (uuid == null && online != null && !ids.contains(online.getUniqueId())) {
+                        ids.add(online.getUniqueId());
                     }
+                    if (ids.size() > UNIQUE_MATCH_COUNT) {
+                        var labels = new ArrayList<String>();
+                        for (UUID match : ids) {
+                            var history = runtime.repository().getNameObservations(match);
+                            String latest = history.isEmpty() ? targetName : history.get(0).username();
+                            labels.add(latest + " (" + match + ")");
+                        }
+                        deliver(sender, runtime, () -> sender.sendMessage(PREFIX + ChatColor.YELLOW
+                                + "Multiple players used " + targetName + ": " + String.join(", ", labels)
+                                + ". Use /seen <UUID>."));
+                        return;
+                    }
+                    UUID resolved = uuid != null ? uuid : ids.size() == UNIQUE_MATCH_COUNT ? ids.get(0) : fallback;
+                    if (resolved == null) {
+                        deliver(sender, runtime, () -> sender.sendMessage(PREFIX + ChatColor.RED
+                                + "No player found for '" + targetName + "'."));
+                        return;
+                    }
+                    var history = runtime.repository().getNameObservations(resolved);
+                    Optional<Instant> lastSeen = runtime.repository().getLastSeen(resolved);
+                    String name = history.isEmpty() ? fallbackName : history.get(0).username();
+                    deliver(sender, runtime, () -> {
+                        Player current = Bukkit.getPlayer(resolved);
+                        if (current != null && current.isOnline()) {
+                            String liveName = current.getName();
+                            sender.sendMessage(PREFIX + ChatColor.AQUA + liveName + ChatColor.YELLOW + " is currently online.");
+                            showHistory(sender, runtime, history, liveName);
+                        } else {
+                            sendSeen(sender, runtime, name, lastSeen);
+                            showHistory(sender, runtime, history, name);
+                        }
+                    });
+                } catch (Exception failure) {
+                    plugin.getLogger().log(java.util.logging.Level.WARNING, "Failed to load username history", failure);
+                    deliver(sender, runtime, () -> sender.sendMessage(PREFIX + ChatColor.RED + "Could not load player history. Try again later."));
                 }
             });
         } catch (IllegalPluginAccessException exception) {
-            if (plugin.isEnabled()) {
-                throw exception;
-            }
+            if (plugin.isEnabled()) throw exception;
+        }
+    }
+
+    private void showSeen(CommandSender sender, PlaytimeRuntime runtime, UUID uuid, String name, boolean online) {
+        showTargetSeen(sender, runtime, uuid.toString());
+    }
+
+    private void deliver(CommandSender sender, PlaytimeRuntime runtime, Runnable result) {
+        if (!plugin.isEnabled()) return;
+        try {
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                if (plugin.runtime() == runtime && (!(sender instanceof Player player) || player.isOnline())) result.run();
+            });
+        } catch (IllegalPluginAccessException exception) {
+            if (plugin.isEnabled()) throw exception;
+        }
+    }
+
+    private void showHistory(CommandSender sender, PlaytimeRuntime runtime,
+                             List<PlaytimeRepository.NameObservation> history, String currentName) {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, uuuu", Locale.US)
+                .withZone(runtime.config().joins().zoneId());
+        var previous = history.stream().filter(row -> !row.username().equalsIgnoreCase(currentName))
+                .map(row -> row.username() + " (observed " + formatter.format(row.firstObserved())
+                        + " - " + formatter.format(row.lastObserved()) + ")").toList();
+        if (!previous.isEmpty()) {
+            sender.sendMessage(PREFIX + ChatColor.YELLOW + "Previously seen as: " + ChatColor.AQUA + String.join(", ", previous));
         }
     }
 

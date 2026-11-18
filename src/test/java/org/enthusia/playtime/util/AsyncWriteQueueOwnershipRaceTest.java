@@ -106,6 +106,20 @@ class AsyncWriteQueueOwnershipRaceTest {
 
 
     @Test
+    void displaySnapshotDiscardsPendingMinutesWhenFlushOverlapsSql() {
+        Fixture f = new Fixture();
+        UUID player = UUID.randomUUID();
+        f.queue.enqueueMinute(player, 1, 0);
+        assertTrue(f.queue.readPlayerDisplaySnapshot(player, pending -> {
+            assertEquals(1, pending.activeMinutes);
+            assertEquals(AsyncWriteQueue.TransitionResult.SUCCESS, f.queue.flushNow());
+            return 1 + pending.activeMinutes;
+        }).isEmpty());
+        assertEquals(1L, f.queue.readPlayerDisplaySnapshot(player, pending -> 1 + pending.activeMinutes)
+                .orElseThrow());
+    }
+
+    @Test
     void effectiveTierReadCannotDoubleCountAfterSqlBeforeLedgerFinalization() throws Exception {
         Fixture f = new Fixture();
         UUID player = UUID.randomUUID();
@@ -122,6 +136,8 @@ class AsyncWriteQueueOwnershipRaceTest {
 
             assertTrue(f.queue.readEffectiveActiveSnapshot(player, () -> 1L).isEmpty(),
                     "durable SQL must not be combined with the same still-owned minute");
+            assertTrue(f.queue.readServerDisplaySnapshot(pending -> fail("queried SQL during an unsettled write"))
+                    .isEmpty());
 
             allowFinalization.countDown();
             flush.get(1, TimeUnit.SECONDS);

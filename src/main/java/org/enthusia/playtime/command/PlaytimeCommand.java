@@ -326,15 +326,25 @@ public final class PlaytimeCommand implements CommandExecutor, TabCompleter {
     }
 
     private void showPlaytime(CommandSender sender, PlaytimeRuntime runtime, UUID uuid, String name) {
-        Optional<PlaytimeSnapshot> optional = runtime.readService().getLifetime(uuid);
-        if (optional.isEmpty()) {
-            send(sender, runtime.readService().isLoading()
-                    ? ChatColor.YELLOW + "Playtime cache is refreshing for " + name + ". Try again in a moment."
-                    : ChatColor.RED + "No playtime recorded for " + name + ".");
+        PlaytimeLookup.start(() -> runtime.readService().getLifetime(uuid),
+                () -> runtime.readService().isLifetimeLoading(uuid),
+                () -> runtime.readService().isLifetimeFailed(uuid),
+                task -> Bukkit.getScheduler().runTaskLater(plugin, task, 1L),
+                () -> plugin.isEnabled() && plugin.runtime() == runtime
+                        && (!(sender instanceof Player player) || player.isOnline()),
+                result -> showPlaytimeResult(sender, name, result), 200);
+    }
+
+    private void showPlaytimeResult(CommandSender sender, String name, PlaytimeLookup.Result result) {
+        if (result.status() == PlaytimeLookup.Status.TIMEOUT || result.status() == PlaytimeLookup.Status.FAILED) {
+            send(sender, ChatColor.RED + "Could not load playtime for " + name + ". Please try again later.");
             return;
         }
-
-        PlaytimeSnapshot snapshot = optional.get();
+        if (result.status() == PlaytimeLookup.Status.NOT_FOUND) {
+            send(sender, ChatColor.RED + "No playtime recorded for " + name + ".");
+            return;
+        }
+        PlaytimeSnapshot snapshot = result.snapshot();
         send(sender, "Playtime for " + name + ":");
         sender.sendMessage(ChatColor.GRAY + "Total: " + ChatColor.AQUA + TimeFormats.formatMinutes(snapshot.totalMinutes)
                 + ChatColor.GRAY + " (Active: " + ChatColor.GREEN + TimeFormats.formatMinutes(snapshot.activeMinutes)
